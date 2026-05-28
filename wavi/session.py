@@ -1,22 +1,32 @@
 """
-WASession — Playwright session for WhatsApp Web.
+WASession — Playwright session for WhatsApp Web via CDP.
 
-Manages a persistent Chrome profile so WA session survives restarts without
-needing a QR re-scan. The audio blob interceptor is installed as an init script
-so it runs before WhatsApp's JavaScript on every page load.
+Architecture: Chrome runs as a long-lived daemon (started by 'wavi connect').
+Playwright connects/disconnects for each operation but NEVER kills Chrome.
+Killing Chrome mid-session corrupts the WA IndexedDB and invalidates the session.
+
+Shutdown is only done via stop_daemon(), which navigates to about:blank first
+to let WA flush its state before SIGTERM.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
-import json
-import time
+import subprocess
 from pathlib import Path
-from typing import Optional
 
-WA_URL = "https://web.whatsapp.com/"
+WA_URL     = "https://web.whatsapp.com/"
+REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+CDP_PORT    = 9222
+PID_FILE    = "chrome_daemon.pid"
 
-# ── JavaScript injected before WA's code on every page load ──────────────────
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/148.0.0.0 Safari/537.36"
+)
+
+# ── JavaScript ────────────────────────────────────────────────────────────────
 
 _BLOB_INIT_SCRIPT = """
 (function() {
@@ -32,7 +42,6 @@ _BLOB_INIT_SCRIPT = """
         window.__wavi_blobs.push({ url, ts: Date.now() });
     }
 
-    // Hook 1: src property setter
     const origDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
     Object.defineProperty(HTMLMediaElement.prototype, 'src', {
         set(url) { _capture(url); if (origDesc && origDesc.set) origDesc.set.call(this, url); },
@@ -40,7 +49,6 @@ _BLOB_INIT_SCRIPT = """
         configurable: true,
     });
 
-    // Hook 2: play() — catches blobs already assigned before play() call
     const origPlay = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function() {
         const url = origDesc && origDesc.get ? origDesc.get.call(this) : this.getAttribute('src');
@@ -48,7 +56,6 @@ _BLOB_INIT_SCRIPT = """
         return origPlay.call(this);
     };
 
-    // Hook 3: URL.createObjectURL — catches blob creation at the source
     const origCreate = URL.createObjectURL.bind(URL);
     URL.createObjectURL = function(obj) {
         const url = origCreate(obj);
@@ -56,7 +63,6 @@ _BLOB_INIT_SCRIPT = """
         return url;
     };
 
-    // Hook 4: setAttribute on media elements
     const origSetAttr = Element.prototype.setAttribute;
     Element.prototype.setAttribute = function(name, value) {
         if (this instanceof HTMLMediaElement && name === 'src') _capture(value);
@@ -71,9 +77,7 @@ async (blobUrl) => {
         const r = await fetch(blobUrl);
         const buf = await r.arrayBuffer();
         return btoa(String.fromCharCode(...new Uint8Array(buf)));
-    } catch(e) {
-        return null;
-    }
+    } catch(e) { return null; }
 }
 """
 
@@ -86,60 +90,130 @@ _DRAIN_JS = """
 """
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _is_process_alive(pid: int) -> bool:
+    try:
+        import os
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
 class WASession:
     """
-    Wraps a Playwright persistent-context browser pointed at WhatsApp Web.
+    Connects to a long-lived Chrome daemon started by 'wavi connect'.
+
+    Playwright connects for each operation and disconnects without killing
+    Chrome.  Use stop_daemon() only when you intentionally want to end
+    the session.
 
     Usage::
 
-        session = WASession("data/sessions/5491155612767")
-        await session.connect()
+        session = WASession("data/sessions/default")
+        await session.connect()           # connects to running daemon
         await session.navigate_to_contact("Luis Perez")
         shot = await session.screenshot()
-        await session.click(320, 450)          # crop-panel coords
         blobs = await session.drain_blobs()
-        audio = await session.fetch_blob(blobs[0]["url"])
-        await session.close()
+        await session.close()             # disconnects — Chrome stays alive
     """
 
-    SIDEBAR_X = 580
-    HEADER_Y  = 60
+    from wavi.vision import SIDEBAR_PX as SIDEBAR_X, HEADER_PX as HEADER_Y
+
+    SEARCH_X = 317
+    SEARCH_Y  = 80
 
     def __init__(self, profile_dir: str | Path, headless: bool = True):
-        self.profile_dir = Path(profile_dir)
-        self.headless    = headless
-        self._pw         = None
-        self._context    = None
-        self._page       = None
+        self.profile_dir   = Path(profile_dir)
+        self.headless      = headless
+        self._pw           = None
+        self._browser      = None
+        self._context      = None
+        self._page         = None
+        self._chrome_proc  = None  # set only when WE started Chrome
+
+    # ── Daemon helpers ────────────────────────────────────────────────────────
+
+    def _save_pid(self, pid: int) -> None:
+        (self.profile_dir / PID_FILE).write_text(str(pid))
+
+    def _load_pid(self) -> int | None:
+        try:
+            return int((self.profile_dir / PID_FILE).read_text().strip())
+        except Exception:
+            return None
+
+    def daemon_alive(self) -> bool:
+        pid = self._load_pid()
+        return pid is not None and _is_process_alive(pid)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def connect(self) -> str:
         """
-        Launch browser with the persistent profile and navigate to WA Web.
+        Connect to the running Chrome daemon.  If no daemon is alive, starts
+        a headless Chrome (fallback for 'wavi status').
 
-        Returns "restored" if session loaded without QR, "qr_needed" otherwise.
+        Returns "restored" if session is authenticated, "qr_needed" otherwise.
         """
         from playwright.async_api import async_playwright
         self._pw = await async_playwright().start()
 
+        # Try to connect to existing daemon first
+        pid = self._load_pid()
+        if pid and _is_process_alive(pid):
+            try:
+                self._browser = await self._pw.chromium.connect_over_cdp(
+                    f"http://localhost:{CDP_PORT}", timeout=5_000
+                )
+                return await self._setup_page()
+            except Exception:
+                pass  # daemon alive but CDP not responding — fall through
+
+        # No daemon: start headless Chrome (status/run without a prior connect)
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        self._context = await self._pw.chromium.launch_persistent_context(
-            user_data_dir=str(self.profile_dir),
-            headless=self.headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-            ],
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-            locale="es-AR",
+        _kill_port(CDP_PORT)
+        (self.profile_dir / "SingletonLock").unlink(missing_ok=True)
+
+        args = [
+            str(REAL_CHROME),
+            f"--user-data-dir={self.profile_dir}",
+            f"--remote-debugging-port={CDP_PORT}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+            f"--user-agent={_UA}",
+        ]
+        if self.headless:
+            args += ["--headless=new", "--window-size=1280,900"]
+
+        self._chrome_proc = subprocess.Popen(
+            args + [WA_URL],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
+        self._save_pid(self._chrome_proc.pid)
+
+        for _ in range(30):
+            try:
+                self._browser = await self._pw.chromium.connect_over_cdp(
+                    f"http://localhost:{CDP_PORT}", timeout=1_000
+                )
+                break
+            except Exception:
+                await asyncio.sleep(1)
+        else:
+            self._chrome_proc.terminate()
+            raise RuntimeError(f"Chrome did not expose CDP on port {CDP_PORT}")
+
+        return await self._setup_page()
+
+    async def _setup_page(self) -> str:
+        """Attach init scripts, get/navigate page, return auth status."""
+        contexts = self._browser.contexts
+        self._context = contexts[0] if contexts else await self._browser.new_context()
+
         await self._context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
@@ -147,9 +221,15 @@ class WASession:
 
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()
-        await self._page.goto(WA_URL, wait_until="domcontentloaded", timeout=30_000)
+        await self._page.bring_to_front()
 
-        AUTHED = "[data-testid='chat-list'], #side, [data-testid='search-input']"
+        if WA_URL not in self._page.url:
+            await self._page.goto(WA_URL, wait_until="domcontentloaded", timeout=30_000)
+
+        if self.headless:
+            await self._page.set_viewport_size({"width": 1280, "height": 2400})
+
+        AUTHED = "[data-testid='chat-list'], #side, input[role='textbox']"
         QR     = "[data-testid='qrcode'], div[data-ref], canvas"
         try:
             await self._page.wait_for_selector(f"{AUTHED}, {QR}", timeout=60_000)
@@ -161,8 +241,7 @@ class WASession:
         return "qr_needed"
 
     async def wait_for_auth(self, timeout_s: int = 120) -> bool:
-        """Block until WA shows the main chat UI (user scanned QR). Returns True on success."""
-        AUTHED = "[data-testid='chat-list'], #side"
+        AUTHED = "[data-testid='chat-list'], #side, input[role='textbox']"
         try:
             await self._page.wait_for_selector(AUTHED, timeout=timeout_s * 1000)
             return True
@@ -170,51 +249,91 @@ class WASession:
             return False
 
     async def close(self) -> None:
-        if self._context:
-            await self._context.close()
+        """
+        Disconnect Playwright from Chrome — does NOT kill the Chrome process.
+        Chrome keeps running as a daemon so the WA session stays alive.
+        """
+        if self._browser:
+            await self._browser.close()
         if self._pw:
             await self._pw.stop()
+        # Intentionally NOT terminating _chrome_proc here.
+
+    async def stop_daemon(self) -> None:
+        """
+        Gracefully shut down the Chrome daemon.
+        Navigates to about:blank first so WA can flush IndexedDB before exit.
+        """
+        if self._page:
+            try:
+                await self._page.goto("about:blank", timeout=5_000)
+                await asyncio.sleep(2)
+            except Exception:
+                pass
+
+        if self._browser:
+            await self._browser.close()
+        if self._pw:
+            await self._pw.stop()
+
+        # Load PID if we didn't start Chrome ourselves
+        pid = self._load_pid()
+        if pid and _is_process_alive(pid):
+            import os, signal
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(20):  # wait up to 10s for clean exit
+                await asyncio.sleep(0.5)
+                if not _is_process_alive(pid):
+                    break
+            else:
+                os.kill(pid, signal.SIGKILL)
+
+        (self.profile_dir / "SingletonLock").unlink(missing_ok=True)
+        (self.profile_dir / PID_FILE).unlink(missing_ok=True)
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
     async def navigate_to_contact(self, contact: str) -> None:
-        """Open a specific chat by typing the contact name in the WA search box."""
-        search_sel = "[data-testid='chat-list-search']"
-        await self._page.click(search_sel)
-        await self._page.fill(search_sel, contact)
-        await self._page.wait_for_timeout(800)
+        await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
+        await self._page.wait_for_timeout(600)
+        await self._page.keyboard.press("Control+a")
+        await self._page.keyboard.type(contact, delay=40)
+        await self._page.wait_for_timeout(1500)
 
-        # Click the first result
         result_sel = f"[title='{contact}']"
         try:
-            await self._page.wait_for_selector(result_sel, timeout=5_000)
+            await self._page.wait_for_selector(result_sel, timeout=6_000)
             await self._page.click(result_sel)
         except Exception:
-            # Fallback: click first list item
+            await self._page.keyboard.press("ArrowDown")
+            await self._page.wait_for_timeout(300)
             await self._page.keyboard.press("Enter")
 
-        await self._page.wait_for_timeout(1000)
+        bubble_ready = (
+            "[data-testid='msg-container'], "
+            "[data-testid='conversation-panel-messages'], "
+            ".copyable-text, [class*='message-']"
+        )
+        try:
+            await self._page.wait_for_selector(bubble_ready, timeout=15_000)
+        except Exception:
+            pass
+        await self._page.wait_for_timeout(1500)
 
     # ── Screenshot ────────────────────────────────────────────────────────────
 
     async def screenshot(self) -> bytes:
-        """Return PNG bytes of the current viewport."""
         return await self._page.screenshot(type="png", full_page=False)
 
     async def screenshot_to_file(self, path: str | Path) -> Path:
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        data = await self.screenshot()
-        out.write_bytes(data)
+        out.write_bytes(await self.screenshot())
         return out
 
     # ── Interaction ───────────────────────────────────────────────────────────
 
     async def click(self, crop_x: int, crop_y: int, wait_ms: int = 2000) -> None:
-        """
-        Click at crop-panel coordinates (no sidebar, no header).
-        Internally adds SIDEBAR_X and HEADER_Y to convert to viewport coords.
-        """
         vx = crop_x + self.SIDEBAR_X
         vy = crop_y + self.HEADER_Y
         await self._page.mouse.click(vx, vy)
@@ -222,27 +341,33 @@ class WASession:
             await self._page.wait_for_timeout(wait_ms)
 
     async def eval(self, js: str):
-        """Evaluate arbitrary JS and return the result."""
         return await self._page.evaluate(js)
 
     # ── Audio blob capture ────────────────────────────────────────────────────
 
-    def reset_blobs(self) -> None:
-        """Clear captured blob list (call before a click that should produce audio)."""
-        asyncio.get_event_loop().run_until_complete(self._reset_blobs_async())
-
-    async def reset_blobs_async(self) -> None:
+    async def reset_blobs(self) -> None:
         await self._page.evaluate(
             "() => { window.__wavi_blobs = []; window.__wavi_seen = new Set(); }"
         )
 
     async def drain_blobs(self) -> list[dict]:
-        """Return and clear the list of captured blob URLs."""
         return await self._page.evaluate(_DRAIN_JS)
 
     async def fetch_blob(self, blob_url: str) -> bytes | None:
-        """Download a blob URL from the page context and return raw bytes."""
         b64 = await self._page.evaluate(_FETCH_BLOB_JS, blob_url)
         if b64:
             return base64.b64decode(b64)
         return None
+
+
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _kill_port(port: int) -> None:
+    """Kill any process listening on port (cleanup zombie Chromes)."""
+    result = subprocess.run(
+        ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+        capture_output=True, text=True,
+    )
+    for pid in result.stdout.strip().split("\n"):
+        if pid.strip():
+            subprocess.run(["kill", "-9", pid.strip()], capture_output=True)

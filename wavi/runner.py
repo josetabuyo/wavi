@@ -81,9 +81,14 @@ class WARunner:
         Take a screenshot, run the full vision pipeline, return classified bubbles.
         Bubbles are sorted id=1 (newest) → N (oldest).
         """
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            shot_path = Path(f.name)
-        shot_path.write_bytes(await self.session.screenshot())
+        data = await self.session.screenshot()
+        if assets_dir:
+            Path(assets_dir).mkdir(parents=True, exist_ok=True)
+            shot_path = Path(assets_dir) / "screenshot.png"
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                shot_path = Path(f.name)
+        shot_path.write_bytes(data)
         return analyze(shot_path, assets_dir=assets_dir)
 
     # ── DOM play-button lookup ────────────────────────────────────────────────
@@ -144,6 +149,8 @@ class WARunner:
 
         play_buttons = await self.find_play_buttons()
         results = []
+        # bubble_id → crop-panel (cx, cy) of the actual play button
+        resolved_positions: dict[int, tuple[int, int]] = {}
 
         for bubble in audio_bubbles:
             btn = self._match_bubble_to_button(bubble, play_buttons)
@@ -156,6 +163,12 @@ class WARunner:
                     "error": "no_play_button_matched",
                 })
                 continue
+
+            # Record exact play button position in crop-panel coords for debug image
+            resolved_positions[bubble.id] = (
+                btn["vx"] - WASession.SIDEBAR_X,
+                btn["vy"] - WASession.HEADER_Y,
+            )
 
             # Click in viewport coords directly (bypass crop-panel offset)
             await self.session._page.mouse.click(btn["vx"], btn["vy"])
@@ -188,6 +201,17 @@ class WARunner:
                 "data": data,
                 "path": out_path,
             })
+
+        # Redraw debug image with exact play button positions now that we know them
+        if assets_dir and resolved_positions:
+            from PIL import Image as PILImage
+            from wavi.vision import _save_debug_image
+            assets_dir = Path(assets_dir)
+            cropped = assets_dir / "screenshot_cropped.png"
+            debug_out = assets_dir / "screenshot_debug.png"
+            if cropped.exists() and debug_out.exists():
+                img = PILImage.open(cropped)
+                _save_debug_image(img, bubbles, debug_out, play_positions=resolved_positions)
 
         return results
 

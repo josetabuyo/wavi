@@ -2,25 +2,37 @@
 cli.py — wavi command-line interface.
 
 Commands:
-  wavi connect  <phone>              — authenticate via QR (first time)
-  wavi run      <phone> <contact>    — capture messages + audio from a chat
-  wavi status   <phone>              — check if session is still valid
-  wavi bubbles  <screenshot>         — run vision pipeline on a local screenshot
+  wavi connect   [session]            — start Chrome daemon + QR scan
+  wavi stop      [session]            — gracefully shut down Chrome daemon
+  wavi full-sync [session] <contact>  — capture messages + audio from a chat
+  wavi status    [session]            — check if session daemon is alive + authenticated
+  wavi bubbles   <screenshot>         — run vision pipeline on a local screenshot
+
+Session model
+─────────────
+'wavi connect' launches a real Chrome window with --remote-debugging-port so
+the QR can be scanned without any automation signals.  Chrome is kept running
+as a daemon after the QR scan (do not close it).  All subsequent commands
+connect to that daemon via CDP and disconnect without killing Chrome.
+'wavi stop' performs a graceful shutdown (navigates to about:blank, then SIGTERM).
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import click
 
 DEFAULT_SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
+REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+from wavi.session import CDP_PORT, PID_FILE
 
 
-def _profile(phone: str) -> Path:
-    return DEFAULT_SESSIONS_DIR / phone
+def _profile(session: str) -> Path:
+    return DEFAULT_SESSIONS_DIR / session
 
 
 # ── CLI root ──────────────────────────────────────────────────────────────────
@@ -33,30 +45,99 @@ def main():
 # ── connect ───────────────────────────────────────────────────────────────────
 
 @main.command()
-@click.argument("phone")
-@click.option("--timeout", default=120, show_default=True, help="Seconds to wait for QR scan.")
-def connect(phone: str, timeout: int):
-    """Authenticate PHONE via QR code (opens a visible browser)."""
+@click.argument("session", default="default")
+def connect(session: str):
+    """Start Chrome daemon and authenticate via QR.
+
+    Opens real Chrome (zero automation signals) with a CDP debug port so
+    subsequent commands can connect without restarting the browser.
+    Chrome MUST stay open after the QR scan — do not close it.
+
+    SESSION is any name you choose (default: 'default').
+    """
+    if not REAL_CHROME.exists():
+        click.echo(f"Chrome not found: {REAL_CHROME}", err=True)
+        sys.exit(1)
+
+    profile = _profile(session)
+    profile.mkdir(parents=True, exist_ok=True)
+
+    # Clear crash recovery state
+    for crash_file in ("Last Session", "Last Tabs", "Last Browser State"):
+        (profile / "Default" / crash_file).unlink(missing_ok=True)
+
+    # Kill any existing daemon using our CDP port
+    result = subprocess.run(
+        ["lsof", "-ti", f"tcp:{CDP_PORT}", "-sTCP:LISTEN"],
+        capture_output=True, text=True,
+    )
+    for pid in result.stdout.strip().split("\n"):
+        if pid.strip():
+            subprocess.run(["kill", "-TERM", pid.strip()], capture_output=True)
+    (profile / "SingletonLock").unlink(missing_ok=True)
+
+    proc = subprocess.Popen([
+        str(REAL_CHROME),
+        f"--user-data-dir={profile}",
+        f"--remote-debugging-port={CDP_PORT}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-session-crashed-bubble",
+        "--restore-last-session=false",
+        "https://web.whatsapp.com",
+    ])
+
+    # Save daemon PID so other commands can find it
+    (profile / PID_FILE).write_text(str(proc.pid))
+
+    click.echo(f"Session '{session}' → {profile}")
+    click.echo(f"Chrome abierto (PID {proc.pid}, CDP :{CDP_PORT}).")
+    click.echo()
+    click.echo("1. Escaneá el QR en WhatsApp Web")
+    click.echo("2. Esperá que carguen tus chats")
+    click.echo("3. Dejá Chrome abierto — NO lo cierres")
+    click.echo()
+    click.echo("Presioná Enter aquí cuando tus chats estén visibles.")
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+    if proc.poll() is not None:
+        click.echo("Error: Chrome se cerró antes de que confirmaras. Intentá de nuevo.", err=True)
+        (profile / PID_FILE).unlink(missing_ok=True)
+        sys.exit(1)
+
+    click.echo(f"Daemon activo. Usá 'wavi full-sync {session} <contacto>' para capturar mensajes.")
+    click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
+
+
+# ── stop ──────────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.argument("session", default="default")
+def stop(session: str):
+    """Gracefully shut down the Chrome daemon for SESSION.
+
+    Navigates to about:blank first so WhatsApp can flush its state,
+    then sends SIGTERM.  Never use kill -9 on a WA session directly.
+    """
     from wavi.session import WASession
 
-    profile = _profile(phone)
-    click.echo(f"Profile: {profile}")
+    profile = _profile(session)
+    pid_file = profile / PID_FILE
+    if not pid_file.exists():
+        click.echo(f"No daemon PID file found for session '{session}'.", err=True)
+        sys.exit(1)
 
     async def _run():
-        session = WASession(profile, headless=False)
-        status = await session.connect()
-        if status == "restored":
-            click.echo("Session already active — no QR needed.")
-            await session.close()
-            return
-        click.echo("Waiting for QR scan...")
-        ok = await session.wait_for_auth(timeout_s=timeout)
-        if ok:
-            click.echo("Authenticated successfully.")
-        else:
-            click.echo("Timeout — QR not scanned in time.", err=True)
-            sys.exit(1)
-        await session.close()
+        s = WASession(profile)
+        try:
+            await s.connect()
+        except Exception as e:
+            click.echo(f"Could not connect to daemon: {e}", err=True)
+        await s.stop_daemon()
+        click.echo("Daemon stopped cleanly.")
 
     asyncio.run(_run())
 
@@ -64,52 +145,60 @@ def connect(phone: str, timeout: int):
 # ── status ────────────────────────────────────────────────────────────────────
 
 @main.command()
-@click.argument("phone")
-def status(phone: str):
-    """Check if PHONE session is still valid (no browser window)."""
-    from wavi.session import WASession
+@click.argument("session", default="default")
+def status(session: str):
+    """Check if SESSION daemon is alive and authenticated."""
+    from wavi.session import WASession, _is_process_alive
 
-    profile = _profile(phone)
+    profile = _profile(session)
     if not profile.exists():
         click.echo(f"No profile found at {profile}", err=True)
         sys.exit(1)
 
+    s = WASession(profile)
+
+    # Quick check: is the daemon process alive?
+    pid = s._load_pid()
+    if pid and _is_process_alive(pid):
+        click.echo(f"daemon=running pid={pid}")
+    else:
+        click.echo("daemon=stopped")
+
     async def _run():
-        session = WASession(profile, headless=True)
-        result = await session.connect()
-        await session.close()
-        click.echo(result)
+        result = await s.connect()
+        await s.close()
+        click.echo(f"session={result}")
         if result != "restored":
             sys.exit(1)
 
     asyncio.run(_run())
 
 
-# ── run ───────────────────────────────────────────────────────────────────────
+# ── full-sync ─────────────────────────────────────────────────────────────────
 
-@main.command()
-@click.argument("phone")
+@main.command("full-sync")
+@click.argument("session", default="default")
 @click.argument("contact")
 @click.option("--assets", default=None, help="Directory to save screenshots and audio.")
-@click.option("--headless/--no-headless", default=True, show_default=True)
+@click.option("--headless/--no-headless", default=True, show_default=True,
+              help="Headless fallback (ignored when daemon is running headful).")
 @click.option("--json-out", is_flag=True, help="Output results as JSON.")
-def run(phone: str, contact: str, assets: str | None, headless: bool, json_out: bool):
-    """Open CONTACT's chat for PHONE and capture messages + audio."""
+def full_sync(session: str, contact: str, assets: str | None, headless: bool, json_out: bool):
+    """Capture messages + audio from CONTACT's chat (full pipeline)."""
     from wavi.runner import run_once
 
     assets_dir = Path(assets) if assets else None
 
-    async def _run():
-        result = await run_once(
-            profile_dir=_profile(phone),
+    async def _go():
+        return await run_once(
+            profile_dir=_profile(session),
             contact=contact,
             assets_dir=assets_dir,
             headless=headless,
         )
-        return result
 
     try:
-        result = asyncio.run(_run())
+        result = asyncio.run(_go())
     except RuntimeError as e:
         click.echo(str(e), err=True)
         sys.exit(1)

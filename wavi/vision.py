@@ -280,4 +280,57 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None) -> list[Bubbl
         out = assets / (screenshot_path.stem + "_bubbles.json")
         out.write_text(json.dumps([b.as_dict() for b in results], indent=2, ensure_ascii=False))
 
+        _save_debug_image(img, results, assets / (screenshot_path.stem + "_debug.png"))
+
     return results
+
+
+def _save_debug_image(
+    img: Image.Image,
+    bubbles: list[Bubble],
+    out_path: Path,
+    play_positions: dict[int, tuple[int, int]] | None = None,
+) -> None:
+    """
+    Draw bounding boxes on all bubbles + a click cross on audio/file bubbles.
+
+    play_positions: maps bubble.id → (crop_x, crop_y) of the actual DOM play button.
+                    When None, the cross is drawn at the estimated triangle position
+                    (left edge of the bubble, vertically centred) — accurate enough
+                    for visual inspection without a live browser.
+    Green = me, blue = other. Red cross = where wavi clicks to play/open.
+    """
+    from PIL import ImageDraw
+
+    debug = img.copy().convert("RGBA")
+    overlay = Image.new("RGBA", debug.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    FILL   = {"me": (72, 199, 116, 55),  "other": (66, 153, 225, 55)}
+    BORDER = {"me": (34, 139, 34, 230),  "other": (30, 100, 200, 230)}
+    CROSS_COLOR = (220, 40, 40, 230)
+    ARM = 8
+
+    for b in bubbles:
+        x, y, w, h = b.bbox["x"], b.bbox["y"], b.bbox["w"], b.bbox["h"]
+        fill   = FILL.get(b.sender,   (180, 180, 180, 55))
+        border = BORDER.get(b.sender, (100, 100, 100, 230))
+
+        draw.rectangle([x, y, x + w, y + h], fill=fill, outline=border, width=2)
+
+        label = f"#{b.id} {b.sender} {b.msg_type}"
+        tag_w = len(label) * 6 + 6
+        draw.rectangle([x, max(0, y - 17), x + tag_w, y], fill=border)
+        draw.text((x + 3, max(0, y - 16)), label, fill=(255, 255, 255, 255))
+
+        if b.msg_type in ("audio", "file"):
+            if play_positions and b.id in play_positions:
+                cx, cy = play_positions[b.id]        # exact DOM position
+            else:
+                cx = x + 22                          # play triangle is near left edge
+                cy = y + h // 2
+            draw.line([cx - ARM, cy, cx + ARM, cy], fill=CROSS_COLOR, width=3)
+            draw.line([cx, cy - ARM, cx, cy + ARM], fill=CROSS_COLOR, width=3)
+
+    combined = Image.alpha_composite(debug, overlay).convert("RGB")
+    combined.save(out_path)

@@ -9,6 +9,7 @@ Correr:
 """
 import pytest
 import numpy as np
+from pathlib import Path
 from PIL import Image
 
 from wavi.vision import (
@@ -17,6 +18,8 @@ from wavi.vision import (
     _extract_timestamp,
     _classify_x,
     _is_noise,
+    _save_debug_image,
+    Bubble,
 )
 
 
@@ -151,3 +154,93 @@ class TestIsNoise:
 
     def test_cyrillic_filtered(self):
         assert _is_noise("Привет") is True
+
+
+# ── _save_debug_image ─────────────────────────────────────────────────────────
+
+def _make_bubble(id: int, sender: str, msg_type: str = "text", bbox: dict | None = None) -> Bubble:
+    return Bubble(
+        id=id, sender=sender, msg_type=msg_type,
+        timestamp="7:00 p. m.", text="hola",
+        bbox=bbox or {"x": 10, "y": 10 + id * 50, "w": 200, "h": 40},
+    )
+
+
+class TestSaveDebugImage:
+    def test_creates_file(self, tmp_path):
+        img = Image.new("RGB", (400, 300), color=(243, 238, 231))
+        out = tmp_path / "debug.png"
+        bubbles = [_make_bubble(1, "me"), _make_bubble(2, "other")]
+        _save_debug_image(img, bubbles, out)
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+    def test_output_is_valid_image(self, tmp_path):
+        img = Image.new("RGB", (400, 300), color=(243, 238, 231))
+        out = tmp_path / "debug.png"
+        _save_debug_image(img, [_make_bubble(1, "me")], out)
+        result = Image.open(out)
+        assert result.size == (400, 300)
+        assert result.mode == "RGB"
+
+    def test_empty_bubbles(self, tmp_path):
+        img = Image.new("RGB", (400, 300), color=(243, 238, 231))
+        out = tmp_path / "debug.png"
+        _save_debug_image(img, [], out)
+        assert out.exists()
+
+    def test_box_drawn_changes_pixels(self, tmp_path):
+        img = Image.new("RGB", (400, 300), color=(243, 238, 231))
+        out = tmp_path / "debug.png"
+        bubble = _make_bubble(1, "me", bbox={"x": 50, "y": 50, "w": 200, "h": 80})
+        _save_debug_image(img, [bubble], out)
+        result = Image.open(out)
+        region = result.crop((50, 50, 250, 130))
+        original = img.crop((50, 50, 250, 130))
+        assert list(region.get_flattened_data()) != list(original.get_flattened_data())
+
+    def test_cross_drawn_only_on_audio_and_file(self, tmp_path):
+        """Cross appears at estimated play position on audio/file; absent on text/media."""
+        bg = (243, 238, 231)
+        img = Image.new("RGB", (400, 400), color=bg)
+        audio_bbox = {"x": 10, "y": 50,  "w": 150, "h": 50}
+        file_bbox  = {"x": 10, "y": 120, "w": 150, "h": 50}
+        text_bbox  = {"x": 10, "y": 190, "w": 150, "h": 50}
+        bubbles = [
+            _make_bubble(1, "me",    "audio", audio_bbox),
+            _make_bubble(2, "other", "file",  file_bbox),
+            _make_bubble(3, "me",    "text",  text_bbox),
+        ]
+        out = tmp_path / "debug.png"
+        _save_debug_image(img, bubbles, out)
+        result = Image.open(out).convert("RGB")
+
+        def is_red(px):
+            r, g, b = px
+            return r > 150 and g < 100 and b < 100
+
+        # Estimated cross position: x + 22, y_center
+        assert is_red(result.getpixel((audio_bbox["x"] + 22, audio_bbox["y"] + audio_bbox["h"] // 2))), "audio cross missing"
+        assert is_red(result.getpixel((file_bbox["x"] + 22,  file_bbox["y"]  + file_bbox["h"]  // 2))), "file cross missing"
+        # text: no red cross at its estimated position
+        assert not is_red(result.getpixel((text_bbox["x"] + 22, text_bbox["y"] + text_bbox["h"] // 2))), "text must not have cross"
+
+    def test_cross_uses_exact_play_position_when_provided(self, tmp_path):
+        """When play_positions are given, the cross is drawn at those coords, not estimated."""
+        bg = (243, 238, 231)
+        img = Image.new("RGB", (400, 200), color=bg)
+        bbox = {"x": 10, "y": 50, "w": 200, "h": 60}
+        bubble = _make_bubble(1, "me", "audio", bbox)
+        exact_cx, exact_cy = 45, 80   # exact play button position (not at x+22)
+
+        out = tmp_path / "debug.png"
+        _save_debug_image(img, [bubble], out, play_positions={1: (exact_cx, exact_cy)})
+        result = Image.open(out).convert("RGB")
+
+        def is_red(px):
+            r, g, b = px
+            return r > 150 and g < 100 and b < 100
+
+        assert is_red(result.getpixel((exact_cx, exact_cy))), "cross must be at exact position"
+        estimated_x = bbox["x"] + 22
+        assert not is_red(result.getpixel((estimated_x, exact_cy))), "cross must NOT be at estimated position"
