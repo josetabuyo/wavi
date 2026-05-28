@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wavi"
+version = "0.1.0"
+description = "WhatsApp automation via vision: screenshot → OCR → click"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40",
+    "pillow>=10.0",
+    "numpy>=1.24",
+    "click>=8.1",
+]
+
+[project.scripts]
+wavi = "wavi.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["wavi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

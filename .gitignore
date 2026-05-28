@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.DS_Store
+
+# Chrome profiles (contain WA session — never commit)
+data/sessions/*/
+data/sessions/
+
+# Generated assets
+assets/*.png
+assets/*.json
+assets/*.ogg
+assets/current.png
