@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -219,12 +220,12 @@ def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -
 
 # ── Main pipeline entry point ─────────────────────────────────────────────────
 
-def analyze(screenshot_path: Path, assets_dir: Path | None = None) -> list[Bubble]:
+def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: bool = False) -> list[Bubble]:
     """
     Full pipeline: screenshot → crop → OCR → classify bubbles.
 
     Returns list of Bubble objects sorted by id (1=newest, N=oldest).
-    If assets_dir is given, saves cropped.png and bubbles.json there.
+    If assets_dir is given, saves bubbles.json there (and cropped.png/debug.png if save_debug=True).
     """
     from wavi.element_detector import detect_bubbles
 
@@ -232,11 +233,12 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None) -> list[Bubbl
     assets.mkdir(parents=True, exist_ok=True)
 
     cropped_path, _ = crop_chat_panel(screenshot_path)
-    cropped_path = assets / cropped_path.name
-    # re-save to assets if different
-    if cropped_path != screenshot_path.parent / (screenshot_path.stem + "_cropped.png"):
-        import shutil
-        cropped_path = screenshot_path.parent / (screenshot_path.stem + "_cropped.png")
+
+    # Only save cropped.png to assets_dir if save_debug=True
+    if save_debug and assets_dir:
+        dest = assets / (screenshot_path.stem + "_cropped.png")
+        if cropped_path != dest:
+            shutil.copy2(cropped_path, dest)
 
     img = Image.open(cropped_path)
     img_w, img_h = img.size
@@ -280,7 +282,8 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None) -> list[Bubbl
         out = assets / (screenshot_path.stem + "_bubbles.json")
         out.write_text(json.dumps([b.as_dict() for b in results], indent=2, ensure_ascii=False))
 
-        _save_debug_image(img, results, assets / (screenshot_path.stem + "_debug.png"))
+        if save_debug:
+            _save_debug_image(img, results, assets / (screenshot_path.stem + "_debug.png"))
 
     return results
 

@@ -76,7 +76,7 @@ class WARunner:
 
     # ── Vision pipeline ───────────────────────────────────────────────────────
 
-    async def get_bubbles(self, assets_dir: Path | None = None) -> list[Bubble]:
+    async def get_bubbles(self, assets_dir: Path | None = None, save_debug: bool = False) -> list[Bubble]:
         """
         Take a screenshot, run the full vision pipeline, return classified bubbles.
         Bubbles are sorted id=1 (newest) → N (oldest).
@@ -89,7 +89,7 @@ class WARunner:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 shot_path = Path(f.name)
         shot_path.write_bytes(data)
-        return analyze(shot_path, assets_dir=assets_dir)
+        return analyze(shot_path, assets_dir=assets_dir, save_debug=save_debug)
 
     # ── DOM play-button lookup ────────────────────────────────────────────────
 
@@ -129,6 +129,7 @@ class WARunner:
         self,
         assets_dir: Path | None = None,
         wait_ms: int = 3000,
+        save_debug: bool = False,
     ) -> list[dict]:
         """
         For every audio bubble visible on screen:
@@ -141,7 +142,7 @@ class WARunner:
         Returns list of dicts:
           {"bubble": Bubble, "blob_url": str, "data": bytes, "path": Path|None}
         """
-        bubbles = await self.get_bubbles(assets_dir=assets_dir)
+        bubbles = await self.get_bubbles(assets_dir=assets_dir, save_debug=save_debug)
         audio_bubbles = [b for b in bubbles if b.msg_type == "audio"]
 
         if not audio_bubbles:
@@ -227,6 +228,7 @@ async def run_once(
     """
     One-shot: connect → open chat → get bubbles + capture audios → close.
     Returns {"bubbles": [...], "audios": [...]}.
+    Saves screenshot.png, bubbles.json + debug images by default.
     """
     runner = WARunner(profile_dir, headless=headless)
     status = await runner.connect()
@@ -240,8 +242,8 @@ async def run_once(
         raise RuntimeError("Connection timed out.")
 
     await runner.open_chat(contact)
-    bubbles = await runner.get_bubbles(assets_dir=assets_dir)
-    audios  = await runner.capture_audio_bubbles(assets_dir=assets_dir)
+    bubbles = await runner.get_bubbles(assets_dir=assets_dir, save_debug=True)
+    audios  = await runner.capture_audio_bubbles(assets_dir=assets_dir, save_debug=True)
     await runner.close()
 
     return {"bubbles": bubbles, "audios": audios}

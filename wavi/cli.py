@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -62,9 +63,16 @@ def connect(session: str):
     profile = _profile(session)
     profile.mkdir(parents=True, exist_ok=True)
 
-    # Clear crash recovery state
-    for crash_file in ("Last Session", "Last Tabs", "Last Browser State"):
-        (profile / "Default" / crash_file).unlink(missing_ok=True)
+    # Clear crash recovery state + session restoration files
+    default_dir = profile / "Default"
+    for crash_file in ("Last Session", "Last Tabs", "Last Browser State", "Current Session", "Current Tabs"):
+        (default_dir / crash_file).unlink(missing_ok=True)
+
+    # Clear session data directories that may contain restored tabs
+    for sess_dir in ("Sessions", "SessionStorage"):
+        sess_path = default_dir / sess_dir
+        if sess_path.exists():
+            shutil.rmtree(sess_path, ignore_errors=True)
 
     # Kill any existing daemon using our CDP port
     result = subprocess.run(
@@ -77,6 +85,7 @@ def connect(session: str):
     (profile / "SingletonLock").unlink(missing_ok=True)
 
     proc = subprocess.Popen([
+        "arch", "-arm64",  # Force ARM64 native on Apple Silicon (no Rosetta)
         str(REAL_CHROME),
         f"--user-data-dir={profile}",
         f"--remote-debugging-port={CDP_PORT}",
@@ -84,6 +93,13 @@ def connect(session: str):
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
         "--restore-last-session=false",
+        "--disable-extensions",
+        "--disable-default-apps",
+        "--disable-component-update",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-features=CalculateNativeWinOcclusion",
         "https://web.whatsapp.com",
     ])
 

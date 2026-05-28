@@ -63,11 +63,6 @@ _BLOB_INIT_SCRIPT = """
         return url;
     };
 
-    const origSetAttr = Element.prototype.setAttribute;
-    Element.prototype.setAttribute = function(name, value) {
-        if (this instanceof HTMLMediaElement && name === 'src') _capture(value);
-        return origSetAttr.call(this, name, value);
-    };
 })();
 """
 
@@ -189,7 +184,7 @@ class WASession:
             args += ["--headless=new", "--window-size=1280,900"]
 
         self._chrome_proc = subprocess.Popen(
-            args + [WA_URL],
+            ["arch", "-arm64"] + args + [WA_URL],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -220,6 +215,10 @@ class WASession:
         await self._context.add_init_script(_BLOB_INIT_SCRIPT)
 
         pages = self._context.pages
+        # Close all pages except the first one (prevent restored tabs)
+        for page in pages[1:]:
+            await page.close()
+
         self._page = pages[0] if pages else await self._context.new_page()
         await self._page.bring_to_front()
 
@@ -294,10 +293,13 @@ class WASession:
     # ── Navigation ────────────────────────────────────────────────────────────
 
     async def navigate_to_contact(self, contact: str) -> None:
-        await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
-        await self._page.wait_for_timeout(600)
-        await self._page.keyboard.press("Control+a")
-        await self._page.keyboard.type(contact, delay=40)
+        # Find and clear the search input robustly using Playwright's locator API
+        search_input = self._page.locator('input[role="textbox"]').first
+        await search_input.click()
+        await self._page.wait_for_timeout(200)
+        await search_input.clear()
+        await self._page.wait_for_timeout(200)
+        await search_input.type(contact, delay=40)
         await self._page.wait_for_timeout(1500)
 
         result_sel = f"[title='{contact}']"
