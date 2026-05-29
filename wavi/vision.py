@@ -190,6 +190,11 @@ def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -
         b for b in inner
         if b not in standalone and RE_TIME_END.search(b["text"].strip())
     ]
+    # Duraciones de audio (m:ss) también son puntos de corte (separan audios de texto)
+    audio_duration = [
+        b for b in inner
+        if b not in standalone and b not in embedded and RE_AUDIO_DUR.search(b["text"].strip())
+    ]
 
     def has_same_standalone(emb: dict) -> bool:
         emb_core = _core_time(emb["text"])
@@ -199,7 +204,7 @@ def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -
             for s in standalone
         )
 
-    cut_blocks = standalone + [e for e in embedded if not has_same_standalone(e)]
+    cut_blocks = standalone + [e for e in embedded if not has_same_standalone(e)] + audio_duration
     if len(cut_blocks) <= 1:
         return [bubble]
 

@@ -21,6 +21,7 @@ from wavi.vision import (
     _save_debug_image,
     Bubble,
 )
+from wavi.element_detector import detect_bubbles
 
 
 def _blocks(*texts):
@@ -244,3 +245,104 @@ class TestSaveDebugImage:
         assert is_red(result.getpixel((exact_cx, exact_cy))), "cross must be at exact position"
         estimated_x = bbox["x"] + 22
         assert not is_red(result.getpixel((estimated_x, exact_cy))), "cross must NOT be at estimated position"
+
+
+# ── detect_bubbles with embedded content ───────────────────────────────────────
+
+class TestEmbeddedImageFooters:
+    """Test bubbles with timestamps in footers below embedded images."""
+
+    def test_footer_below_image_is_merged(self):
+        """
+        Simulates a message with embedded image:
+        - Green bubble body (y=10, h=60)
+        - Image zone (y=70, h=100, non-uniform colors)
+        - Green footer with timestamp (y=170, h=28)
+
+        Should merge footer into bubble, resulting in single bubble with h=188.
+        """
+        w, h = 500, 300
+        arr = np.ones((h, w, 3), dtype=np.uint8)
+        # Beige background
+        arr[:, :] = [243, 238, 231]
+
+        # Green bubble body (y=10-70, x=300-480)
+        GREEN = [217, 253, 211]
+        arr[10:70, 300:480] = GREEN
+
+        # Image zone (y=70-170) with varied colors (not green/white)
+        # Simulate random image colors
+        np.random.seed(42)
+        arr[70:170, 300:480] = np.random.randint(100, 200, (100, 180, 3), dtype=np.uint8)
+
+        # Green footer (y=170-198, x=300-480, h=28)
+        arr[170:198, 300:480] = GREEN
+
+        img = Image.fromarray(arr, mode="RGB")
+        bubbles = detect_bubbles(img, footer_px=70)
+
+        # Should have 1 bubble (footer merged with body)
+        assert len(bubbles) == 1, f"Expected 1 bubble, got {len(bubbles)}"
+        bubble = bubbles[0]
+        assert bubble["type"] == "me"
+        assert bubble["x"] == 300
+        assert bubble["y"] == 10
+        # Height should include body + image + footer = 188
+        assert bubble["h"] >= 160, f"Expected h >= 160 (to include footer), got {bubble['h']}"
+
+    def test_white_footer_below_image_is_merged(self):
+        """Similar to above but with white bubble (received message)."""
+        w, h = 500, 300
+        arr = np.ones((h, w, 3), dtype=np.uint8)
+        arr[:, :] = [243, 238, 231]  # beige background
+
+        # White bubble body (y=10-70, x=20-200)
+        WHITE = [255, 255, 255]
+        arr[10:70, 20:200] = WHITE
+
+        # Image zone (y=70-170) with random colors
+        np.random.seed(42)
+        arr[70:170, 20:200] = np.random.randint(100, 200, (100, 180, 3), dtype=np.uint8)
+
+        # White footer (y=170-198, x=20-200, h=28)
+        arr[170:198, 20:200] = WHITE
+
+        img = Image.fromarray(arr, mode="RGB")
+        bubbles = detect_bubbles(img, footer_px=70)
+
+        # Should have 1 bubble (footer merged with body)
+        assert len(bubbles) == 1, f"Expected 1 bubble, got {len(bubbles)}"
+        bubble = bubbles[0]
+        assert bubble["type"] == "other"
+        assert bubble["x"] == 20
+        assert bubble["y"] == 10
+        assert bubble["h"] >= 160, f"Expected h >= 160, got {bubble['h']}"
+
+    def test_two_bubbles_separate_images(self):
+        """Two bubbles with separate images should NOT be merged."""
+        w, h = 500, 400
+        arr = np.ones((h, w, 3), dtype=np.uint8)
+        arr[:, :] = [243, 238, 231]
+
+        GREEN = [217, 253, 211]
+        WHITE = [255, 255, 255]
+
+        # Green bubble 1 with footer (y=10-70, then image 70-170, then footer 170-198)
+        arr[10:70, 300:480] = GREEN
+        np.random.seed(42)
+        arr[70:170, 300:480] = np.random.randint(100, 200, (100, 180, 3), dtype=np.uint8)
+        arr[170:198, 300:480] = GREEN
+
+        # White bubble 2 separate (y=220-280, then image 280-360, then footer 360-388)
+        arr[220:280, 20:200] = WHITE
+        np.random.seed(43)
+        arr[280:360, 20:200] = np.random.randint(100, 200, (80, 180, 3), dtype=np.uint8)
+        arr[360:388, 20:200] = WHITE
+
+        img = Image.fromarray(arr, mode="RGB")
+        bubbles = detect_bubbles(img, footer_px=70)
+
+        # Should have 2 bubbles (no merge across types)
+        assert len(bubbles) == 2, f"Expected 2 bubbles, got {len(bubbles)}"
+        assert bubbles[0]["type"] == "me"     # sorted by y, green comes first (y=10)
+        assert bubbles[1]["type"] == "other"  # white comes second (y=220)

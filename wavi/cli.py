@@ -260,14 +260,15 @@ def full_sync(session: str, contact: str, assets: str | None, headless: bool, js
 @click.argument("screenshot", type=click.Path(exists=True))
 @click.option("--assets", default=None, help="Directory to save cropped image and bubbles.json.")
 @click.option("--json-out", is_flag=True, help="Output results as JSON.")
-def bubbles(screenshot: str, assets: str | None, json_out: bool):
+@click.option("--debug/--no-debug", default=True, show_default=True, help="Save debug visualization image.")
+def bubbles(screenshot: str, assets: str | None, json_out: bool, debug: bool):
     """Run vision pipeline on a local SCREENSHOT file (no browser needed)."""
     from wavi.vision import analyze
 
     shot = Path(screenshot)
     assets_dir = Path(assets) if assets else shot.parent
 
-    result = analyze(shot, assets_dir=assets_dir)
+    result = analyze(shot, assets_dir=assets_dir, save_debug=debug)
 
     if json_out:
         click.echo(json.dumps([b.as_dict() for b in result], indent=2, ensure_ascii=False))

@@ -49,14 +49,15 @@ def _build_masks(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 # ─── Morfología para rellenar gaps internos de los bubbles ───────────────────
 
-def _close_mask(mask: np.ndarray, gap_px: int = 12) -> np.ndarray:
+def _close_mask(mask: np.ndarray, gap_px: int = 7) -> np.ndarray:
     """
     Closing morfológico: dilata → erosiona.
     Rellena gaps pequeños dentro del mismo bubble (ej: texto oscuro sobre fondo claro).
     gap_px controla cuántos pixels de gap se cierran verticalmente.
+    Reducido a 7 para evitar puentear gaps inter-mensaje (~8-12px) que fusionan bubbles distintos.
     """
     struct_v = ndimage.generate_binary_structure(2, 1)
-    # Kernel vertical para cerrar gaps entre líneas de texto dentro del bubble
+    # Kernel vertical para cerrar gaps entre líneas de texto dentro del bubble (no inter-mensaje)
     kernel = np.ones((gap_px, 1), dtype=np.uint8)
     closed = ndimage.binary_closing(mask, structure=kernel).astype(np.uint8)
     return closed
@@ -91,7 +92,8 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
 
     for mask_raw, bubble_type in [(mask_me_raw, "me"), (mask_other_raw, "other")]:
         # Cerrar gaps internos del bubble (texto oscuro sobre fondo claro)
-        mask_closed = _close_mask(mask_raw, gap_px=14)
+        # gap_px=7 evita fusionar bubbles distintos del mismo emisor
+        mask_closed = _close_mask(mask_raw, gap_px=7)
 
         # Connected components
         labeled, n_labels = ndimage.label(mask_closed)
@@ -111,8 +113,11 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
             bh = y1 - y0
             bw = x1 - x0
 
-            # Filtrar componentes muy pequeñas (timestamps sueltos, íconos, artifacts)
-            if bh < 30 or bw < 50:
+            # Permitir footers pequeños coloreados (contienen timestamp bajo imágenes).
+            # Footers son muy finos (bh ~28px) pero anchos (bw >= bubble width).
+            # Otros elementos pequeños (timestamps sueltos, íconos) se filtran por densidad.
+            is_thin_footer = bh < 30 and bw >= 50
+            if (bh < 30 or bw < 50) and not is_thin_footer:
                 continue
 
             # Filtrar separadores de fecha de WA ("18/5/2026" en píldora centrada).
@@ -149,9 +154,11 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
     return results
 
 
-def _merge_overlapping(bubbles: list[dict], overlap_gap: int = 8) -> list[dict]:
+def _merge_overlapping(bubbles: list[dict]) -> list[dict]:
     """
-    Fusiona bubbles del mismo tipo que se solapan o tienen gap muy pequeño en Y.
+    Fusiona bubbles del mismo tipo que se solapan o tienen gap pequeño en Y.
+    - Gap normal (8px): para text/audio/file
+    - Gap grande (120px): solo si UNO es un footer fino (bh < 30)
     Recibe la lista ya ordenada por y.
     """
     if not bubbles:
@@ -162,9 +169,22 @@ def _merge_overlapping(bubbles: list[dict], overlap_gap: int = 8) -> list[dict]:
         last = merged[-1]
         last_y1 = last["y"] + last["h"]
         b_y0 = b["y"]
+        gap = b_y0 - last_y1
 
-        # Si mismo tipo y el gap vertical es <= overlap_gap px → fusionar
-        if b["type"] == last["type"] and (b_y0 - last_y1) <= overlap_gap:
+        # Determinar si alguno es un footer fino (muy pequeño en altura)
+        last_is_footer = last["h"] < 30
+        b_is_footer = b["h"] < 30
+
+        # Elegir overlap_gap basado en los tipos
+        if last_is_footer or b_is_footer:
+            # Si alguno es footer fino, permitir gap hasta 120px
+            overlap_gap = 120
+        else:
+            # Si ambos son normales, usar gap pequeño (original)
+            overlap_gap = 8
+
+        # Fusionar si mismo tipo y gap dentro del límite
+        if b["type"] == last["type"] and gap <= overlap_gap:
             # Expandir el bounding box del último para incluir b
             new_x0 = min(last["x"], b["x"])
             new_y0 = min(last["y"], b["y"])

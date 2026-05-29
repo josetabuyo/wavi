@@ -163,10 +163,15 @@ class WASession:
                     f"http://localhost:{CDP_PORT}", timeout=5_000
                 )
                 return await self._setup_page()
-            except Exception:
+            except Exception as e:
+                import sys
+                print(f"⚠️  Daemon vivo (PID {pid}) pero CDP no responde: {e}", file=sys.stderr)
                 pass  # daemon alive but CDP not responding — fall through
 
         # No daemon: start headless Chrome (status/run without a prior connect)
+        import sys
+        print(f"⚠️  No daemon detectado — abriendo Chrome en fallback headless...", file=sys.stderr)
+
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         _kill_port(CDP_PORT)
         (self.profile_dir / "SingletonLock").unlink(missing_ok=True)
@@ -180,8 +185,9 @@ class WASession:
             "--disable-blink-features=AutomationControlled",
             f"--user-agent={_UA}",
         ]
-        if self.headless:
-            args += ["--headless=new", "--window-size=1280,900"]
+        # Forzar headless=true SIEMPRE en fallback para evitar popups de permisos
+        # Viewport máximo posible + zoom bajo para capturar TODOS los mensajes en una imagen
+        args += ["--headless=new", "--window-size=1920,10800"]
 
         self._chrome_proc = subprocess.Popen(
             ["arch", "-arm64"] + args + [WA_URL],
@@ -209,6 +215,9 @@ class WASession:
         contexts = self._browser.contexts
         self._context = contexts[0] if contexts else await self._browser.new_context()
 
+        # Rechazar permisos de micrófono, cámara, notificaciones automáticamente
+        await self._context.grant_permissions([])
+
         await self._context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
@@ -226,7 +235,9 @@ class WASession:
             await self._page.goto(WA_URL, wait_until="domcontentloaded", timeout=30_000)
 
         if self.headless:
-            await self._page.set_viewport_size({"width": 1280, "height": 2400})
+            # Viewport MÁS GRANDE POSIBLE + zoom bajo para capturar TODOS los mensajes
+            await self._page.set_viewport_size({"width": 1920, "height": 10800})
+            await self._page.evaluate("() => { document.body.style.zoom = '0.5'; }")
 
         AUTHED = "[data-testid='chat-list'], #side, input[role='textbox']"
         QR     = "[data-testid='qrcode'], div[data-ref], canvas"
@@ -321,6 +332,9 @@ class WASession:
         except Exception:
             pass
         await self._page.wait_for_timeout(1500)
+
+        # WhatsApp carga los últimos mensajes por defecto
+        # No hacemos scroll automático - confiamos en que cargue correctamente
 
     # ── Screenshot ────────────────────────────────────────────────────────────
 
