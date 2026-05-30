@@ -198,7 +198,7 @@ def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -
 
     def has_same_standalone(emb: dict) -> bool:
         emb_core = _core_time(emb["text"])
-        emb_bot  = (emb["y"] + emb.get("h", 0.008)) * img_h
+        emb_bot  = (emb["y"] + emb.get("h", 0.015)) * img_h
         return any(
             0 < s["y"] * img_h - emb_bot <= 80 and _core_time(s["text"]) == emb_core
             for s in standalone
@@ -210,9 +210,9 @@ def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -
 
     subs, y_start = [], bubble["y"]
     for b in sorted(cut_blocks, key=lambda b: b["y"]):
-        y_bot = min(int((b["y"] + b.get("h", 0.008)) * img_h) + 6,
+        y_bot = min(int((b["y"] + b.get("h", 0.015)) * img_h) + 6,
                     bubble["y"] + bubble["h"])
-        if y_bot - y_start > 10:
+        if y_bot - y_start >= 12:
             subs.append({"x": bubble["x"], "y": y_start,
                          "w": bubble["w"], "h": y_bot - y_start,
                          "type": bubble["type"]})
@@ -264,7 +264,12 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
         crop = img.crop((x0, y0, x1, y1))
         cw, ch = crop.size
 
-        scale = 5.0 if ch < 40 else 3.0
+        if ch < 12:
+            scale = 2.0
+        elif ch < 40:
+            scale = 5.0
+        else:
+            scale = 3.0
         crop_up = crop.resize((int(cw * scale), int(ch * scale)), Image.LANCZOS)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp = Path(f.name)

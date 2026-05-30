@@ -24,6 +24,8 @@ from scipy import ndimage
 
 # ─── Umbrales de color ───────────────────────────────────────────────────────
 
+MIN_BUBBLE_HEIGHT = 12  # Piso mínimo: evita detectar artefactos, timestamps, emojis sueltos
+
 def _build_masks(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Construye máscaras booleanas para pixels de bubble verde y blanco."""
     R = arr[:, :, 0].astype(np.int16)
@@ -116,7 +118,7 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
             # Permitir footers pequeños coloreados (contienen timestamp bajo imágenes).
             # Footers son muy finos (bh ~28px) pero anchos (bw >= bubble width).
             # Otros elementos pequeños (timestamps sueltos, íconos) se filtran por densidad.
-            is_thin_footer = bh < 30 and bw >= 50
+            is_thin_footer = bh < 30 and bh >= MIN_BUBBLE_HEIGHT and bw >= 50
             if (bh < 30 or bw < 50) and not is_thin_footer:
                 continue
 
@@ -130,10 +132,13 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
                     continue  # es un separador de fecha, no un bubble real
 
             # Verificar que la región tiene suficiente densidad del color esperado
-            # (evita cajas muy grandes con pocos pixels de ese color)
+            # (evita cajas muy grandes con pocos pixels de ese color).
+            # Para burbujas pequeñas (< 50px), exigimos 15% densidad (vs 8% para grandes).
+            # Burbujas reales tienen ~50-70% densidad; esto filtra artefactos sin perder mensajes cortos.
             region_mask = mask_raw[y0:y1, x0:x1]
             density = region_mask.sum() / (bh * bw)
-            if density < 0.08:
+            min_density = 0.15 if bh < 50 else 0.08
+            if density < min_density:
                 continue
 
             results.append({
@@ -184,7 +189,9 @@ def _merge_overlapping(bubbles: list[dict]) -> list[dict]:
             overlap_gap = 8
 
         # Fusionar si mismo tipo y gap dentro del límite
-        if b["type"] == last["type"] and gap <= overlap_gap:
+        # Guard defensivo: evitar fusionar footers menores al mínimo (raramente dispara, ya fueron filtrados)
+        feet_too_small = (last_is_footer and last["h"] < MIN_BUBBLE_HEIGHT) or (b_is_footer and b["h"] < MIN_BUBBLE_HEIGHT)
+        if b["type"] == last["type"] and gap <= overlap_gap and not feet_too_small:
             # Expandir el bounding box del último para incluir b
             new_x0 = min(last["x"], b["x"])
             new_y0 = min(last["y"], b["y"])
