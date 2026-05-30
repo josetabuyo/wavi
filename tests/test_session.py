@@ -64,22 +64,9 @@ class TestNavigateToContact:
         session._page.locator.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_click_first_result_by_coordinate(self, session):
+    async def test_opens_result_with_keyboard(self, session):
         await session.navigate_to_contact("Gregorio")
-        # Debe haber un click en FIRST_RESULT_X / FIRST_RESULT_Y
-        calls = session._page.mouse.click.call_args_list
-        result_click = any(
-            c == call(WASession.FIRST_RESULT_X, WASession.FIRST_RESULT_Y)
-            for c in calls
-        )
-        assert result_click, f"No se encontró click en coordenadas del primer resultado. Calls: {calls}"
-
-    @pytest.mark.asyncio
-    async def test_fallback_keyboard_when_selector_not_found(self):
-        s = _make_session()
-        s._page = _make_page(selector_found=False)
-        await s.navigate_to_contact("ContactoInexistente")
-        calls = [c.args[0] for c in s._page.keyboard.press.call_args_list]
+        calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
         assert "ArrowDown" in calls
         assert "Enter" in calls
 
