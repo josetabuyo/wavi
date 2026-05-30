@@ -122,6 +122,15 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
             if (bh < 30 or bw < 50) and not is_thin_footer:
                 continue
 
+            # Filtrar elementos de UI: header y input bar de WA.
+            # Doble criterio:
+            #   1. Ancho relativo: UI bars son full-width (>85% del panel).
+            #   2. Aspect ratio: UI bars son cintas planas (w/h > 12);
+            #      bubbles reales tienen proporciones más cuadradas (w/h < 10 típico).
+            # El criterio de aspect ratio es robusto ante cambios de resolución de ventana.
+            if bw > 0.85 * img_w or bw / bh > 12:
+                continue
+
             # Filtrar separadores de fecha de WA ("18/5/2026" en píldora centrada).
             # Son near-white, muy bajos (h < 38px) y centrados horizontalmente.
             # Los mensajes reales de una línea tienen h ~34px pero están alineados
