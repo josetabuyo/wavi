@@ -26,6 +26,8 @@ def _make_page(selector_found: bool = True) -> MagicMock:
     page = MagicMock()
     page.mouse = MagicMock()
     page.mouse.click = AsyncMock()
+    page.mouse.move = AsyncMock()
+    page.mouse.wheel = AsyncMock()
     page.keyboard = MagicMock()
     page.keyboard.press = AsyncMock()
     page.keyboard.type = AsyncMock()
@@ -74,6 +76,41 @@ class TestNavigateToContact:
         assert "ArrowDown" in calls, "Debe navegar al resultado con ArrowDown"
         assert "Enter" in calls, "Debe abrir el resultado con Enter"
         session._page.locator.assert_not_called()  # doble check: sin locator
+
+    @pytest.mark.asyncio
+    async def test_wheel_scroll_called_after_load(self, session):
+        """Después de cargar mensajes se envía wheel event para anclar al fondo."""
+        await session.navigate_to_contact("Gregorio")
+        session._page.mouse.wheel.assert_called_once_with(0, 999_999)
+
+    @pytest.mark.asyncio
+    async def test_wheel_target_is_in_chat_area(self, session):
+        """El mouse se mueve al área del chat (derecha del sidebar) antes del wheel."""
+        await session.navigate_to_contact("Gregorio")
+        move_call = session._page.mouse.move.call_args
+        chat_x, chat_y = move_call.args
+        assert chat_x > WASession.SIDEBAR_X, "El wheel debe apuntar al chat, no al sidebar"
+        assert chat_x <= WINDOW_W
+
+    @pytest.mark.asyncio
+    async def test_wheel_fires_after_selector_wait(self, session):
+        """El wheel ocurre después de wait_for_selector (no antes de que carguen mensajes)."""
+        order: list[str] = []
+        session._page.wait_for_selector = AsyncMock(
+            side_effect=lambda *a, **kw: order.append("selector")
+        )
+        session._page.mouse.wheel = AsyncMock(
+            side_effect=lambda *a, **kw: order.append("wheel")
+        )
+        await session.navigate_to_contact("Gregorio")
+        assert order.index("selector") < order.index("wheel")
+
+    @pytest.mark.asyncio
+    async def test_wheel_fires_after_selector_even_on_timeout(self, session):
+        """El wheel se ejecuta aunque wait_for_selector falle por timeout."""
+        session._page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
+        await session.navigate_to_contact("Gregorio")
+        session._page.mouse.wheel.assert_called_once_with(0, 999_999)
 
 
 # ── _setup_page: viewport before WA load ─────────────────────────────────────

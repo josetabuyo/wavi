@@ -347,6 +347,15 @@ class WASession:
             pass
         await self._page.wait_for_timeout(1500)
 
+        # WA prepends older messages above the anchor after loading, which shifts the
+        # scroll position up. Send a native wheel event (indistinguishable from a real
+        # user scrolling) to force the viewport back to the bottom.
+        chat_x = (self.SIDEBAR_X + WINDOW_W) // 2
+        chat_y = WINDOW_H // 2
+        await self._page.mouse.move(chat_x, chat_y)
+        await self._page.mouse.wheel(0, 999_999)
+        await self._page.wait_for_timeout(800)
+
     # ── Screenshot ────────────────────────────────────────────────────────────
 
     async def screenshot(self) -> bytes:
