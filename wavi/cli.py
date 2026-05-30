@@ -221,6 +221,9 @@ def full_sync(session: str, contact: str, assets: str | None, headless: bool, js
 
     assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_")
 
+    if assets_dir.exists():
+        shutil.rmtree(assets_dir)
+
     async def _go():
         return await run_once(
             profile_dir=_profile(session),
