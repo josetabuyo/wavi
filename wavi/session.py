@@ -321,15 +321,10 @@ class WASession:
         await self._page.keyboard.type(contact, delay=40)
         await self._page.wait_for_timeout(1500)
 
-        # Abrir primer resultado: coordenada fija o fallback por teclado
-        result_sel = f"[title='{contact}']"
-        try:
-            await self._page.wait_for_selector(result_sel, timeout=6_000)
-            await self._page.mouse.click(self.FIRST_RESULT_X, self.FIRST_RESULT_Y)
-        except Exception:
-            await self._page.keyboard.press("ArrowDown")
-            await self._page.wait_for_timeout(300)
-            await self._page.keyboard.press("Enter")
+        # Abrir primer resultado con teclado — más robusto que coordenadas o selectores
+        await self._page.keyboard.press("ArrowDown")
+        await self._page.wait_for_timeout(300)
+        await self._page.keyboard.press("Enter")
 
         # Esperar a que WA pinte los mensajes
         bubble_ready = (
