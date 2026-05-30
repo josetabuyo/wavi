@@ -201,15 +201,16 @@ class TestSaveDebugImage:
         assert list(region.get_flattened_data()) != list(original.get_flattened_data())
 
     def test_cross_drawn_only_on_audio_and_file(self, tmp_path):
-        """Cross appears at estimated play position on audio/file; absent on text/media."""
+        """Cross appears on audio/file bubbles; absent on text/media."""
         bg = (243, 238, 231)
-        img = Image.new("RGB", (400, 400), color=bg)
-        audio_bbox = {"x": 10, "y": 50,  "w": 150, "h": 50}
-        file_bbox  = {"x": 10, "y": 120, "w": 150, "h": 50}
-        text_bbox  = {"x": 10, "y": 190, "w": 150, "h": 50}
+        img = Image.new("RGB", (800, 600), color=bg)
+        # Use realistic WA dimensions: me audio needs room for avatar (x+188), h=136
+        me_audio_bbox   = {"x": 10, "y": 50,  "w": 250, "h": 136}
+        other_file_bbox = {"x": 10, "y": 250, "w": 200, "h": 136}
+        text_bbox       = {"x": 10, "y": 450, "w": 200, "h": 60}
         bubbles = [
-            _make_bubble(1, "me",    "audio", audio_bbox),
-            _make_bubble(2, "other", "file",  file_bbox),
+            _make_bubble(1, "me",    "audio", me_audio_bbox),
+            _make_bubble(2, "other", "file",  other_file_bbox),
             _make_bubble(3, "me",    "text",  text_bbox),
         ]
         out = tmp_path / "debug.png"
@@ -220,11 +221,77 @@ class TestSaveDebugImage:
             r, g, b = px
             return r > 150 and g < 100 and b < 100
 
-        # Estimated cross position: x + 22, y_center
-        assert is_red(result.getpixel((audio_bbox["x"] + 22, audio_bbox["y"] + audio_bbox["h"] // 2))), "audio cross missing"
-        assert is_red(result.getpixel((file_bbox["x"] + 22,  file_bbox["y"]  + file_bbox["h"]  // 2))), "file cross missing"
-        # text: no red cross at its estimated position
-        assert not is_red(result.getpixel((text_bbox["x"] + 22, text_bbox["y"] + text_bbox["h"] // 2))), "text must not have cross"
+        # me audio: cross at x+188, y+h-75
+        assert is_red(result.getpixel((me_audio_bbox["x"] + 188, me_audio_bbox["y"] + me_audio_bbox["h"] - 75))), "me audio cross missing"
+        # other file: cross at x+78, y+h-75
+        assert is_red(result.getpixel((other_file_bbox["x"] + 78, other_file_bbox["y"] + other_file_bbox["h"] - 75))), "other file cross missing"
+        # text: no red cross at the audio cross position
+        assert not is_red(result.getpixel((text_bbox["x"] + 78, text_bbox["y"] + text_bbox["h"] // 2))), "text must not have cross"
+
+    def test_cross_me_vs_other_x_offset(self, tmp_path):
+        """
+        'me' cross must be at x+188 (avatar on left before play btn).
+        'other' cross must be at x+78 (play btn near left edge).
+        Neither should appear at the old wrong offset x+22.
+        """
+        bg = (243, 238, 231)
+        img = Image.new("RGB", (800, 400), color=bg)
+        me_bbox    = {"x": 10, "y": 20,  "w": 250, "h": 136}
+        other_bbox = {"x": 10, "y": 200, "w": 200, "h": 136}
+        bubbles = [
+            _make_bubble(1, "me",    "audio", me_bbox),
+            _make_bubble(2, "other", "audio", other_bbox),
+        ]
+        out = tmp_path / "debug.png"
+        _save_debug_image(img, bubbles, out)
+        result = Image.open(out).convert("RGB")
+
+        def is_red(px):
+            r, g, b = px
+            return r > 150 and g < 100 and b < 100
+
+        me_cy    = me_bbox["y"]    + me_bbox["h"]    - 75
+        other_cy = other_bbox["y"] + other_bbox["h"] - 75
+
+        # Correct positions
+        assert is_red(result.getpixel((me_bbox["x"] + 188, me_cy))),    "me cross at x+188 missing"
+        assert is_red(result.getpixel((other_bbox["x"] + 78, other_cy))), "other cross at x+78 missing"
+        # Old wrong position must NOT have cross
+        assert not is_red(result.getpixel((me_bbox["x"] + 22, me_cy))),    "me cross must not be at old x+22"
+        assert not is_red(result.getpixel((other_bbox["x"] + 22, other_cy))), "other cross must not be at old x+22"
+
+    def test_cross_tall_bubble_bottom_anchored(self, tmp_path):
+        """
+        For tall bubbles (quoted reply on top + audio at bottom), the cross must land
+        in the audio player row at the bottom — not at the vertical center of the whole bubble.
+        h=136 is a standard audio-only bubble; h=261 simulates a quoted reply above it.
+        Both must yield a cross 75px from the bottom edge.
+        """
+        bg = (243, 238, 231)
+        img = Image.new("RGB", (800, 600), color=bg)
+        short_bbox = {"x": 10, "y": 20,  "w": 700, "h": 136}  # audio only
+        tall_bbox  = {"x": 10, "y": 200, "w": 700, "h": 261}  # quoted reply + audio
+        bubbles = [
+            _make_bubble(1, "other", "audio", short_bbox),
+            _make_bubble(2, "other", "audio", tall_bbox),
+        ]
+        out = tmp_path / "debug.png"
+        _save_debug_image(img, bubbles, out)
+        result = Image.open(out).convert("RGB")
+
+        def is_red(px):
+            r, g, b = px
+            return r > 150 and g < 100 and b < 100
+
+        cx = 10 + 78  # "other" x offset
+
+        # Both crosses must be 75px from their respective bottom edges
+        assert is_red(result.getpixel((cx, short_bbox["y"] + short_bbox["h"] - 75))), "short bubble cross wrong"
+        assert is_red(result.getpixel((cx, tall_bbox["y"]  + tall_bbox["h"]  - 75))), "tall bubble cross wrong"
+
+        # The tall bubble's cross must NOT be at the vertical center (that's the old bug)
+        wrong_cy = tall_bbox["y"] + tall_bbox["h"] // 2
+        assert not is_red(result.getpixel((cx, wrong_cy))), "tall bubble cross must not be at vertical center"
 
     def test_cross_uses_exact_play_position_when_provided(self, tmp_path):
         """When play_positions are given, the cross is drawn at those coords, not estimated."""

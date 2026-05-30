@@ -308,9 +308,9 @@ def _save_debug_image(
     Draw bounding boxes on all bubbles + a click cross on audio/file bubbles.
 
     play_positions: maps bubble.id → (crop_x, crop_y) of the actual DOM play button.
-                    When None, the cross is drawn at the estimated triangle position
-                    (left edge of the bubble, vertically centred) — accurate enough
-                    for visual inspection without a live browser.
+                    When None, the cross is estimated: near the play button — left edge
+                    for incoming ("other"), right of the avatar for outgoing ("me") —
+                    bottom-anchored to the audio control row.
     Green = me, blue = other. Red cross = where wavi clicks to play/open.
     """
     from PIL import ImageDraw
@@ -340,8 +340,8 @@ def _save_debug_image(
             if play_positions and b.id in play_positions:
                 cx, cy = play_positions[b.id]        # exact DOM position
             else:
-                cx = x + 22                          # play triangle is near left edge
-                cy = y + h // 2
+                cx = x + 188 if b.sender == "me" else x + 78
+                cy = y + h - 75
             draw.line([cx - ARM, cy, cx + ARM, cy], fill=CROSS_COLOR, width=3)
             draw.line([cx, cy - ARM, cx, cy + ARM], fill=CROSS_COLOR, width=3)
 
