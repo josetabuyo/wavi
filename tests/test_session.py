@@ -50,7 +50,7 @@ class TestNavigateToContact:
     async def test_clears_with_keyboard_not_dom(self, session):
         await session.navigate_to_contact("Gregorio")
         calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
-        assert "Control+a" in calls
+        assert "Meta+a" in calls
         assert "Delete" in calls
 
     @pytest.mark.asyncio

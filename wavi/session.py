@@ -311,8 +311,8 @@ class WASession:
         await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
         await self._page.wait_for_timeout(300)
 
-        # Limpiar con teclado — sin .clear() ni APIs DOM sintéticas
-        await self._page.keyboard.press("Control+a")
+        # Limpiar con teclado — Cmd+A selecciona todo en macOS, Delete borra
+        await self._page.keyboard.press("Meta+a")
         await self._page.wait_for_timeout(100)
         await self._page.keyboard.press("Delete")
         await self._page.wait_for_timeout(200)
