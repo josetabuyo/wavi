@@ -219,7 +219,7 @@ def full_sync(session: str, contact: str, assets: str | None, headless: bool, js
     """Capture messages + audio from CONTACT's chat (full pipeline)."""
     from wavi.runner import run_once
 
-    assets_dir = Path(assets) if assets else Path("output") / contact.replace(" ", "_")
+    assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_")
 
     async def _go():
         return await run_once(
