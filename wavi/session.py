@@ -219,8 +219,8 @@ class WASession:
         contexts = self._browser.contexts
         self._context = contexts[0] if contexts else await self._browser.new_context()
 
-        # Rechazar permisos de micrófono, cámara, notificaciones automáticamente
-        await self._context.grant_permissions([])
+        # DISABLED: grant_permissions([]) was causing WA Web to go white on CDP attach
+        # await self._context.grant_permissions([])
 
         # DISABLED: navigator.webdriver modification was breaking WA Web theme/styling
         # await self._context.add_init_script(
@@ -235,14 +235,14 @@ class WASession:
             await page.close()
 
         self._page = pages[0] if pages else await self._context.new_page()
-        await self._page.bring_to_front()
+        # DISABLED: bring_to_front() triggers visibility events that WA detects
+        # await self._page.bring_to_front()
 
         if WA_URL not in self._page.url:
             await self._page.goto(WA_URL, wait_until="domcontentloaded", timeout=30_000)
 
-        if self.headless:
-            # Viewport MÁS GRANDE POSIBLE para capturar TODOS los mensajes
-            await self._page.set_viewport_size({"width": 1920, "height": 10800})
+        # DISABLED: set_viewport_size causes WA to go white (full re-render)
+        # Stage 2 will handle window sizing via a different mechanism
 
         QR = "[data-testid='qrcode'], div[data-ref], canvas"
         try:
