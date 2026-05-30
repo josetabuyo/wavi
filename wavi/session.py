@@ -116,8 +116,12 @@ class WASession:
 
     from wavi.vision import SIDEBAR_PX as SIDEBAR_X, HEADER_PX as HEADER_Y
 
-    SEARCH_X = 317
-    SEARCH_Y  = 80
+    SEARCH_X       = 317
+    SEARCH_Y       = 80
+    FIRST_RESULT_X = 317
+    FIRST_RESULT_Y = 200  # primer resultado en lista de búsqueda (~120px bajo el search box)
+
+    _AUTHED_SEL = "[data-testid='chat-list'], #side, input[role='textbox']"
 
     def __init__(self, profile_dir: str | Path, headless: bool = True):
         self.profile_dir   = Path(profile_dir)
@@ -218,10 +222,12 @@ class WASession:
         # Rechazar permisos de micrófono, cámara, notificaciones automáticamente
         await self._context.grant_permissions([])
 
-        await self._context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-        await self._context.add_init_script(_BLOB_INIT_SCRIPT)
+        # DISABLED: navigator.webdriver modification was breaking WA Web theme/styling
+        # await self._context.add_init_script(
+        #     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        # )
+        # DISABLED: _BLOB_INIT_SCRIPT modifies HTMLMediaElement.prototype, breaking WA Web styling
+        # await self._context.add_init_script(_BLOB_INIT_SCRIPT)
 
         pages = self._context.pages
         # Close all pages except the first one (prevent restored tabs)
@@ -235,25 +241,22 @@ class WASession:
             await self._page.goto(WA_URL, wait_until="domcontentloaded", timeout=30_000)
 
         if self.headless:
-            # Viewport MÁS GRANDE POSIBLE + zoom bajo para capturar TODOS los mensajes
+            # Viewport MÁS GRANDE POSIBLE para capturar TODOS los mensajes
             await self._page.set_viewport_size({"width": 1920, "height": 10800})
-            await self._page.evaluate("() => { document.body.style.zoom = '0.5'; }")
 
-        AUTHED = "[data-testid='chat-list'], #side, input[role='textbox']"
-        QR     = "[data-testid='qrcode'], div[data-ref], canvas"
+        QR = "[data-testid='qrcode'], div[data-ref], canvas"
         try:
-            await self._page.wait_for_selector(f"{AUTHED}, {QR}", timeout=60_000)
+            await self._page.wait_for_selector(f"{self._AUTHED_SEL}, {QR}", timeout=60_000)
         except Exception:
             return "timeout"
 
-        if await self._page.query_selector(AUTHED):
+        if await self._page.query_selector(self._AUTHED_SEL):
             return "restored"
         return "qr_needed"
 
     async def wait_for_auth(self, timeout_s: int = 120) -> bool:
-        AUTHED = "[data-testid='chat-list'], #side, input[role='textbox']"
         try:
-            await self._page.wait_for_selector(AUTHED, timeout=timeout_s * 1000)
+            await self._page.wait_for_selector(self._AUTHED_SEL, timeout=timeout_s * 1000)
             return True
         except Exception:
             return False
@@ -304,24 +307,31 @@ class WASession:
     # ── Navigation ────────────────────────────────────────────────────────────
 
     async def navigate_to_contact(self, contact: str) -> None:
-        # Find and clear the search input robustly using Playwright's locator API
-        search_input = self._page.locator('input[role="textbox"]').first
-        await search_input.click()
+        # Click en el cuadro de búsqueda por coordenadas (ADR-001: sin locator)
+        await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
+        await self._page.wait_for_timeout(300)
+
+        # Limpiar con teclado — sin .clear() ni APIs DOM sintéticas
+        await self._page.keyboard.press("Control+a")
+        await self._page.wait_for_timeout(100)
+        await self._page.keyboard.press("Delete")
         await self._page.wait_for_timeout(200)
-        await search_input.clear()
-        await self._page.wait_for_timeout(200)
-        await search_input.type(contact, delay=40)
+
+        # Escribir el contacto con delays realistas
+        await self._page.keyboard.type(contact, delay=40)
         await self._page.wait_for_timeout(1500)
 
+        # Abrir primer resultado: coordenada fija o fallback por teclado
         result_sel = f"[title='{contact}']"
         try:
             await self._page.wait_for_selector(result_sel, timeout=6_000)
-            await self._page.click(result_sel)
+            await self._page.mouse.click(self.FIRST_RESULT_X, self.FIRST_RESULT_Y)
         except Exception:
             await self._page.keyboard.press("ArrowDown")
             await self._page.wait_for_timeout(300)
             await self._page.keyboard.press("Enter")
 
+        # Esperar a que WA pinte los mensajes
         bubble_ready = (
             "[data-testid='msg-container'], "
             "[data-testid='conversation-panel-messages'], "
@@ -332,9 +342,6 @@ class WASession:
         except Exception:
             pass
         await self._page.wait_for_timeout(1500)
-
-        # WhatsApp carga los últimos mensajes por defecto
-        # No hacemos scroll automático - confiamos en que cargue correctamente
 
     # ── Screenshot ────────────────────────────────────────────────────────────
 
