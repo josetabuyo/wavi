@@ -15,10 +15,16 @@ import base64
 import subprocess
 from pathlib import Path
 
-WA_URL     = "https://web.whatsapp.com/"
+WA_URL      = "https://web.whatsapp.com/"
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 CDP_PORT    = 9222
 PID_FILE    = "chrome_daemon.pid"
+
+# Viewport size for headless daemon. Width=1280 is the calibrated base for the
+# sidebar crop formula (vision.py: sidebar_x = w * SIDEBAR_PX/1280).
+# Height=1920 maximises messages captured per screenshot without resize events.
+WINDOW_W = 1280
+WINDOW_H = 1920
 
 _UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -193,12 +199,10 @@ class WASession:
             "--disable-blink-features=AutomationControlled",
             f"--user-agent={_UA}",
         ]
-        # Forzar headless=true SIEMPRE en fallback para evitar popups de permisos
-        # Viewport máximo posible + zoom bajo para capturar TODOS los mensajes en una imagen
-        args += ["--headless=new", "--window-size=1920,10800"]
+        args += ["--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}"]
 
         self._chrome_proc = subprocess.Popen(
-            ["arch", "-arm64"] + args + [WA_URL],
+            ["arch", "-arm64"] + args + ["about:blank"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -243,10 +247,11 @@ class WASession:
         # await self._page.bring_to_front()
 
         if WA_URL not in self._page.url:
+            if self.headless:
+                # Set viewport BEFORE loading WA so it mounts at the right size.
+                # Safe here: WA is not yet running, no resize event will be triggered.
+                await self._page.set_viewport_size({"width": WINDOW_W, "height": WINDOW_H})
             await self._page.goto(WA_URL, wait_until="domcontentloaded", timeout=30_000)
-
-        # DISABLED: set_viewport_size causes WA to go white (full re-render)
-        # Stage 2 will handle window sizing via a different mechanism
 
         QR = "[data-testid='qrcode'], div[data-ref], canvas"
         try:
