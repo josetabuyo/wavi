@@ -19,12 +19,11 @@ from wavi.vision import Bubble, analyze
 
 _FIND_PLAY_BTNS_JS = """
 () => {
-    const labels = ['Reproducir mensaje de voz', 'Play voice message',
-                    'voz', 'voice message'];
+    const labels = ['Reproducir mensaje de voz', 'Play voice message'];
     return [...document.querySelectorAll('button[aria-label]')]
         .filter(b => {
             const l = b.getAttribute('aria-label') || '';
-            return labels.some(lbl => l.includes(lbl));
+            return labels.some(lbl => l.toLowerCase().includes(lbl.toLowerCase()));
         })
         .map(b => {
             const r = b.getBoundingClientRect();
