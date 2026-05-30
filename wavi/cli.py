@@ -2,7 +2,7 @@
 cli.py — wavi command-line interface.
 
 Commands:
-  wavi connect   [session]            — start Chrome daemon + QR scan
+  wavi connect   [session]            — start Chrome daemon + QR scan (if needed)
   wavi stop      [session]            — gracefully shut down Chrome daemon
   wavi full-sync [session] <contact>  — capture messages + audio from a chat
   wavi status    [session]            — check if session daemon is alive + authenticated
@@ -10,10 +10,11 @@ Commands:
 
 Session model
 ─────────────
-'wavi connect' launches a visible Chrome window for QR scan only.  Once the
-user confirms chats are loaded, the headful window is flushed + killed and a
-headless Chrome daemon is started with the same profile.  All subsequent
-commands connect to the headless daemon via CDP.
+'wavi connect' tries headless first (optimistic strategy).  If WA loads
+authenticated, the headless daemon keeps running — no visible window ever
+appears.  Only if QR is needed does it kill the headless Chrome and open a
+visible window for scanning.  After QR confirmation, it switches back to
+headless.  All subsequent commands connect to the headless daemon via CDP.
 'wavi stop' performs a graceful shutdown (navigates to about:blank, then SIGTERM).
 """
 from __future__ import annotations
@@ -32,9 +33,101 @@ DEFAULT_SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 from wavi.session import CDP_PORT, PID_FILE, WINDOW_W, WINDOW_H
 
+_HEADLESS_CHROME_ARGS = [
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-session-crashed-bubble",
+    "--restore-last-session=false",
+    "--disable-extensions",
+    "--disable-default-apps",
+    "--disable-component-update",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-features=CalculateNativeWinOcclusion",
+]
+
+_VISIBLE_CHROME_ARGS = _HEADLESS_CHROME_ARGS  # same flags, no --headless=new
+
 
 def _profile(session: str) -> Path:
     return DEFAULT_SESSIONS_DIR / session
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _kill_port_processes() -> None:
+    result = subprocess.run(
+        ["lsof", "-ti", f"tcp:{CDP_PORT}", "-sTCP:LISTEN"],
+        capture_output=True, text=True,
+    )
+    for pid in result.stdout.strip().split("\n"):
+        if pid.strip():
+            subprocess.run(["kill", "-TERM", pid.strip()], capture_output=True)
+
+
+def _set_chrome_prefs(profile: Path) -> None:
+    """Pre-set Chrome permissions in Preferences (deny mic/camera/notifications)."""
+    import json as _json
+    prefs_path = profile / "Default" / "Preferences"
+    prefs = {}
+    if prefs_path.exists():
+        try:
+            prefs = _json.loads(prefs_path.read_text())
+        except Exception:
+            pass
+    prefs.setdefault("profile", {}).setdefault("default_content_setting_values", {}).update({
+        "media_stream_mic": 2,
+        "media_stream_camera": 2,
+        "notifications": 2,
+    })
+    prefs_path.write_text(_json.dumps(prefs))
+
+
+def _cleanup_crash_files(profile: Path) -> None:
+    """Remove Chrome crash-recovery files to avoid restore-session dialogs."""
+    default_dir = profile / "Default"
+    for f in ("Last Session", "Last Tabs", "Last Browser State", "Current Session", "Current Tabs"):
+        (default_dir / f).unlink(missing_ok=True)
+    for d in ("Sessions", "SessionStorage"):
+        p = default_dir / d
+        if p.exists():
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def _launch_headless_daemon(profile: Path) -> subprocess.Popen:
+    """Launch headless Chrome daemon, save PID, return the process."""
+    (profile / "SingletonLock").unlink(missing_ok=True)
+    proc = subprocess.Popen(
+        ["arch", "-arm64", str(REAL_CHROME)]
+        + [f"--user-data-dir={profile}", f"--remote-debugging-port={CDP_PORT}"]
+        + _HEADLESS_CHROME_ARGS
+        + [f"--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}", "about:blank"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    (profile / PID_FILE).write_text(str(proc.pid))
+    return proc
+
+
+def _terminate_proc(proc: subprocess.Popen, timeout: int = 8) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+async def _check_session_status(profile: Path) -> str:
+    from wavi.session import WASession
+    s = WASession(profile)
+    try:
+        status = await s.connect()
+        await s.close()
+        return status
+    except Exception:
+        return "error"
 
 
 # ── CLI root ──────────────────────────────────────────────────────────────────
@@ -49,11 +142,10 @@ def main():
 @main.command()
 @click.argument("session", default="default")
 def connect(session: str):
-    """Start Chrome daemon and authenticate via QR.
+    """Start Chrome daemon and authenticate (headless if session exists, QR if not).
 
-    Opens a visible Chrome window for QR scan only.  Once chats are loaded
-    and you press Enter, the visible window is closed and a headless Chrome
-    daemon starts automatically.  All subsequent commands use that daemon.
+    Tries headless first — if WhatsApp loads authenticated no visible window
+    ever opens.  Only falls back to a visible window when QR scan is needed.
 
     SESSION is any name you choose (default: 'default').
     """
@@ -63,68 +155,58 @@ def connect(session: str):
 
     profile = _profile(session)
     profile.mkdir(parents=True, exist_ok=True)
+    click.echo(f"Session '{session}' → {profile}")
 
-    # Clear crash recovery state + session restoration files
-    default_dir = profile / "Default"
-    for crash_file in ("Last Session", "Last Tabs", "Last Browser State", "Current Session", "Current Tabs"):
-        (default_dir / crash_file).unlink(missing_ok=True)
+    # ── Fast path: daemon already alive and authenticated ─────────────────────
+    from wavi.session import WASession, _is_process_alive
+    s = WASession(profile)
+    if s.daemon_alive():
+        click.echo("Daemon detectado, verificando sesión...")
+        status = asyncio.run(_check_session_status(profile))
+        if status == "restored":
+            pid = s._load_pid()
+            click.echo(f"Sesión '{session}' ya activa y autenticada (PID {pid}, CDP :{CDP_PORT}).")
+            click.echo(f"Usá 'wavi full-sync {session} <contacto>' para capturar mensajes.")
+            click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
+            return
+        click.echo(f"Daemon vivo pero sesión={status}. Relanzando...")
 
-    # Clear session data directories that may contain restored tabs
-    for sess_dir in ("Sessions", "SessionStorage"):
-        sess_path = default_dir / sess_dir
-        if sess_path.exists():
-            shutil.rmtree(sess_path, ignore_errors=True)
+    # ── Kill any existing process on CDP port ─────────────────────────────────
+    _kill_port_processes()
+    time.sleep(1)
 
-    # Pre-set Chrome permissions in Preferences (no JS injection needed)
-    import json as _json
-    prefs_path = default_dir / "Preferences"
-    prefs = {}
-    if prefs_path.exists():
-        try:
-            prefs = _json.loads(prefs_path.read_text())
-        except Exception:
-            pass
-    prefs.setdefault("profile", {}).setdefault("default_content_setting_values", {}).update({
-        "media_stream_mic": 2,     # 2 = deny
-        "media_stream_camera": 2,
-        "notifications": 2,
-    })
-    prefs_path.write_text(_json.dumps(prefs))
+    # ── Optimistic: try headless first ────────────────────────────────────────
+    _set_chrome_prefs(profile)
+    click.echo("Intentando restaurar sesión en modo headless...")
+    headless_proc = _launch_headless_daemon(profile)
+    time.sleep(3)  # Give Chrome time to start before CDP connect attempt
 
-    # Kill any existing daemon using our CDP port
-    result = subprocess.run(
-        ["lsof", "-ti", f"tcp:{CDP_PORT}", "-sTCP:LISTEN"],
-        capture_output=True, text=True,
-    )
-    for pid in result.stdout.strip().split("\n"):
-        if pid.strip():
-            subprocess.run(["kill", "-TERM", pid.strip()], capture_output=True)
+    status = asyncio.run(_check_session_status(profile))
+
+    if status == "restored":
+        click.echo(f"Sesión restaurada — daemon headless activo (PID {headless_proc.pid}, CDP :{CDP_PORT}).")
+        click.echo(f"Usá 'wavi full-sync {session} <contacto>' para capturar mensajes.")
+        click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
+        return
+
+    # ── QR needed: kill headless, open visible window ─────────────────────────
+    click.echo(f"Sesión no encontrada (estado={status}) — QR requerido.")
+    click.echo("Cerrando Chrome headless...")
+    _terminate_proc(headless_proc)
     (profile / "SingletonLock").unlink(missing_ok=True)
+    time.sleep(1)
 
-    proc = subprocess.Popen([
-        "arch", "-arm64",  # Force ARM64 native on Apple Silicon (no Rosetta)
-        str(REAL_CHROME),
-        f"--user-data-dir={profile}",
-        f"--remote-debugging-port={CDP_PORT}",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-session-crashed-bubble",
-        "--restore-last-session=false",
-        "--disable-extensions",
-        "--disable-default-apps",
-        "--disable-component-update",
-        "--disable-background-timer-throttling",
-        "--disable-renderer-backgrounding",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-features=CalculateNativeWinOcclusion",
-        f"--window-size={WINDOW_W},{WINDOW_H}",
-        "https://web.whatsapp.com",
-    ])
+    _cleanup_crash_files(profile)
 
-    # Save daemon PID so other commands can find it
+    click.echo("Abriendo Chrome visible para escanear QR...")
+    proc = subprocess.Popen(
+        ["arch", "-arm64", str(REAL_CHROME)]
+        + [f"--user-data-dir={profile}", f"--remote-debugging-port={CDP_PORT}"]
+        + _VISIBLE_CHROME_ARGS
+        + [f"--window-size={WINDOW_W},{WINDOW_H}", "https://web.whatsapp.com"],
+    )
     (profile / PID_FILE).write_text(str(proc.pid))
 
-    click.echo(f"Session '{session}' → {profile}")
     click.echo(f"Chrome abierto (PID {proc.pid}, CDP :{CDP_PORT}).")
     click.echo()
     click.echo("1. Escaneá el QR en WhatsApp Web")
@@ -140,10 +222,9 @@ def connect(session: str):
         (profile / PID_FILE).unlink(missing_ok=True)
         sys.exit(1)
 
-    # ── Switch to headless daemon ─────────────────────────────────────────────
+    # ── Flush WA state and switch to headless daemon ──────────────────────────
     click.echo("Guardando sesión de WhatsApp...")
 
-    # Flush WA IndexedDB: navigate to about:blank before killing Chrome
     async def _flush():
         from playwright.async_api import async_playwright
         try:
@@ -160,65 +241,20 @@ def connect(session: str):
             await browser.close()
             await pw.stop()
         except Exception:
-            pass  # If CDP is unreachable, kill headful anyway
+            pass
 
     asyncio.run(_flush())
-
-    proc.terminate()
-    try:
-        proc.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-
+    _terminate_proc(proc)
     (profile / "SingletonLock").unlink(missing_ok=True)
     time.sleep(1)
 
-    # Start headless daemon. Launch with about:blank so Playwright can set the
-    # viewport via set_viewport_size() BEFORE WA loads (avoids resize-post-mount).
     click.echo("Iniciando daemon headless...")
-    headless_proc = subprocess.Popen(
-        [
-            "arch", "-arm64",
-            str(REAL_CHROME),
-            f"--user-data-dir={profile}",
-            f"--remote-debugging-port={CDP_PORT}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-session-crashed-bubble",
-            "--restore-last-session=false",
-            "--disable-extensions",
-            "--disable-default-apps",
-            "--disable-component-update",
-            "--disable-background-timer-throttling",
-            "--disable-renderer-backgrounding",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-features=CalculateNativeWinOcclusion",
-            "--headless=new",
-            f"--window-size={WINDOW_W},{WINDOW_H}",
-            "about:blank",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    (profile / PID_FILE).write_text(str(headless_proc.pid))
+    headless_proc = _launch_headless_daemon(profile)
 
-    # Verify session is restored in headless Chrome
     click.echo("Verificando sesión...")
     time.sleep(5)
 
-    async def _verify():
-        from wavi.session import WASession
-        s = WASession(profile)
-        try:
-            status = await s.connect()
-            await s.close()
-            return status
-        except Exception as e:
-            return f"error: {e}"
-
-    status = asyncio.run(_verify())
-
+    status = asyncio.run(_check_session_status(profile))
     if status == "restored":
         click.echo(f"Daemon headless activo (PID {headless_proc.pid}, CDP :{CDP_PORT}).")
     else:
@@ -273,7 +309,6 @@ def status(session: str):
 
     s = WASession(profile)
 
-    # Quick check: is the daemon process alive?
     pid = s._load_pid()
     if pid and _is_process_alive(pid):
         click.echo(f"daemon=running pid={pid}")
