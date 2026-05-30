@@ -74,6 +74,22 @@ def connect(session: str):
         if sess_path.exists():
             shutil.rmtree(sess_path, ignore_errors=True)
 
+    # Pre-set Chrome permissions in Preferences (no JS injection needed)
+    import json as _json
+    prefs_path = default_dir / "Preferences"
+    prefs = {}
+    if prefs_path.exists():
+        try:
+            prefs = _json.loads(prefs_path.read_text())
+        except Exception:
+            pass
+    prefs.setdefault("profile", {}).setdefault("default_content_setting_values", {}).update({
+        "media_stream_mic": 2,     # 2 = deny
+        "media_stream_camera": 2,
+        "notifications": 2,
+    })
+    prefs_path.write_text(_json.dumps(prefs))
+
     # Kill any existing daemon using our CDP port
     result = subprocess.run(
         ["lsof", "-ti", f"tcp:{CDP_PORT}", "-sTCP:LISTEN"],
@@ -203,7 +219,7 @@ def full_sync(session: str, contact: str, assets: str | None, headless: bool, js
     """Capture messages + audio from CONTACT's chat (full pipeline)."""
     from wavi.runner import run_once
 
-    assets_dir = Path(assets) if assets else None
+    assets_dir = Path(assets) if assets else Path("output") / contact.replace(" ", "_")
 
     async def _go():
         return await run_once(
