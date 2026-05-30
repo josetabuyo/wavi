@@ -8,6 +8,7 @@ classification, then uses DOM queries to locate exact play button positions
 from __future__ import annotations
 
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -103,14 +104,16 @@ class WARunner:
         self,
         bubble: Bubble,
         play_buttons: list[dict],
-        tolerance_px: int = 60,
+        tolerance_px: int = 80,
+        dpr: float = 1.0,
     ) -> dict | None:
         """
-        Match an audio bubble (crop-panel coords) to the nearest DOM play button
-        (viewport coords) using y-coordinate proximity.
+        Match an audio bubble (crop-panel physical pixels) to the nearest DOM play
+        button (CSS viewport pixels) using y-coordinate proximity.
+
+        Conversion: physical_crop_y → CSS_viewport_y = (physical_crop_y + HEADER_PX) / dpr
         """
-        # Convert bubble crop-panel y-center to viewport coords
-        bvy = bubble.bbox["y"] + bubble.bbox["h"] // 2 + WASession.HEADER_Y
+        bvy = (bubble.bbox["y"] + bubble.bbox["h"] // 2 + WASession.HEADER_Y) / dpr
 
         best, best_dist = None, float("inf")
         for btn in play_buttons:
@@ -128,6 +131,7 @@ class WARunner:
         self,
         assets_dir: Path | None = None,
         wait_ms: int = 3000,
+        blob_timeout_ms: int = 30_000,
         save_debug: bool = False,
     ) -> list[dict]:
         """
@@ -147,13 +151,23 @@ class WARunner:
         if not audio_bubbles:
             return []
 
+        # Install blob URL monitor NOW (WA is fully loaded — safe to hook MediaElement)
+        await self.session.install_blob_monitor()
+        await self.session.reset_blobs()
+
+        dpr = await self.session.get_dpr()
         play_buttons = await self.find_play_buttons()
+        print(
+            f"[wavi] audio bubbles={len(audio_bubbles)}  play_buttons_found={len(play_buttons)}"
+            f"  dpr={dpr}",
+            file=sys.stderr,
+        )
         results = []
-        # bubble_id → crop-panel (cx, cy) of the actual play button
+        # bubble_id → crop-panel physical (cx, cy) of the actual play button
         resolved_positions: dict[int, tuple[int, int]] = {}
 
         for bubble in audio_bubbles:
-            btn = self._match_bubble_to_button(bubble, play_buttons)
+            btn = self._match_bubble_to_button(bubble, play_buttons, dpr=dpr)
             if btn is None:
                 results.append({
                     "bubble": bubble,
@@ -164,17 +178,33 @@ class WARunner:
                 })
                 continue
 
-            # Record exact play button position in crop-panel coords for debug image
+            # Record play button in physical crop-panel coords for debug image
+            # btn coords are CSS pixels → convert to physical, then subtract panel origin
             resolved_positions[bubble.id] = (
-                btn["vx"] - WASession.SIDEBAR_X,
-                btn["vy"] - WASession.HEADER_Y,
+                int(btn["vx"] * dpr) - int(WASession.SIDEBAR_X * dpr),
+                int(btn["vy"] * dpr) - WASession.HEADER_Y,
             )
 
             # Click in viewport coords directly (bypass crop-panel offset)
+            print(f"[wavi]   click bubble#{bubble.id} → vp({btn['vx']},{btn['vy']})", file=sys.stderr)
             await self.session._page.mouse.click(btn["vx"], btn["vy"])
-            await self.session._page.wait_for_timeout(wait_ms)
 
-            blobs = await self.session.drain_blobs()
+            # Wait for blob: poll every 500ms up to blob_timeout_ms
+            # (long audios need WA to decrypt from server — can take several seconds)
+            blobs: list[dict] = []
+            waited = 0
+            poll_ms = 500
+            while waited < blob_timeout_ms:
+                await self.session._page.wait_for_timeout(poll_ms)
+                waited += poll_ms
+                blobs = await self.session.drain_blobs()
+                if blobs:
+                    break
+                if waited >= wait_ms and not blobs:
+                    # Minimum wait elapsed — keep polling silently
+                    pass
+
+            print(f"[wavi]   blobs after {waited}ms: {len(blobs)}", file=sys.stderr)
             if not blobs:
                 results.append({
                     "bubble": bubble,

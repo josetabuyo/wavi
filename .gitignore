@@ -17,3 +17,4 @@ assets/*.png
 assets/*.json
 assets/*.ogg
 assets/current.png
+output/

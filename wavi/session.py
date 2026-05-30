@@ -70,8 +70,12 @@ _FETCH_BLOB_JS = """
 async (blobUrl) => {
     try {
         const r = await fetch(blobUrl);
-        const buf = await r.arrayBuffer();
-        return btoa(String.fromCharCode(...new Uint8Array(buf)));
+        const buf = new Uint8Array(await r.arrayBuffer());
+        let s = '';
+        const CHUNK = 8192;
+        for (let i = 0; i < buf.length; i += CHUNK)
+            s += String.fromCharCode(...buf.subarray(i, i + CHUNK));
+        return btoa(s);
     } catch(e) { return null; }
 }
 """
@@ -362,6 +366,14 @@ class WASession:
         return await self._page.evaluate(js)
 
     # ── Audio blob capture ────────────────────────────────────────────────────
+
+    async def install_blob_monitor(self) -> None:
+        """Inject blob URL monitor into the already-running page (lazy, safe post-load)."""
+        await self._page.evaluate(_BLOB_INIT_SCRIPT)
+
+    async def get_dpr(self) -> float:
+        """Return the page's devicePixelRatio (e.g. 2.0 on Retina)."""
+        return await self._page.evaluate("() => window.devicePixelRatio")
 
     async def reset_blobs(self) -> None:
         await self._page.evaluate(
