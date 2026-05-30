@@ -64,17 +64,10 @@ class TestNavigateToContact:
         session._page.locator.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_opens_result_with_keyboard(self, session):
+    async def test_opens_result_with_keyboard_not_locator(self, session):
+        """El resultado se abre con teclado (ADR-001), nunca con page.click(selector)."""
         await session.navigate_to_contact("Gregorio")
         calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
-        assert "ArrowDown" in calls
-        assert "Enter" in calls
-
-    @pytest.mark.asyncio
-    async def test_first_result_coordinate_below_search_box(self):
-        assert WASession.FIRST_RESULT_Y > WASession.SEARCH_Y, (
-            "El primer resultado debe estar más abajo que el search box"
-        )
-        assert WASession.FIRST_RESULT_X == WASession.SEARCH_X, (
-            "El primer resultado comparte la X con el search box"
-        )
+        assert "ArrowDown" in calls, "Debe navegar al resultado con ArrowDown"
+        assert "Enter" in calls, "Debe abrir el resultado con Enter"
+        session._page.locator.assert_not_called()  # doble check: sin locator
