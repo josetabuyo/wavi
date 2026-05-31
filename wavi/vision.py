@@ -41,17 +41,26 @@ HEADER_PX  = 60
 
 @dataclass
 class Bubble:
-    id: int                               # 1=newest, N=oldest
+    # Convention note — two ID systems with OPPOSITE "1" semantics (intentional):
+    #   id        → global chronological index, assigned by capture_full_history.
+    #               1 = oldest message in the full history, N = newest.
+    #               For single-screenshot use this equals screen_id.
+    #   screen_id → rank within the snapshot returned by analyze().
+    #               1 = newest visible (bottom of screen), N = oldest (top).
+    #               Mirrors WA Web's bottom-anchored layout convention.
+    id: int
     sender: Literal["me", "other"]
     msg_type: Literal["text", "audio", "file", "media"]
     timestamp: str | None
     text: str
     bbox: dict                            # x,y,w,h in crop-panel coords
+    screen_id: int = 0                    # 1=newest in snapshot, N=oldest (see note above)
     raw_blocks: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
-            "id": self.id,
+            "id": self.id,            # chronological: 1=oldest overall
+            "screen_id": self.screen_id,  # snapshot rank: 1=newest visible
             "sender": self.sender,
             "msg_type": self.msg_type,
             "timestamp": self.timestamp,
@@ -278,8 +287,10 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
         tmp.unlink()
 
         text = " ".join(b["text"].strip() for b in raw_blocks if b["text"].strip())
+        local_id = len(split) - i
         results.append(Bubble(
-            id          = len(split) - i,
+            id          = local_id,
+            screen_id   = local_id,
             sender      = bubble["type"],
             msg_type    = classify_msg_type(text, raw_blocks),
             timestamp   = _extract_timestamp(raw_blocks),

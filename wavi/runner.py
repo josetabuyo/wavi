@@ -273,12 +273,15 @@ class WARunner:
                 candidates = new_bubbles
 
             new_count = 0
+            new_items: list[Bubble] = []
             for b in candidates:
                 k = bubble_key(b)
                 if k not in seen_keys:
                     seen_keys.add(k)
-                    all_bubbles.append(b)
+                    new_items.append(b)
                     new_count += 1
+            # Prepend older content so the list stays chronological (oldest first)
+            all_bubbles = new_items + all_bubbles
 
             print(
                 f"[wavi] iter={iteration+1}: +{new_count} new, total={len(all_bubbles)}, "
@@ -291,6 +294,10 @@ class WARunner:
                 break
 
             bubbles = new_bubbles
+
+        # Re-assign globally sequential IDs in chronological order: id=1=oldest, id=N=newest
+        for idx, b in enumerate(all_bubbles, start=1):
+            b.id = idx
 
         # Save aggregated result to assets_dir
         if assets_dir:

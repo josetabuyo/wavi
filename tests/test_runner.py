@@ -127,3 +127,173 @@ class TestGetDpr:
         # Verifica que pregunta por devicePixelRatio
         call_arg = s._page.evaluate.call_args[0][0]
         assert "devicePixelRatio" in call_arg
+
+
+# ── capture_full_history ───────────────────────────────────────────────────────
+
+def _hist_bubble(screen_id: int, sender: str, text: str, y: int,
+                 timestamp: str = "1:00 p.m.") -> Bubble:
+    return Bubble(
+        id=screen_id, screen_id=screen_id, sender=sender, msg_type="text",
+        timestamp=timestamp, text=text,
+        bbox={"x": 0, "y": y, "w": 200, "h": 50},
+    )
+
+
+def _mock_runner_for_history(iter0_bubbles, iter1_bubbles):
+    """
+    Return a WARunner with all async browser dependencies mocked.
+
+    Simulates two captures:
+      - iter_0: bottom of chat (newest messages)
+      - iter_1: after one scroll-up (older content above iter_0's anchor)
+    Scroll state: starts at scrollTop=500, drops to 0 after one scroll → loop ends.
+    """
+    runner = _runner()
+
+    call_idx = 0
+
+    async def fake_get_bubbles(*args, **kwargs):
+        nonlocal call_idx
+        result = iter0_bubbles if call_idx == 0 else iter1_bubbles
+        call_idx += 1
+        return result
+
+    runner.get_bubbles = fake_get_bubbles
+    runner.find_play_buttons = AsyncMock(return_value=[])
+
+    page_mock = MagicMock()
+    page_mock.wait_for_timeout = AsyncMock()
+    runner.session._page = page_mock
+    runner.session.get_dpr = AsyncMock(return_value=1.0)
+    runner.session.scroll_chat_up = AsyncMock()
+    runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
+        # 1. init_state (outside loop) → computes scroll_css_px
+        {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},
+        # 2. state before loop iter 0 → scrollTop>20, continue
+        {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},
+        # 3. new_state after scroll → moved to top (no stall)
+        {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},
+        # 4. state at loop iter 1 → scrollTop<20, BREAK
+        {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},
+    ])
+
+    return runner
+
+
+class TestCaptureFullHistory:
+    """
+    Garantiza el contrato de capture_full_history:
+      - IDs globalmente únicos y secuenciales (1=más antiguo, N=más reciente)
+      - Orden cronológico: mensajes de scroll-ups anteriores aparecen primero
+      - screen_id preserva el ID local de la pantalla original
+      - Burbujas en la zona de solapamiento se deduplan (una sola vez)
+    """
+
+    # Fixtures compartidas entre tests:
+    # iter_0 = pantalla más nueva (fondo del chat), 3 mensajes A, B, C
+    # iter_1 = pantalla anterior (scroll arriba), D y E son nuevos; A es el anchor/solapamiento
+    _ITER0 = [
+        _hist_bubble(screen_id=3, sender="me",    text="A", y=100, timestamp="1:02 p.m."),
+        _hist_bubble(screen_id=2, sender="me",    text="B", y=200, timestamp="1:03 p.m."),
+        _hist_bubble(screen_id=1, sender="me",    text="C", y=300, timestamp="1:04 p.m."),
+    ]
+    _ITER1 = [
+        _hist_bubble(screen_id=3, sender="other", text="D", y=100, timestamp="1:00 p.m."),
+        _hist_bubble(screen_id=2, sender="other", text="E", y=200, timestamp="1:01 p.m."),
+        _hist_bubble(screen_id=1, sender="me",    text="A", y=300, timestamp="1:02 p.m."),  # solapamiento con iter0
+    ]
+
+    @pytest.mark.asyncio
+    async def test_ids_sequential_and_unique(self):
+        """El historial completo tiene IDs 1..N sin huecos ni duplicados."""
+        runner = _mock_runner_for_history(self._ITER0, self._ITER1)
+        result = await runner.capture_full_history(assets_dir=None)
+
+        ids = [b.id for b in result]
+        assert ids == list(range(1, len(result) + 1)), \
+            f"IDs esperados 1..{len(result)}, obtenidos: {ids}"
+
+    @pytest.mark.asyncio
+    async def test_chronological_order(self):
+        """Mensajes de scroll-ups más profundos (más antiguos) aparecen antes."""
+        runner = _mock_runner_for_history(self._ITER0, self._ITER1)
+        result = await runner.capture_full_history(assets_dir=None)
+
+        texts = [b.text for b in result]
+        # D y E son más antiguos que A (fueron hallados al scrollear arriba)
+        assert texts.index("D") < texts.index("A"), "D (más antiguo) debe preceder a A"
+        assert texts.index("E") < texts.index("A"), "E (más antiguo) debe preceder a A"
+        # A, B, C deben mantener su orden relativo
+        assert texts.index("A") < texts.index("B") < texts.index("C")
+
+    @pytest.mark.asyncio
+    async def test_screen_id_preserved(self):
+        """screen_id mantiene el ID local de la pantalla, aunque id se reasigne globalmente."""
+        runner = _mock_runner_for_history(self._ITER0, self._ITER1)
+        result = await runner.capture_full_history(assets_dir=None)
+
+        by_text = {b.text: b for b in result}
+        # D tenía screen_id=3 en iter_1 (era el tope de esa pantalla)
+        assert by_text["D"].screen_id == 3
+        # C tenía screen_id=1 en iter_0 (el más nuevo, fondo de pantalla)
+        assert by_text["C"].screen_id == 1
+        # screen_id nunca debe coincidir con id global para los mensajes reordenados
+        assert by_text["D"].id != by_text["D"].screen_id
+
+    @pytest.mark.asyncio
+    async def test_overlap_counted_once(self):
+        """Burbuja en zona de solapamiento entre iteraciones se incluye una sola vez."""
+        runner = _mock_runner_for_history(self._ITER0, self._ITER1)
+        result = await runner.capture_full_history(assets_dir=None)
+
+        texts = [b.text for b in result]
+        assert texts.count("A") == 1, \
+            f"'A' aparece en iter_0 e iter_1 pero debe contarse solo una vez, encontrado: {texts.count('A')}"
+        # Total: D, E (nuevos de iter_1) + A, B, C (de iter_0) = 5
+        assert len(result) == 5
+
+    @pytest.mark.asyncio
+    async def test_empty_iteration_is_noop(self):
+        """
+        Si el scroll produce una iteración donde todos los candidatos son overlap
+        (no hay mensajes nuevos), el resultado no tiene duplicados ni cambia el orden.
+        """
+        # iter_1 devuelve solo el anchor (A) — sin contenido nuevo sobre él
+        iter1_all_overlap = [
+            _hist_bubble(screen_id=1, sender="me", text="A", y=100, timestamp="1:02 p.m."),
+        ]
+        runner = _mock_runner_for_history(self._ITER0, iter1_all_overlap)
+        result = await runner.capture_full_history(assets_dir=None)
+
+        texts = [b.text for b in result]
+        assert texts.count("A") == 1
+        # Solo los 3 mensajes de iter_0 (iter_1 no aportó nada nuevo)
+        assert len(result) == 3
+        ids = [b.id for b in result]
+        assert ids == list(range(1, 4))
+
+    @pytest.mark.asyncio
+    async def test_identical_text_different_timestamp_both_survive(self):
+        """
+        Dos mensajes con texto idéntico pero timestamp diferente deben contarse ambos.
+        Cubre el riesgo de colisión en el content-key dedup.
+        """
+        # iter_0: dos "ok" en minutos distintos
+        iter0 = [
+            _hist_bubble(screen_id=2, sender="me", text="ok", y=100, timestamp="2:00 p.m."),
+            _hist_bubble(screen_id=1, sender="me", text="ok", y=200, timestamp="3:00 p.m."),
+        ]
+        # iter_1: un "ok" más antiguo + el anchor (2:00 p.m.)
+        iter1 = [
+            _hist_bubble(screen_id=2, sender="me", text="ok", y=100, timestamp="1:00 p.m."),
+            _hist_bubble(screen_id=1, sender="me", text="ok", y=200, timestamp="2:00 p.m."),  # anchor
+        ]
+        runner = _mock_runner_for_history(iter0, iter1)
+        result = await runner.capture_full_history(assets_dir=None)
+
+        timestamps = sorted(b.timestamp for b in result)
+        # Los 3 "ok" de 1pm, 2pm y 3pm deben aparecer (no colapsados)
+        assert timestamps == ["1:00 p.m.", "2:00 p.m.", "3:00 p.m."], \
+            f"Timestamps encontrados: {timestamps}"
+        assert len(result) == 3
