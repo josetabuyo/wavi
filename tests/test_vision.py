@@ -118,6 +118,39 @@ class TestExtractTimestamp:
         result = _extract_timestamp(blocks)
         assert result == "7:17 p. m."
 
+    def test_cyrillic_ocr_artifact_single_block(self):
+        """'р.' es OCR de 'p.' — el tiempo que precede a 'р.' es el timestamp."""
+        blocks = [{"text": "0:19 6:13 р. т. /"}]
+        result = _extract_timestamp(blocks)
+        assert result == "6:13"
+
+    def test_cyrillic_ocr_artifact_separate_block(self):
+        """Timestamp cirílico en bloque separado del duration."""
+        blocks = [{"text": "0:19"}, {"text": "6:13 р."}]
+        result = _extract_timestamp(blocks)
+        assert result == "6:13"
+
+    def test_cyrillic_does_not_match_zero_duration(self):
+        """'0:19 р.' no matchea: el patrón requiere [1-9] como primer dígito."""
+        blocks = [{"text": "0:19 р."}]
+        assert _extract_timestamp(blocks) is None
+
+    def test_cyrillic_does_not_match_plain_russian_text(self):
+        """Texto ruso normal sin 'X:YY р.' no dispara el fallback."""
+        blocks = [{"text": "Привет как дела"}]
+        assert _extract_timestamp(blocks) is None
+
+    def test_cyrillic_long_duration_ambiguous_edge_case(self):
+        """
+        Audio de 1:30 min cuyo bloque OCR funde duration+timestamp como '1:30 р.':
+        retorna '1:30' (best-effort). Caso raro en práctica ya que duration y timestamp
+        están separados espacialmente en WA y suelen quedar en bloques distintos.
+        """
+        blocks = [{"text": "1:30 р."}]
+        # Comportamiento documentado: ambiguo, acepta '1:30' como resultado
+        result = _extract_timestamp(blocks)
+        assert result == "1:30"
+
 
 # ── _classify_x ───────────────────────────────────────────────────────────────
 
