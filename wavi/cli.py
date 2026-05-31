@@ -45,6 +45,10 @@ _HEADLESS_CHROME_ARGS = [
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
     "--disable-features=CalculateNativeWinOcclusion",
+    # ADR-002: force DPR=1 so --window-size=1280x1920 maps 1:1 to CSS pixels.
+    # Without this, macOS Retina sets DPR=2 and the effective viewport is ~640x960,
+    # producing "tiny" screenshots with few visible messages.
+    "--force-device-scale-factor=1",
 ]
 
 _VISIBLE_CHROME_ARGS = _HEADLESS_CHROME_ARGS  # same flags, no --headless=new
@@ -392,6 +396,60 @@ def full_sync(session: str, contact: str, assets: str | None, headless: bool, js
                 click.echo(f"  bubble #{a['bubble'].id}: {size} bytes → {path}")
 
 
+# ── full-sync-enhanced ───────────────────────────────────────────────────────
+
+@main.command("full-sync-enhanced")
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.option("--assets", default=None, help="Directory to save screenshots and history.")
+@click.option("--headless/--no-headless", default=True, show_default=True,
+              help="Headless fallback (ignored when daemon is running headful).")
+@click.option("--json-out", is_flag=True, help="Output results as JSON.")
+@click.option("--max-iter", default=300, show_default=True,
+              help="Max scroll iterations (use 3 for quick debug).")
+def full_sync_enhanced(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int):
+    """Like full-sync but scrolls up to capture the full message history.
+
+    iter_000/ holds the same initial capture that full-sync produces.
+    Subsequent iterations scroll toward the past, each with its own debug image.
+    history_bubbles.json aggregates all deduplicated messages.
+
+    NOTE: photos and videos are not detected by the vision pipeline.
+    """
+    from wavi.runner import run_enhanced
+
+    assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_") / "history"
+
+    if assets_dir.exists():
+        shutil.rmtree(assets_dir)
+
+    async def _go():
+        return await run_enhanced(
+            profile_dir=_profile(session),
+            contact=contact,
+            assets_dir=assets_dir,
+            headless=headless,
+            max_iterations=max_iter,
+        )
+
+    try:
+        result = asyncio.run(_go())
+    except RuntimeError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+    bubbles = result["bubbles"]
+
+    if json_out:
+        click.echo(json.dumps([b.as_dict() for b in bubbles], indent=2, ensure_ascii=False))
+        return
+
+    click.echo(f"\n{len(bubbles)} mensaje(s) en el historial completo:")
+    for b in bubbles:
+        ts = f" [{b.timestamp}]" if b.timestamp else ""
+        click.echo(f"  #{b.id:04d} {b.sender:5s} {b.msg_type:6s}{ts}  {b.text[:80]}")
+
+
 # ── bubbles ───────────────────────────────────────────────────────────────────
 
 @main.command()
@@ -416,3 +474,5 @@ def bubbles(screenshot: str, assets: str | None, json_out: bool, debug: bool):
     for b in result:
         ts = f" [{b.timestamp}]" if b.timestamp else ""
         click.echo(f"  #{b.id:02d} {b.sender:5s} {b.msg_type:6s}{ts}  {b.text[:80]}")
+
+

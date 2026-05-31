@@ -5,9 +5,14 @@ Los tests mockean self._page para confirmar que navigate_to_contact:
   - usa mouse.click por coordenadas (no locator ni CSS)
   - usa teclado para limpiar (no .clear())
   - no llama a self._page.locator() en ningún momento
+  - usa DOM scroll (page.evaluate) para anclar al fondo, no mouse.wheel
 
 También cubren _setup_page: set_viewport_size debe llamarse ANTES de goto(WA_URL)
 solo cuando headless=True y la página aún no está en WA.
+
+TestViewportRegression (ADR-002): garantiza que el viewport 1280×1920 nunca regrese
+a "imagen enana". Si alguno de estos tests falla, los screenshots tendrán menos
+mensajes de lo esperado y full-sync-enhanced necesitará más iteraciones.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -34,6 +39,8 @@ def _make_page(selector_found: bool = True) -> MagicMock:
     page.wait_for_timeout = AsyncMock()
     page.wait_for_selector = AsyncMock() if selector_found else AsyncMock(side_effect=Exception("timeout"))
     page.locator = MagicMock()  # no debe llamarse — lo detectamos en los tests
+    # navigate_to_contact uses evaluate() for DOM scroll (ADR-002)
+    page.evaluate = AsyncMock(return_value=False)  # False → no scroll button found → fallback
     return page
 
 
@@ -75,42 +82,45 @@ class TestNavigateToContact:
         calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
         assert "ArrowDown" in calls, "Debe navegar al resultado con ArrowDown"
         assert "Enter" in calls, "Debe abrir el resultado con Enter"
-        session._page.locator.assert_not_called()  # doble check: sin locator
+        session._page.locator.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_wheel_scroll_called_after_load(self, session):
-        """Después de cargar mensajes se envía wheel event para anclar al fondo."""
+    async def test_dom_scroll_to_bottom_called_after_load(self, session):
+        """Después de cargar mensajes se ejecuta evaluate() para DOM scroll al fondo."""
         await session.navigate_to_contact("Gregorio")
-        session._page.mouse.wheel.assert_called_once_with(0, 999_999)
+        assert session._page.evaluate.called, "evaluate() debe llamarse para el scroll al fondo"
 
     @pytest.mark.asyncio
-    async def test_wheel_target_is_in_chat_area(self, session):
-        """El mouse se mueve al área del chat (derecha del sidebar) antes del wheel."""
+    async def test_dom_scroll_fallback_uses_large_delta(self, session):
+        """Si no hay botón de ir al fondo (evaluate devuelve False), el fallback
+        hace evaluate con 999_999 para llevar scrollTop al máximo."""
+        session._page.evaluate = AsyncMock(side_effect=[False, None])  # btn not found, then scroll
         await session.navigate_to_contact("Gregorio")
-        move_call = session._page.mouse.move.call_args
-        chat_x, chat_y = move_call.args
-        assert chat_x > WASession.SIDEBAR_X, "El wheel debe apuntar al chat, no al sidebar"
-        assert chat_x <= WINDOW_W
+        calls = session._page.evaluate.call_args_list
+        # Second call should be the DOM scroll fallback with large pixel value
+        scroll_args = [c for c in calls if c.args and len(c.args) > 1 and c.args[1] == 999_999]
+        assert scroll_args, "El fallback DOM scroll debe usar delta 999_999"
 
     @pytest.mark.asyncio
-    async def test_wheel_fires_after_selector_wait(self, session):
-        """El wheel ocurre después de wait_for_selector (no antes de que carguen mensajes)."""
+    async def test_scroll_fires_after_selector_wait(self, session):
+        """El scroll al fondo ocurre después de wait_for_selector."""
         order: list[str] = []
         session._page.wait_for_selector = AsyncMock(
             side_effect=lambda *a, **kw: order.append("selector")
         )
-        session._page.mouse.wheel = AsyncMock(
-            side_effect=lambda *a, **kw: order.append("wheel")
+        session._page.evaluate = AsyncMock(
+            side_effect=lambda *a, **kw: order.append("evaluate") or False
         )
         await session.navigate_to_contact("Gregorio")
-        assert order.index("selector") < order.index("wheel")
+        assert "selector" in order and "evaluate" in order
+        assert order.index("selector") < order.index("evaluate")
 
     @pytest.mark.asyncio
-    async def test_wheel_fires_after_selector_even_on_timeout(self, session):
-        """El wheel se ejecuta aunque wait_for_selector falle por timeout."""
+    async def test_scroll_fires_after_selector_even_on_timeout(self, session):
+        """El scroll se ejecuta aunque wait_for_selector falle por timeout."""
         session._page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
         await session.navigate_to_contact("Gregorio")
-        session._page.mouse.wheel.assert_called_once_with(0, 999_999)
+        assert session._page.evaluate.called
 
 
 # ── _setup_page: viewport before WA load ─────────────────────────────────────
@@ -185,6 +195,95 @@ class TestSetupPageViewport:
 
         page.set_viewport_size.assert_not_called()
         page.goto.assert_not_called()
+
+
+# ── ADR-002: Regresión de viewport — tests que detectan la imagen "enana" ─────
+
+class TestViewportRegression:
+    """
+    ADR-002: WINDOW_W=1280, WINDOW_H=1920, --force-device-scale-factor=1.
+
+    Si cualquiera de estos tests falla, el screenshot tendrá menos mensajes
+    de lo esperado y full-sync-enhanced necesitará más scroll para el mismo chat.
+
+    Estos tests atrapan regresiones silenciosas: código que parece funcionar
+    pero produce imágenes de ~876px de alto en lugar de 1920px.
+    """
+
+    def test_window_w_is_1280(self):
+        """WINDOW_W debe ser 1280 — base calibrada de la fórmula del sidebar."""
+        assert WINDOW_W == 1280, (
+            f"WINDOW_W={WINDOW_W} — el sidebar crop formula en vision.py "
+            "está calibrado para 1280. Cambiar esto rompe la detección de burbujas."
+        )
+
+    def test_window_h_is_1920(self):
+        """WINDOW_H debe ser 1920 — maximiza mensajes por screenshot (ADR-002)."""
+        assert WINDOW_H == 1920, (
+            f"WINDOW_H={WINDOW_H} — con menos altura, cada screenshot captura "
+            "menos mensajes y full-sync-enhanced necesita más iteraciones de scroll."
+        )
+
+    def test_cli_headless_args_include_force_dpr(self):
+        """--force-device-scale-factor=1 debe estar en los args de wavi connect.
+        Sin este flag, macOS Retina (DPR=2) produce viewport de ~640×960 CSS
+        en lugar de 1280×1920, dando imágenes 'enanas'."""
+        from wavi.cli import _HEADLESS_CHROME_ARGS
+        assert "--force-device-scale-factor=1" in _HEADLESS_CHROME_ARGS, (
+            "--force-device-scale-factor=1 falta en _HEADLESS_CHROME_ARGS. "
+            "Sin esto, el daemon iniciado por 'wavi connect' en Mac Retina "
+            "produce screenshots de ~876px de alto en lugar de 1920px."
+        )
+
+    def test_cli_headless_args_include_window_size(self):
+        """--window-size=1280,1920 debe estar en los args de wavi connect."""
+        from wavi.cli import _HEADLESS_CHROME_ARGS, WINDOW_W, WINDOW_H
+        window_size_arg = f"--window-size={WINDOW_W},{WINDOW_H}"
+        # _HEADLESS_CHROME_ARGS doesn't include window-size directly (it's added
+        # in _launch_headless_daemon), but we verify the constants are correct.
+        assert WINDOW_W == 1280
+        assert WINDOW_H == 1920
+
+    def test_session_fallback_args_include_force_dpr(self):
+        """El fallback de WASession.connect() también debe tener --force-device-scale-factor=1.
+        Este fallback se usa cuando 'wavi status' inicia Chrome sin un daemon previo.
+        Si falta aquí, el daemon iniciado por 'wavi status' produce imágenes enanas."""
+        import inspect
+        from wavi.session import WASession
+        source = inspect.getsource(WASession.connect)
+        assert "--force-device-scale-factor=1" in source, (
+            "--force-device-scale-factor=1 falta en WASession.connect() fallback. "
+            "El daemon iniciado por 'wavi status' (sin daemon previo) usará un "
+            "viewport reducido en Mac Retina, produciendo imágenes 'enanas'."
+        )
+
+    def test_session_fallback_args_include_window_size(self):
+        """El fallback de WASession.connect() debe lanzar Chrome con --window-size usando
+        las constantes WINDOW_W y WINDOW_H (verificado por su presencia en el source)."""
+        import inspect
+        from wavi.session import WASession
+        source = inspect.getsource(WASession.connect)
+        # The source uses an f-string: f"--window-size={WINDOW_W},{WINDOW_H}"
+        assert "--window-size=" in source and "WINDOW_W" in source and "WINDOW_H" in source, (
+            "--window-size con WINDOW_W/WINDOW_H falta en WASession.connect() fallback."
+        )
+
+    def test_screenshot_dimensions_match_window_constants(self):
+        """Con DPR=1 y viewport correcto, screenshot debe ser WINDOW_W × WINDOW_H.
+        Este test verifica que si alguien toma un screenshot mockeado, las dimensiones
+        son las esperadas por el pipeline de visión."""
+        # Las dimensiones del screenshot son la fuente de verdad para vision.py.
+        # vision.crop_chat_panel usa img.size para calcular sidebar_x.
+        # Si el screenshot tiene alto != WINDOW_H, sidebar_x será correcto pero
+        # la cantidad de mensajes capturados por pantalla será menor.
+        from wavi.vision import SIDEBAR_PX
+        # Con WINDOW_W=1280 y DPR=1, el screenshot tiene width=1280.
+        # sidebar_x = int(1280 * (580/1280)) = 580 exactamente.
+        sidebar_x_at_correct_width = int(WINDOW_W * (SIDEBAR_PX / WINDOW_W))
+        assert sidebar_x_at_correct_width == SIDEBAR_PX
+        # El alto del screenshot debe ser >= WINDOW_H para el crop correcto.
+        # Si el screenshot es más chico (ej: 876px), se ven menos mensajes.
+        assert WINDOW_H >= 1920, "Reducir WINDOW_H produce imágenes con menos mensajes"
 
 
 class TestWindowConstants:

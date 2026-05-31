@@ -94,6 +94,91 @@ _DRAIN_JS = """
 }
 """
 
+_CLICK_SCROLL_BOTTOM_BTN_JS = """
+() => {
+    // WA shows a floating "scroll to bottom" button when not at the bottom of the chat.
+    // Find it by position: it sits in the lower-right corner of the message panel.
+    const panelSels = [
+        '[data-testid="conversation-panel-messages"]',
+        '#main div[role="region"]',
+        '#main .copyable-area'
+    ];
+    let panel = null;
+    for (const s of panelSels) {
+        panel = document.querySelector(s);
+        if (panel) break;
+    }
+    if (!panel) return false;
+
+    const pr = panel.getBoundingClientRect();
+    const buttons = document.querySelectorAll('#main button');
+    for (const btn of buttons) {
+        const br = btn.getBoundingClientRect();
+        // Button must be visible, inside the right half of the panel, near its bottom edge
+        if (br.width > 0 && br.height > 0
+                && br.left > pr.left + pr.width * 0.5
+                && br.bottom > pr.bottom - 120
+                && br.bottom < pr.bottom + 20) {
+            btn.click();
+            return true;
+        }
+    }
+    return false;
+}
+"""
+
+_CHAT_SCROLL_JS = """
+() => {
+    const selectors = [
+        '[data-testid="conversation-panel-messages"]',
+        '#main div[role="region"]',
+        '#main .copyable-area'
+    ];
+    for (const s of selectors) {
+        const el = document.querySelector(s);
+        if (el && el.scrollHeight > el.clientHeight)
+            return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+    }
+    return null;
+}
+"""
+
+_SCROLL_UP_JS = """
+(pixels) => {
+    const selectors = [
+        '[data-testid="conversation-panel-messages"]',
+        '#main div[role="region"]',
+        '#main .copyable-area'
+    ];
+    for (const s of selectors) {
+        const el = document.querySelector(s);
+        if (el && el.scrollHeight > el.clientHeight) {
+            el.scrollTop -= pixels;
+            return el.scrollTop;
+        }
+    }
+    return null;
+}
+"""
+
+_SCROLL_DOWN_JS = """
+(pixels) => {
+    const selectors = [
+        '[data-testid="conversation-panel-messages"]',
+        '#main div[role="region"]',
+        '#main .copyable-area'
+    ];
+    for (const s of selectors) {
+        const el = document.querySelector(s);
+        if (el && el.scrollHeight > el.clientHeight) {
+            el.scrollTop += pixels;
+            return el.scrollTop;
+        }
+    }
+    return null;
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -199,7 +284,10 @@ class WASession:
             "--disable-blink-features=AutomationControlled",
             f"--user-agent={_UA}",
         ]
-        args += ["--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}"]
+        # ADR-002: --force-device-scale-factor=1 ensures window-size maps 1:1 to
+        # CSS pixels on macOS Retina (otherwise DPR=2 halves the effective viewport).
+        args += ["--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}",
+                 "--force-device-scale-factor=1"]
 
         self._chrome_proc = subprocess.Popen(
             ["arch", "-arm64"] + args + ["about:blank"],
@@ -348,12 +436,12 @@ class WASession:
         await self._page.wait_for_timeout(1500)
 
         # WA prepends older messages above the anchor after loading, which shifts the
-        # scroll position up. Send a native wheel event (indistinguishable from a real
-        # user scrolling) to force the viewport back to the bottom.
-        chat_x = (self.SIDEBAR_X + WINDOW_W) // 2
-        chat_y = WINDOW_H // 2
-        await self._page.mouse.move(chat_x, chat_y)
-        await self._page.mouse.wheel(0, 999_999)
+        # scroll position up. Try the WA "scroll to bottom" button first — it triggers
+        # WA's own virtualizer to render the latest messages. Fall back to DOM scrollTop.
+        clicked = await self._page.evaluate(_CLICK_SCROLL_BOTTOM_BTN_JS)
+        await self._page.wait_for_timeout(600)
+        if not clicked:
+            await self._page.evaluate(_SCROLL_DOWN_JS, 999_999)
         await self._page.wait_for_timeout(800)
 
     # ── Screenshot ────────────────────────────────────────────────────────────
@@ -402,6 +490,25 @@ class WASession:
         if b64:
             return base64.b64decode(b64)
         return None
+
+    # ── Scroll helpers ────────────────────────────────────────────────────────
+
+    async def scroll_chat_up(self, css_pixels: int = 1800) -> None:
+        """Scroll chat up by css_pixels via direct DOM scrollTop manipulation."""
+        await self._page.evaluate(_SCROLL_UP_JS, css_pixels)
+
+    async def scroll_chat_down(self, css_pixels: int = 300) -> None:
+        """Scroll chat down by css_pixels via direct DOM scrollTop manipulation."""
+        await self._page.evaluate(_SCROLL_DOWN_JS, css_pixels)
+
+    async def get_chat_scroll_state(self) -> dict | None:
+        """Return {scrollTop, scrollHeight, clientHeight} of the chat container, or None."""
+        return await self._page.evaluate(_CHAT_SCROLL_JS)
+
+    async def is_chat_at_top(self) -> bool:
+        """Return True if the chat scroll container is at the top (scrollTop < 20)."""
+        state = await self.get_chat_scroll_state()
+        return state is not None and state["scrollTop"] < 20
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

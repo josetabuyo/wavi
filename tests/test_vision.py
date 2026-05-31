@@ -204,7 +204,7 @@ class TestSaveDebugImage:
         """Cross appears on audio/file bubbles; absent on text/media."""
         bg = (243, 238, 231)
         img = Image.new("RGB", (800, 600), color=bg)
-        # Use realistic WA dimensions: me audio needs room for avatar (x+188), h=136
+        # Use realistic WA dimensions: me audio needs room for play btn (x+93), h=136
         me_audio_bbox   = {"x": 10, "y": 50,  "w": 250, "h": 136}
         other_file_bbox = {"x": 10, "y": 250, "w": 200, "h": 136}
         text_bbox       = {"x": 10, "y": 450, "w": 200, "h": 60}
@@ -221,18 +221,18 @@ class TestSaveDebugImage:
             r, g, b = px
             return r > 150 and g < 100 and b < 100
 
-        # me audio: cross at x+188, y+h-75
-        assert is_red(result.getpixel((me_audio_bbox["x"] + 188, me_audio_bbox["y"] + me_audio_bbox["h"] - 75))), "me audio cross missing"
-        # other file: cross at x+78, y+h-75
-        assert is_red(result.getpixel((other_file_bbox["x"] + 78, other_file_bbox["y"] + other_file_bbox["h"] - 75))), "other file cross missing"
+        # me audio: cross at x+93, y+h-37  (calibrated from DOM measurement 2026-05-30)
+        assert is_red(result.getpixel((me_audio_bbox["x"] + 93, me_audio_bbox["y"] + me_audio_bbox["h"] - 37))), "me audio cross missing"
+        # other file: cross at x+38, y+h-37
+        assert is_red(result.getpixel((other_file_bbox["x"] + 38, other_file_bbox["y"] + other_file_bbox["h"] - 37))), "other file cross missing"
         # text: no red cross at the audio cross position
-        assert not is_red(result.getpixel((text_bbox["x"] + 78, text_bbox["y"] + text_bbox["h"] // 2))), "text must not have cross"
+        assert not is_red(result.getpixel((text_bbox["x"] + 38, text_bbox["y"] + text_bbox["h"] // 2))), "text must not have cross"
 
     def test_cross_me_vs_other_x_offset(self, tmp_path):
         """
-        'me' cross must be at x+188 (avatar on left before play btn).
-        'other' cross must be at x+78 (play btn near left edge).
-        Neither should appear at the old wrong offset x+22.
+        'me' cross must be at x+93 (play btn position, calibrated from DOM 2026-05-30).
+        'other' cross must be at x+38 (play btn near left edge, calibrated from DOM).
+        Old uncalibrated values (x+188, x+78) were Δx=95 and Δx=40 off respectively.
         """
         bg = (243, 238, 231)
         img = Image.new("RGB", (800, 400), color=bg)
@@ -250,22 +250,22 @@ class TestSaveDebugImage:
             r, g, b = px
             return r > 150 and g < 100 and b < 100
 
-        me_cy    = me_bbox["y"]    + me_bbox["h"]    - 75
-        other_cy = other_bbox["y"] + other_bbox["h"] - 75
+        me_cy    = me_bbox["y"]    + me_bbox["h"]    - 37
+        other_cy = other_bbox["y"] + other_bbox["h"] - 37
 
-        # Correct positions
-        assert is_red(result.getpixel((me_bbox["x"] + 188, me_cy))),    "me cross at x+188 missing"
-        assert is_red(result.getpixel((other_bbox["x"] + 78, other_cy))), "other cross at x+78 missing"
-        # Old wrong position must NOT have cross
-        assert not is_red(result.getpixel((me_bbox["x"] + 22, me_cy))),    "me cross must not be at old x+22"
-        assert not is_red(result.getpixel((other_bbox["x"] + 22, other_cy))), "other cross must not be at old x+22"
+        # Calibrated positions (DOM measurement 2026-05-30)
+        assert is_red(result.getpixel((me_bbox["x"] + 93, me_cy))),     "me cross at x+93 missing"
+        assert is_red(result.getpixel((other_bbox["x"] + 38, other_cy))), "other cross at x+38 missing"
+        # Old uncalibrated positions must NOT have cross
+        assert not is_red(result.getpixel((me_bbox["x"] + 188, me_cy))),  "me cross must not be at old x+188"
+        assert not is_red(result.getpixel((other_bbox["x"] + 78, other_cy))), "other cross must not be at old x+78"
 
     def test_cross_tall_bubble_bottom_anchored(self, tmp_path):
         """
         For tall bubbles (quoted reply on top + audio at bottom), the cross must land
         in the audio player row at the bottom — not at the vertical center of the whole bubble.
         h=136 is a standard audio-only bubble; h=261 simulates a quoted reply above it.
-        Both must yield a cross 75px from the bottom edge.
+        Both must yield a cross 37px from the bottom edge (calibrated from DOM 2026-05-30).
         """
         bg = (243, 238, 231)
         img = Image.new("RGB", (800, 600), color=bg)
@@ -283,11 +283,11 @@ class TestSaveDebugImage:
             r, g, b = px
             return r > 150 and g < 100 and b < 100
 
-        cx = 10 + 78  # "other" x offset
+        cx = 10 + 38  # "other" x offset (calibrated)
 
-        # Both crosses must be 75px from their respective bottom edges
-        assert is_red(result.getpixel((cx, short_bbox["y"] + short_bbox["h"] - 75))), "short bubble cross wrong"
-        assert is_red(result.getpixel((cx, tall_bbox["y"]  + tall_bbox["h"]  - 75))), "tall bubble cross wrong"
+        # Both crosses must be 37px from their respective bottom edges
+        assert is_red(result.getpixel((cx, short_bbox["y"] + short_bbox["h"] - 37))), "short bubble cross wrong"
+        assert is_red(result.getpixel((cx, tall_bbox["y"]  + tall_bbox["h"]  - 37))), "tall bubble cross wrong"
 
         # The tall bubble's cross must NOT be at the vertical center (that's the old bug)
         wrong_cy = tall_bbox["y"] + tall_bbox["h"] // 2

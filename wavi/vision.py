@@ -340,8 +340,8 @@ def _save_debug_image(
             if play_positions and b.id in play_positions:
                 cx, cy = play_positions[b.id]        # exact DOM position
             else:
-                cx = x + 188 if b.sender == "me" else x + 78
-                cy = y + h - 75
+                cx = x + 93 if b.sender == "me" else x + 38
+                cy = y + h - 37
             draw.line([cx - ARM, cy, cx + ARM, cy], fill=CROSS_COLOR, width=3)
             draw.line([cx, cy - ARM, cx, cy + ARM], fill=CROSS_COLOR, width=3)
 
