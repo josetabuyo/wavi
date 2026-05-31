@@ -94,10 +94,10 @@ class TestNavigateToContact:
     async def test_dom_scroll_fallback_uses_large_delta(self, session):
         """Si no hay botón de ir al fondo (evaluate devuelve False), el fallback
         hace evaluate con 999_999 para llevar scrollTop al máximo."""
-        session._page.evaluate = AsyncMock(side_effect=[False, None])  # btn not found, then scroll
+        # btn not found → dom scroll → get_chat_scroll_state returns None → retry loop breaks
+        session._page.evaluate = AsyncMock(side_effect=[False, None, None])
         await session.navigate_to_contact("Gregorio")
         calls = session._page.evaluate.call_args_list
-        # Second call should be the DOM scroll fallback with large pixel value
         scroll_args = [c for c in calls if c.args and len(c.args) > 1 and c.args[1] == 999_999]
         assert scroll_args, "El fallback DOM scroll debe usar delta 999_999"
 
@@ -121,6 +121,65 @@ class TestNavigateToContact:
         session._page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
         await session.navigate_to_contact("Gregorio")
         assert session._page.evaluate.called
+
+    @pytest.mark.asyncio
+    async def test_scroll_retries_if_not_at_bottom(self):
+        """
+        Si get_chat_scroll_state muestra slack > 50px, el loop vuelve a intentar
+        scroll-to-bottom. Simula la situación post-full-sync-enhanced donde el
+        virtualizer restaura la posición anterior (top) en vez del fondo.
+        """
+        s = _make_session()
+        page = _make_page()
+
+        # evaluate calls in order:
+        # 1. _CLICK_SCROLL_BOTTOM_BTN_JS (initial) → False (no button)
+        # 2. _SCROLL_DOWN_JS 999_999 (initial fallback) → None
+        # 3. get_chat_scroll_state retry 1 → not at bottom (slack=1000)
+        # 4. _CLICK_SCROLL_BOTTOM_BTN_JS retry 1 → False
+        # 5. _SCROLL_DOWN_JS 999_999 retry 1 → None
+        # 6. get_chat_scroll_state retry 2 → at bottom (slack=0)
+        page.evaluate = AsyncMock(side_effect=[
+            False,                                                          # btn initial
+            None,                                                           # dom scroll initial
+            {"scrollTop": 0, "scrollHeight": 2000, "clientHeight": 1000},  # retry check: not at bottom
+            False,                                                          # btn retry
+            None,                                                           # dom scroll retry
+            {"scrollTop": 1000, "scrollHeight": 2000, "clientHeight": 1000},  # retry check: at bottom (slack=0)
+        ])
+        s._page = page
+
+        await s.navigate_to_contact("Gregorio")
+
+        # Should have called DOM scroll at least twice (initial + one retry)
+        dom_scroll_calls = [
+            c for c in page.evaluate.call_args_list
+            if len(c.args) > 1 and c.args[1] == 999_999
+        ]
+        assert len(dom_scroll_calls) >= 2, \
+            f"Esperaba ≥2 DOM scroll calls (initial + retry), obtuvo {len(dom_scroll_calls)}"
+
+    @pytest.mark.asyncio
+    async def test_scroll_no_extra_retries_when_already_at_bottom(self):
+        """Si ya está en el fondo desde el primer check, no hace retries innecesarios."""
+        s = _make_session()
+        page = _make_page()
+
+        page.evaluate = AsyncMock(side_effect=[
+            False,                                                           # btn initial
+            None,                                                            # dom scroll initial
+            {"scrollTop": 950, "scrollHeight": 1000, "clientHeight": 1000}, # slack=50 ≤ 50 → break
+        ])
+        s._page = page
+
+        await s.navigate_to_contact("Gregorio")
+
+        dom_scroll_calls = [
+            c for c in page.evaluate.call_args_list
+            if len(c.args) > 1 and c.args[1] == 999_999
+        ]
+        assert len(dom_scroll_calls) == 1, \
+            "Si ya estaba en el fondo, solo debe haber 1 DOM scroll (el inicial)"
 
 
 # ── _setup_page: viewport before WA load ─────────────────────────────────────

@@ -438,11 +438,30 @@ class WASession:
         # WA prepends older messages above the anchor after loading, which shifts the
         # scroll position up. Try the WA "scroll to bottom" button first — it triggers
         # WA's own virtualizer to render the latest messages. Fall back to DOM scrollTop.
+        # After a prior full-sync-enhanced the virtualizer may restore the old (top) position,
+        # so we verify scrollTop actually reached the bottom and retry up to 5 times.
         clicked = await self._page.evaluate(_CLICK_SCROLL_BOTTOM_BTN_JS)
         await self._page.wait_for_timeout(600)
         if not clicked:
             await self._page.evaluate(_SCROLL_DOWN_JS, 999_999)
         await self._page.wait_for_timeout(800)
+
+        for attempt in range(5):
+            state = await self.get_chat_scroll_state()
+            if not state:
+                break  # container not found (e.g. test env) — stop retrying
+            slack = state["scrollHeight"] - state["scrollTop"] - state["clientHeight"]
+            if slack <= 50:
+                break  # confirmed at bottom
+            # Not at bottom yet — prefer WA's own button, fall back to DOM
+            clicked = await self._page.evaluate(_CLICK_SCROLL_BOTTOM_BTN_JS)
+            await self._page.wait_for_timeout(600 if clicked else 200)
+            if not clicked:
+                await self._page.evaluate(_SCROLL_DOWN_JS, 999_999)
+            await self._page.wait_for_timeout(500)
+        else:
+            import sys
+            print("[wavi] ⚠️  navigate_to_contact: could not confirm bottom after 5 retries", file=sys.stderr)
 
     # ── Screenshot ────────────────────────────────────────────────────────────
 

@@ -295,9 +295,10 @@ class WARunner:
 
             bubbles = new_bubbles
 
-        # Re-assign globally sequential IDs in chronological order: id=1=oldest, id=N=newest
-        for idx, b in enumerate(all_bubbles, start=1):
-            b.id = idx
+        # Re-assign globally sequential IDs: id=1=newest, id=N=oldest
+        n = len(all_bubbles)
+        for i, b in enumerate(all_bubbles):
+            b.id = n - i
 
         # Save aggregated result to assets_dir
         if assets_dir:

@@ -46,13 +46,11 @@ HEADER_PX  = 60
 
 @dataclass
 class Bubble:
-    # Convention note — two ID systems with OPPOSITE "1" semantics (intentional):
-    #   id        → global chronological index, assigned by capture_full_history.
-    #               1 = oldest message in the full history, N = newest.
+    # Both ID fields share the same convention:  1 = newest,  N = oldest.
+    #   id        → global rank across the full history (set by capture_full_history).
     #               For single-screenshot use this equals screen_id.
     #   screen_id → rank within the snapshot returned by analyze().
-    #               1 = newest visible (bottom of screen), N = oldest (top).
-    #               Mirrors WA Web's bottom-anchored layout convention.
+    #               Mirrors WA Web's bottom-anchored layout (newest at bottom = id 1).
     id: int
     sender: Literal["me", "other"]
     msg_type: Literal["text", "audio", "file", "media"]
@@ -64,8 +62,8 @@ class Bubble:
 
     def as_dict(self) -> dict:
         return {
-            "id": self.id,            # chronological: 1=oldest overall
-            "screen_id": self.screen_id,  # snapshot rank: 1=newest visible
+            "id": self.id,            # 1=newest overall (both fields share this convention)
+            "screen_id": self.screen_id,  # 1=newest in this snapshot
             "sender": self.sender,
             "msg_type": self.msg_type,
             "timestamp": self.timestamp,

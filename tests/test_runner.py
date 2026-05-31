@@ -206,13 +206,17 @@ class TestCaptureFullHistory:
 
     @pytest.mark.asyncio
     async def test_ids_sequential_and_unique(self):
-        """El historial completo tiene IDs 1..N sin huecos ni duplicados."""
+        """El historial completo tiene IDs 1..N sin huecos ni duplicados (1=newest, N=oldest)."""
         runner = _mock_runner_for_history(self._ITER0, self._ITER1)
         result = await runner.capture_full_history(assets_dir=None)
 
         ids = [b.id for b in result]
-        assert ids == list(range(1, len(result) + 1)), \
-            f"IDs esperados 1..{len(result)}, obtenidos: {ids}"
+        assert set(ids) == set(range(1, len(result) + 1)), \
+            f"IDs deben formar el conjunto 1..{len(result)}, obtenidos: {ids}"
+        # El mensaje más nuevo (C, último en lista) debe tener id=1
+        assert result[-1].text == "C" and result[-1].id == 1
+        # El mensaje más antiguo (D, primero en lista) debe tener id=N
+        assert result[0].text == "D" and result[0].id == len(result)
 
     @pytest.mark.asyncio
     async def test_chronological_order(self):
@@ -238,8 +242,8 @@ class TestCaptureFullHistory:
         assert by_text["D"].screen_id == 3
         # C tenía screen_id=1 en iter_0 (el más nuevo, fondo de pantalla)
         assert by_text["C"].screen_id == 1
-        # screen_id nunca debe coincidir con id global para los mensajes reordenados
-        assert by_text["D"].id != by_text["D"].screen_id
+        # id global (5=oldest D en un historial de 5) ≠ screen_id local (3)
+        assert by_text["D"].id == 5 and by_text["D"].screen_id == 3
 
     @pytest.mark.asyncio
     async def test_overlap_counted_once(self):
@@ -271,7 +275,7 @@ class TestCaptureFullHistory:
         # Solo los 3 mensajes de iter_0 (iter_1 no aportó nada nuevo)
         assert len(result) == 3
         ids = [b.id for b in result]
-        assert ids == list(range(1, 4))
+        assert set(ids) == {1, 2, 3}
 
     @pytest.mark.asyncio
     async def test_identical_text_different_timestamp_both_survive(self):
