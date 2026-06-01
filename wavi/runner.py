@@ -125,6 +125,141 @@ class WARunner:
             return best
         return None
 
+    async def _redraw_debug_with_dom_positions(
+        self,
+        bubbles: list,
+        assets_dir: "Path",
+    ) -> None:
+        """Redraw the debug image for assets_dir with exact DOM play-button positions."""
+        try:
+            from PIL import Image as PILImage
+            from wavi.vision import _save_debug_image
+            dpr = await self.session.get_dpr()
+            play_btns = await self.find_play_buttons()
+            resolved: dict = {}
+            for b in bubbles:
+                if b.msg_type in ("audio", "file"):
+                    btn = self._match_bubble_to_button(b, play_btns, dpr=dpr)
+                    if btn:
+                        resolved[b.id] = (
+                            int(btn["vx"] * dpr) - int(WASession.SIDEBAR_X * dpr),
+                            int(btn["vy"] * dpr) - WASession.HEADER_Y,
+                        )
+            if resolved:
+                assets_dir = Path(assets_dir)
+                cropped = assets_dir / "screenshot_cropped.png"
+                debug_out = assets_dir / "screenshot_debug.png"
+                if cropped.exists():
+                    img = PILImage.open(cropped)
+                    _save_debug_image(img, bubbles, debug_out, play_positions=resolved)
+        except Exception as e:
+            import sys
+            print(f"[wavi] debug redraw skipped: {e}", file=sys.stderr)
+
+    async def _download_audio_for_bubbles(
+        self,
+        bubbles: list,
+        assets_dir: "Path | None" = None,
+        wait_ms: int = 3_000,
+        blob_timeout_ms: int = 30_000,
+        downloaded_ids: set | None = None,
+    ) -> list[dict]:
+        """
+        Download audio blobs for audio bubbles currently visible on screen.
+        Blob monitor must be installed before calling this.
+        Resets the blob queue before starting so previous-iteration blobs don't leak.
+
+        If downloaded_ids is provided, skips bubbles whose dom_id is already in the set
+        (prevents duplicate downloads in overlapping scroll regions).
+        """
+        audio_bubbles = [b for b in bubbles if b.msg_type == "audio"]
+        if not audio_bubbles:
+            return []
+
+        await self.session.reset_blobs()
+        dpr = await self.session.get_dpr()
+        play_buttons = await self.find_play_buttons()
+        print(
+            f"[wavi] _download_audio: {len(audio_bubbles)} audio bubbles, "
+            f"{len(play_buttons)} play buttons",
+            file=sys.stderr,
+        )
+
+        results = []
+        for bubble in audio_bubbles:
+            # Saltar si ya se descargó este audio (evita duplicados en overlaps)
+            if downloaded_ids is not None and bubble.dom_id and bubble.dom_id in downloaded_ids:
+                print(f"[wavi]   bubble#{bubble.id} dom_id ya descargado — skip", file=sys.stderr)
+                continue
+            btn = self._match_bubble_to_button(bubble, play_buttons, dpr=dpr)
+            if btn is None:
+                print(f"[wavi]   bubble#{bubble.id}: no play button matched", file=sys.stderr)
+                results.append({
+                    "bubble": bubble, "blob_url": None,
+                    "data": None, "path": None, "error": "no_play_button_matched",
+                })
+                continue
+
+            print(f"[wavi]   click bubble#{bubble.id} → vp({btn['vx']},{btn['vy']})", file=sys.stderr)
+            await self.session._page.mouse.click(btn["vx"], btn["vy"])
+
+            blobs: list[dict] = []
+            waited = 0
+            poll_ms = 500
+            while waited < blob_timeout_ms:
+                await self.session._page.wait_for_timeout(poll_ms)
+                waited += poll_ms
+                blobs = await self.session.drain_blobs()
+                if blobs:
+                    break
+
+            print(f"[wavi]   blobs after {waited}ms: {len(blobs)}", file=sys.stderr)
+            if not blobs:
+                results.append({
+                    "bubble": bubble, "blob_url": None,
+                    "data": None, "path": None, "error": "no_blob_captured",
+                })
+                continue
+
+            blob_url = blobs[-1]["url"]
+            data = await self.session.fetch_blob(blob_url)
+
+            out_path = None
+            if assets_dir and data:
+                Path(assets_dir).mkdir(parents=True, exist_ok=True)
+                out_path = Path(assets_dir) / f"audio_{bubble.id}.ogg"
+                out_path.write_bytes(data)
+                print(f"[wavi]   saved {len(data)} bytes → {out_path.name}", file=sys.stderr)
+
+            # Registrar que descargamos este dom_id para evitar duplicados
+            if downloaded_ids is not None and bubble.dom_id:
+                downloaded_ids.add(bubble.dom_id)
+
+            results.append({
+                "bubble": bubble,
+                "blob_url": blob_url,
+                "data": data,
+                "path": out_path,
+            })
+
+        return results
+
+    def _assign_dom_ids(
+        self,
+        bubbles: list,
+        dom_msgs: list[dict],
+        dpr: float,
+        tolerance_css_px: float = 80.0,
+    ) -> None:
+        """Assign DOM data-id to each bubble by closest viewport-y match."""
+        if not dom_msgs:
+            return
+        for bubble in bubbles:
+            bubble_vy = (bubble.bbox["y"] + bubble.bbox["h"] / 2 + WASession.HEADER_Y) / dpr
+            best = min(dom_msgs, key=lambda d: abs(d["vy"] - bubble_vy))
+            if abs(best["vy"] - bubble_vy) <= tolerance_css_px:
+                bubble.dom_id = best["id"]
+
     # ── Full history scroll-capture ───────────────────────────────────────────
 
     async def capture_full_history(
@@ -150,6 +285,8 @@ class WARunner:
         are captured fully.
         """
         def bubble_key(b: Bubble) -> tuple:
+            if b.dom_id:
+                return ("dom", b.dom_id)
             return (b.sender, b.msg_type, b.text[:80].strip(), b.timestamp)
 
         all_bubbles: list[Bubble] = []
@@ -169,8 +306,17 @@ class WARunner:
         def _iter_dir(n: int) -> Optional[Path]:
             return Path(assets_dir) / f"iter_{n:03d}" if assets_dir else None
 
+        # Install blob monitor ONCE before starting captures
+        await self.session.install_blob_monitor()
+
+        # Inicializar set para rastrear dom_ids descargados (evita duplicados en overlaps)
+        downloaded_audio_ids: set = set()
+
         # First capture in iter_000 with debug image
+        dpr = await self.session.get_dpr()
+        dom_msgs_0 = await self.session.get_visible_message_ids()
         bubbles = await self.get_bubbles(assets_dir=_iter_dir(0), save_debug=True)
+        self._assign_dom_ids(bubbles, dom_msgs_0, dpr)
         for b in bubbles:
             k = bubble_key(b)
             if k not in seen_keys:
@@ -178,31 +324,17 @@ class WARunner:
                 all_bubbles.append(b)
 
         # Redraw iter_000 debug image with exact DOM play-button positions
-        # (same as full-sync does via capture_audio_bubbles — no click/blob capture).
         iter0_dir = _iter_dir(0)
         if iter0_dir and bubbles:
-            try:
-                from PIL import Image as PILImage
-                from wavi.vision import _save_debug_image
-                dpr = await self.session.get_dpr()
-                play_btns = await self.find_play_buttons()
-                resolved: dict[int, tuple[int, int]] = {}
-                for b in bubbles:
-                    if b.msg_type in ("audio", "file"):
-                        btn = self._match_bubble_to_button(b, play_btns, dpr=dpr)
-                        if btn:
-                            resolved[b.id] = (
-                                int(btn["vx"] * dpr) - int(WASession.SIDEBAR_X * dpr),
-                                int(btn["vy"] * dpr) - WASession.HEADER_Y,
-                            )
-                if resolved:
-                    cropped = iter0_dir / "screenshot_cropped.png"
-                    debug_out = iter0_dir / "screenshot_debug.png"
-                    if cropped.exists():
-                        img = PILImage.open(cropped)
-                        _save_debug_image(img, bubbles, debug_out, play_positions=resolved)
-            except Exception as e:
-                print(f"[wavi] iter_000 debug redraw skipped: {e}", file=sys.stderr)
+            await self._redraw_debug_with_dom_positions(bubbles, iter0_dir)
+
+        # Descargar audios del iter_000 (DESPUÉS del redraw)
+        iter0_audios = await self._download_audio_for_bubbles(
+            bubbles, iter0_dir, downloaded_ids=downloaded_audio_ids
+        )
+        if iter0_audios:
+            n_ok = sum(1 for a in iter0_audios if a.get("path"))
+            print(f"[wavi] iter_000: {n_ok}/{len(iter0_audios)} audios descargados", file=sys.stderr)
 
         stall_count = 0
 
@@ -221,7 +353,9 @@ class WARunner:
 
             # Anchor = topmost visible = oldest = bubble with max id.
             # If current view is all-media (bubbles empty), skip anchor — key dedup handles it.
-            anchor_key = bubble_key(max(bubbles, key=lambda b: b.id)) if bubbles else None
+            anchor_bubble = max(bubbles, key=lambda b: b.id) if bubbles else None
+            anchor_dom_id  = anchor_bubble.dom_id if anchor_bubble else None
+            anchor_ocr_key = bubble_key(anchor_bubble) if anchor_bubble else None
 
             await self.session.scroll_chat_up(scroll_css_px)
             await self.session._page.wait_for_timeout(settle_ms)
@@ -239,13 +373,32 @@ class WARunner:
                 stall_count = 0
 
             # Each iteration saves to its own subdirectory with a debug image
+            dom_msgs = await self.session.get_visible_message_ids()
             iter_assets = _iter_dir(iteration + 1)
             new_bubbles = await self.get_bubbles(assets_dir=iter_assets, save_debug=True)
+            self._assign_dom_ids(new_bubbles, dom_msgs, dpr)
             # Note: new_bubbles may be empty if the current view is all-media — keep scrolling.
+            if iter_assets and any(b.msg_type in ("audio", "file") for b in new_bubbles):
+                await self._redraw_debug_with_dom_positions(new_bubbles, iter_assets)
 
-            # Find anchor: take bottommost match (max y) so duplicate messages
-            # don't shift the split point upward.
-            _matches = [b for b in new_bubbles if bubble_key(b) == anchor_key] if anchor_key else []
+            # Descargar audios en esta iteración (DESPUÉS del redraw)
+            iter_audios = await self._download_audio_for_bubbles(
+                new_bubbles, iter_assets, downloaded_ids=downloaded_audio_ids
+            )
+            if iter_audios:
+                n_ok = sum(1 for a in iter_audios if a.get("path"))
+                print(
+                    f"[wavi] iter={iteration+1}: {n_ok}/{len(iter_audios)} audios descargados",
+                    file=sys.stderr,
+                )
+
+            # Find anchor in new screenshot: prefer DOM id (immune to OCR variation),
+            # fall back to OCR key if no dom_id was assigned.
+            _matches: list = []
+            if anchor_dom_id:
+                _matches = [b for b in new_bubbles if b.dom_id == anchor_dom_id]
+            if not _matches and anchor_ocr_key:
+                _matches = [b for b in new_bubbles if bubble_key(b) == anchor_ocr_key]
             anchor_in_new = max(_matches, key=lambda b: b.bbox["y"]) if _matches else None
 
             # Backoff only when scrollTop barely moved AND anchor is missing
@@ -258,10 +411,20 @@ class WARunner:
                 for _ in range(max_backoff):
                     await self.session.scroll_chat_down(backoff_css_px)
                     await self.session._page.wait_for_timeout(600)
+                    backoff_dom_msgs = await self.session.get_visible_message_ids()
                     new_bubbles = await self.get_bubbles(assets_dir=iter_assets, save_debug=True)
-                    _matches = [b for b in new_bubbles if bubble_key(b) == anchor_key]
+                    self._assign_dom_ids(new_bubbles, backoff_dom_msgs, dpr)
+                    _matches = []
+                    if anchor_dom_id:
+                        _matches = [b for b in new_bubbles if b.dom_id == anchor_dom_id]
+                    if not _matches and anchor_ocr_key:
+                        _matches = [b for b in new_bubbles if bubble_key(b) == anchor_ocr_key]
                     anchor_in_new = max(_matches, key=lambda b: b.bbox["y"]) if _matches else None
                     if anchor_in_new is not None:
+                        # Descargar audios si encontró el ancla en backoff
+                        await self._download_audio_for_bubbles(
+                            new_bubbles, iter_assets, downloaded_ids=downloaded_audio_ids
+                        )
                         break
             elif anchor_in_new is None:
                 print(f"[wavi] iter={iteration+1}: anchor OCR mismatch (scrollTop moved {scroll_delta:.0f}px) — key dedup", file=sys.stderr)
@@ -341,95 +504,34 @@ class WARunner:
 
         # Install blob URL monitor NOW (WA is fully loaded — safe to hook MediaElement)
         await self.session.install_blob_monitor()
-        await self.session.reset_blobs()
-
-        dpr = await self.session.get_dpr()
-        play_buttons = await self.find_play_buttons()
-        print(
-            f"[wavi] audio bubbles={len(audio_bubbles)}  play_buttons_found={len(play_buttons)}"
-            f"  dpr={dpr}",
-            file=sys.stderr,
+        results = await self._download_audio_for_bubbles(
+            audio_bubbles, assets_dir, wait_ms, blob_timeout_ms
         )
-        results = []
-        # bubble_id → crop-panel physical (cx, cy) of the actual play button
-        resolved_positions: dict[int, tuple[int, int]] = {}
 
-        for bubble in audio_bubbles:
-            btn = self._match_bubble_to_button(bubble, play_buttons, dpr=dpr)
-            if btn is None:
-                results.append({
-                    "bubble": bubble,
-                    "blob_url": None,
-                    "data": None,
-                    "path": None,
-                    "error": "no_play_button_matched",
-                })
-                continue
-
-            # Record play button in physical crop-panel coords for debug image
-            # btn coords are CSS pixels → convert to physical, then subtract panel origin
-            resolved_positions[bubble.id] = (
-                int(btn["vx"] * dpr) - int(WASession.SIDEBAR_X * dpr),
-                int(btn["vy"] * dpr) - WASession.HEADER_Y,
-            )
-
-            # Click in viewport coords directly (bypass crop-panel offset)
-            print(f"[wavi]   click bubble#{bubble.id} → vp({btn['vx']},{btn['vy']})", file=sys.stderr)
-            await self.session._page.mouse.click(btn["vx"], btn["vy"])
-
-            # Wait for blob: poll every 500ms up to blob_timeout_ms
-            # (long audios need WA to decrypt from server — can take several seconds)
-            blobs: list[dict] = []
-            waited = 0
-            poll_ms = 500
-            while waited < blob_timeout_ms:
-                await self.session._page.wait_for_timeout(poll_ms)
-                waited += poll_ms
-                blobs = await self.session.drain_blobs()
-                if blobs:
-                    break
-                if waited >= wait_ms and not blobs:
-                    # Minimum wait elapsed — keep polling silently
-                    pass
-
-            print(f"[wavi]   blobs after {waited}ms: {len(blobs)}", file=sys.stderr)
-            if not blobs:
-                results.append({
-                    "bubble": bubble,
-                    "blob_url": None,
-                    "data": None,
-                    "path": None,
-                    "error": "no_blob_captured",
-                })
-                continue
-
-            blob_url = blobs[-1]["url"]
-            data = await self.session.fetch_blob(blob_url)
-
-            out_path = None
-            if assets_dir and data:
-                assets_dir = Path(assets_dir)
-                assets_dir.mkdir(parents=True, exist_ok=True)
-                out_path = assets_dir / f"audio_{bubble.id}.ogg"
-                out_path.write_bytes(data)
-
-            results.append({
-                "bubble": bubble,
-                "blob_url": blob_url,
-                "data": data,
-                "path": out_path,
-            })
-
-        # Redraw debug image with exact play button positions now that we know them
-        if assets_dir and resolved_positions:
-            from PIL import Image as PILImage
-            from wavi.vision import _save_debug_image
-            assets_dir = Path(assets_dir)
-            cropped = assets_dir / "screenshot_cropped.png"
-            debug_out = assets_dir / "screenshot_debug.png"
-            if cropped.exists() and debug_out.exists():
-                img = PILImage.open(cropped)
-                _save_debug_image(img, bubbles, debug_out, play_positions=resolved_positions)
+        # Redraw debug image with resolved play-button positions
+        if assets_dir:
+            try:
+                from PIL import Image as PILImage
+                from wavi.vision import _save_debug_image
+                dpr = await self.session.get_dpr()
+                play_btns = await self.find_play_buttons()
+                resolved: dict = {}
+                for b in audio_bubbles:
+                    btn = self._match_bubble_to_button(b, play_btns, dpr=dpr)
+                    if btn:
+                        resolved[b.id] = (
+                            int(btn["vx"] * dpr) - int(WASession.SIDEBAR_X * dpr),
+                            int(btn["vy"] * dpr) - WASession.HEADER_Y,
+                        )
+                if resolved:
+                    assets_dir = Path(assets_dir)
+                    cropped = assets_dir / "screenshot_cropped.png"
+                    debug_out = assets_dir / "screenshot_debug.png"
+                    if cropped.exists() and debug_out.exists():
+                        img = PILImage.open(cropped)
+                        _save_debug_image(img, bubbles, debug_out, play_positions=resolved)
+            except Exception as e:
+                print(f"[wavi] capture_audio_bubbles debug redraw skipped: {e}", file=sys.stderr)
 
         return results
 

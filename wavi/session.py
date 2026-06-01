@@ -179,6 +179,21 @@ _SCROLL_DOWN_JS = """
 }
 """
 
+_GET_VISIBLE_MSG_IDS_JS = """
+() => {
+    const root = document.querySelector(
+        '[data-testid="conversation-panel-messages"]'
+    ) || document.querySelector('#main') || document;
+    const vh = window.innerHeight;
+    return [...root.querySelectorAll('[data-id]')]
+        .map(r => {
+            const rect = r.getBoundingClientRect();
+            return { id: r.getAttribute('data-id'), vy: (rect.top + rect.bottom) / 2 };
+        })
+        .filter(r => r.vy > 0 && r.vy < vh);
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -523,6 +538,10 @@ class WASession:
     async def get_chat_scroll_state(self) -> dict | None:
         """Return {scrollTop, scrollHeight, clientHeight} of the chat container, or None."""
         return await self._page.evaluate(_CHAT_SCROLL_JS)
+
+    async def get_visible_message_ids(self) -> list[dict]:
+        """Return [{id, vy}] of visible WA messages by DOM data-id (viewport CSS coords)."""
+        return await self._page.evaluate(_GET_VISIBLE_MSG_IDS_JS)
 
     async def is_chat_at_top(self) -> bool:
         """Return True if the chat scroll container is at the top (scrollTop < 20)."""

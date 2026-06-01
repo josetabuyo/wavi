@@ -59,6 +59,7 @@ class Bubble:
     bbox: dict                            # x,y,w,h in crop-panel coords
     screen_id: int = 0                    # 1=newest in snapshot, N=oldest (see note above)
     raw_blocks: list[dict] = field(default_factory=list)
+    dom_id: str | None = None             # WA DOM data-id attribute — stable across screenshots
 
     def as_dict(self) -> dict:
         return {
@@ -69,6 +70,7 @@ class Bubble:
             "timestamp": self.timestamp,
             "text": self.text,
             "bbox": self.bbox,
+            "dom_id": self.dom_id,
         }
 
 

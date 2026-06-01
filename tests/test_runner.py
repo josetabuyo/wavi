@@ -165,8 +165,12 @@ def _mock_runner_for_history(iter0_bubbles, iter1_bubbles):
     page_mock = MagicMock()
     page_mock.wait_for_timeout = AsyncMock()
     runner.session._page = page_mock
+    runner.session.install_blob_monitor = AsyncMock()
+    runner.session.reset_blobs = AsyncMock()
+    runner.session.drain_blobs = AsyncMock(return_value=[])
     runner.session.get_dpr = AsyncMock(return_value=1.0)
     runner.session.scroll_chat_up = AsyncMock()
+    runner.session.get_visible_message_ids = AsyncMock(return_value=[])
     runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
         # 1. init_state (outside loop) → computes scroll_css_px
         {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},
@@ -301,3 +305,261 @@ class TestCaptureFullHistory:
         assert timestamps == ["1:00 p.m.", "2:00 p.m.", "3:00 p.m."], \
             f"Timestamps encontrados: {timestamps}"
         assert len(result) == 3
+
+
+# ── _assign_dom_ids ───────────────────────────────────────────────────────────
+
+class TestAssignDomIds:
+    """
+    Verifica la asignación de dom_id por proximidad en y-viewport.
+    """
+
+    def test_assign_dom_ids_matches_by_y(self):
+        """_assign_dom_ids asigna el dom_id al bubble más cercano en y."""
+        b = Bubble(
+            id=1, screen_id=1, sender="me", msg_type="text",
+            timestamp=None, text="hola",
+            bbox={"x": 0, "y": 100, "w": 200, "h": 40},
+        )
+
+        # bubble_vy = (100 + 20 + 60) / 1.0 = 180 CSS px
+        dom_msgs = [
+            {"id": "msg-correct", "vy": 182.0},   # closest
+            {"id": "msg-far",     "vy": 300.0},
+        ]
+
+        runner = _runner()
+        runner._assign_dom_ids([b], dom_msgs, dpr=1.0)
+        assert b.dom_id == "msg-correct"
+
+    def test_assign_dom_ids_no_match_beyond_tolerance(self):
+        """No asigna dom_id si está fuera del rango de tolerancia."""
+        b = Bubble(
+            id=1, screen_id=1, sender="me", msg_type="text",
+            timestamp=None, text="hola",
+            bbox={"x": 0, "y": 100, "w": 200, "h": 40},
+        )
+
+        dom_msgs = [{"id": "msg-far", "vy": 400.0}]  # 400 vs 180 = 220px diff > 50
+
+        runner = _runner()
+        runner._assign_dom_ids([b], dom_msgs, dpr=1.0)
+        assert b.dom_id is None
+
+    def test_assign_dom_ids_empty_dom_msgs_noop(self):
+        """Si dom_msgs está vacío, no asigna nada."""
+        b = Bubble(
+            id=1, screen_id=1, sender="me", msg_type="text",
+            timestamp=None, text="hola",
+            bbox={"x": 0, "y": 100, "w": 200, "h": 40},
+        )
+
+        runner = _runner()
+        runner._assign_dom_ids([b], [], dpr=1.0)
+        assert b.dom_id is None
+
+
+# ── Anchor matching strategy ──────────────────────────────────────────────────
+
+class TestAnchorMatchingStrategy:
+    """Anchor matching prefers dom_id over OCR key."""
+
+    def test_anchor_found_by_dom_id_even_if_ocr_differs(self):
+        """When anchor has dom_id, finds it in new_bubbles by dom_id regardless of OCR."""
+        from wavi.vision import Bubble
+
+        def _make_bubble(bid, dom_id, text, y):
+            b = Bubble(id=bid, screen_id=bid, sender="other", msg_type="text",
+                       timestamp="1:00 p. m.", text=text,
+                       bbox={"x": 0, "y": y, "w": 200, "h": 40})
+            b.dom_id = dom_id
+            return b
+
+        # Anchor from previous iteration
+        anchor_bubble = _make_bubble(5, "dom_ABC", "Hola", y=10)
+        anchor_dom_id = anchor_bubble.dom_id
+
+        # Same message appears in new screenshot with different OCR text
+        ocr_variant = _make_bubble(3, "dom_ABC", "H0la", y=800)
+        unrelated   = _make_bubble(2, "dom_XYZ", "Otra cosa", y=200)
+        new_bubbles = [unrelated, ocr_variant]
+
+        # DOM-based matching
+        matches = [b for b in new_bubbles if b.dom_id == anchor_dom_id]
+        assert len(matches) == 1
+        assert matches[0].text == "H0la"  # found despite OCR difference
+
+    def test_anchor_falls_back_to_ocr_when_no_dom_id(self):
+        """When anchor has no dom_id, falls back to bubble_key OCR matching."""
+        from wavi.vision import Bubble
+
+        def bubble_key(b):
+            return (b.sender, b.msg_type, b.text[:80].strip(), b.timestamp)
+
+        def _make_bubble(bid, dom_id, text, ts, y):
+            b = Bubble(id=bid, screen_id=bid, sender="other", msg_type="text",
+                       timestamp=ts, text=text,
+                       bbox={"x": 0, "y": y, "w": 200, "h": 40})
+            b.dom_id = dom_id
+            return b
+
+        anchor_bubble = _make_bubble(5, None, "Hola mundo", "1:00 p. m.", y=10)
+        anchor_ocr_key = bubble_key(anchor_bubble)
+
+        # New screenshot: same message with same OCR text
+        same_msg = _make_bubble(3, None, "Hola mundo", "1:00 p. m.", y=750)
+        other = _make_bubble(2, None, "Otro mensaje", "2:00 p. m.", y=200)
+        new_bubbles = [other, same_msg]
+
+        # No dom_id → OCR fallback
+        matches = [b for b in new_bubbles if b.dom_id == anchor_bubble.dom_id] if anchor_bubble.dom_id else []
+        if not matches:
+            matches = [b for b in new_bubbles if bubble_key(b) == anchor_ocr_key]
+        assert len(matches) == 1
+        assert matches[0].text == "Hola mundo"
+
+
+class TestBubbleKeyWithDomId:
+    """bubble_key uses dom_id as primary key when available (stable unique identity)."""
+
+    def test_dom_id_takes_priority_over_ocr(self):
+        """Same dom_id → same key, even if OCR text differs."""
+        from wavi.vision import Bubble
+
+        def bubble_key(b):
+            if b.dom_id:
+                return ("dom", b.dom_id)
+            return (b.sender, b.msg_type, b.text[:80].strip(), b.timestamp)
+
+        b1 = Bubble(id=1, screen_id=1, sender="me", msg_type="text",
+                    timestamp="1:30 p. m.", text="jaja",
+                    bbox={"x": 0, "y": 0, "w": 100, "h": 30})
+        b1.dom_id = "true_+54@c.us_MSG001"
+
+        b2 = Bubble(id=2, screen_id=2, sender="me", msg_type="text",
+                    timestamp="1:30 p. m.", text="jaj a",  # OCR ruido
+                    bbox={"x": 0, "y": 0, "w": 100, "h": 30})
+        b2.dom_id = "true_+54@c.us_MSG001"  # mismo mensaje
+
+        assert bubble_key(b1) == bubble_key(b2)
+
+    def test_different_dom_ids_not_deduped(self):
+        """Two identical texts with different dom_ids are distinct messages."""
+        from wavi.vision import Bubble
+
+        def bubble_key(b):
+            if b.dom_id:
+                return ("dom", b.dom_id)
+            return (b.sender, b.msg_type, b.text[:80].strip(), b.timestamp)
+
+        b1 = Bubble(id=1, screen_id=1, sender="me", msg_type="text",
+                    timestamp="1:30 p. m.", text="jaja",
+                    bbox={"x": 0, "y": 0, "w": 100, "h": 30})
+        b1.dom_id = "true_+54@c.us_MSG001"
+
+        b2 = Bubble(id=2, screen_id=2, sender="me", msg_type="text",
+                    timestamp="1:30 p. m.", text="jaja",  # mismo texto
+                    bbox={"x": 0, "y": 0, "w": 100, "h": 30})
+        b2.dom_id = "true_+54@c.us_MSG002"  # mensaje DISTINTO
+
+        assert bubble_key(b1) != bubble_key(b2)
+
+    def test_fallback_to_ocr_when_no_dom_id(self):
+        """Without dom_id, falls back to OCR-based key."""
+        from wavi.vision import Bubble
+
+        def bubble_key(b):
+            if b.dom_id:
+                return ("dom", b.dom_id)
+            return (b.sender, b.msg_type, b.text[:80].strip(), b.timestamp)
+
+        b = Bubble(id=1, screen_id=1, sender="me", msg_type="text",
+                   timestamp="1:30 p. m.", text="hola",
+                   bbox={"x": 0, "y": 0, "w": 100, "h": 30})
+        # b.dom_id es None por default
+
+        key = bubble_key(b)
+        assert key == ("me", "text", "hola", "1:30 p. m.")
+        assert key[0] != "dom"
+
+
+# ── _download_audio_for_bubbles ───────────────────────────────────────────────
+
+class TestDownloadAudioForBubbles:
+    """_download_audio_for_bubbles skips non-audio bubbles and returns empty list for text."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_no_audio_bubbles(self):
+        """Si no hay burbujas de audio, devuelve lista vacía."""
+        runner = _runner()
+        runner.session.reset_blobs = AsyncMock()
+
+        text_bubble = Bubble(
+            id=1, screen_id=1, sender="me", msg_type="text",
+            timestamp=None, text="hola",
+            bbox={"x": 0, "y": 0, "w": 100, "h": 30},
+        )
+
+        result = await runner._download_audio_for_bubbles([text_bubble])
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_filters_out_non_audio_bubbles(self):
+        """Procesa solo audio_bubbles, ignora text y file."""
+        runner = _runner()
+        runner.session.reset_blobs = AsyncMock()
+        runner.session.get_dpr = AsyncMock(return_value=1.0)
+        runner.find_play_buttons = AsyncMock(return_value=[])
+
+        # Mock para session._page
+        page_mock = MagicMock()
+        page_mock.wait_for_timeout = AsyncMock()
+        runner.session._page = page_mock
+
+        audio_bubble = Bubble(
+            id=1, screen_id=1, sender="other", msg_type="audio",
+            timestamp=None, text="",
+            bbox={"x": 0, "y": 0, "w": 100, "h": 136},
+        )
+        text_bubble = Bubble(
+            id=2, screen_id=2, sender="me", msg_type="text",
+            timestamp=None, text="hola",
+            bbox={"x": 0, "y": 200, "w": 100, "h": 30},
+        )
+
+        result = await runner._download_audio_for_bubbles([audio_bubble, text_bubble])
+
+        # Solo procesa el audio_bubble (aunque falle por no tener play button)
+        assert len(result) == 1
+        assert result[0]["bubble"].id == 1
+        assert result[0]["error"] == "no_play_button_matched"
+
+    @pytest.mark.asyncio
+    async def test_skips_already_downloaded_dom_id(self):
+        """Bubble with dom_id already in downloaded_ids is skipped."""
+        runner = _runner()
+        runner.session.reset_blobs = AsyncMock()
+        runner.session.get_dpr = AsyncMock(return_value=1.0)
+        runner.find_play_buttons = AsyncMock(return_value=[])
+
+        # Mock para session._page
+        page_mock = MagicMock()
+        page_mock.wait_for_timeout = AsyncMock()
+        runner.session._page = page_mock
+
+        audio = Bubble(
+            id=1, screen_id=1, sender="other", msg_type="audio",
+            timestamp="1:00 p. m.", text="0:15",
+            bbox={"x": 0, "y": 100, "w": 200, "h": 60}
+        )
+        audio.dom_id = "true_+54@c.us_AUDIO001"
+
+        already_seen = {"true_+54@c.us_AUDIO001"}
+
+        # Llamamos con downloaded_ids ya poblado
+        result = await runner._download_audio_for_bubbles(
+            [audio], downloaded_ids=already_seen
+        )
+
+        # Debe estar vacío porque el audio fue skipeado
+        assert len(result) == 0

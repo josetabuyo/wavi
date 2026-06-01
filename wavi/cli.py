@@ -449,6 +449,15 @@ def full_sync_enhanced(session: str, contact: str, assets: str | None, headless:
         ts = f" [{b.timestamp}]" if b.timestamp else ""
         click.echo(f"  #{b.id:04d} {b.sender:5s} {b.msg_type:6s}{ts}  {b.text[:80]}")
 
+    # Contar archivos .ogg descargados en todas las iteraciones
+    import glob
+    ogg_files = glob.glob(str(assets_dir / "iter_*" / "audio_*.ogg"))
+    if ogg_files:
+        click.echo(f"\n{len(ogg_files)} audio(s) descargados en iteraciones:")
+        for f in sorted(ogg_files):
+            size = Path(f).stat().st_size
+            click.echo(f"  {Path(f).relative_to(assets_dir)}: {size} bytes")
+
 
 # ── bubbles ───────────────────────────────────────────────────────────────────
 
