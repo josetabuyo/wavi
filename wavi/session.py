@@ -302,7 +302,8 @@ class WASession:
         # ADR-002: --force-device-scale-factor=1 ensures window-size maps 1:1 to
         # CSS pixels on macOS Retina (otherwise DPR=2 halves the effective viewport).
         args += ["--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}",
-                 "--force-device-scale-factor=1"]
+                 "--force-device-scale-factor=1",
+                 "--mute-audio"]  # prevent audio reaching speakers during blob capture
 
         self._chrome_proc = subprocess.Popen(
             ["arch", "-arm64"] + args + ["about:blank"],

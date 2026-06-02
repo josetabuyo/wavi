@@ -60,9 +60,11 @@ class Bubble:
     screen_id: int = 0                    # 1=newest in snapshot, N=oldest (see note above)
     raw_blocks: list[dict] = field(default_factory=list)
     dom_id: str | None = None             # WA DOM data-id attribute — stable across screenshots
+    transcript: str | None = None        # Groq/whisper transcription for audio bubbles
+    audio_path: str | None = None        # relative path to .ogg within history_dir (e.g. "iter_002/audio_17.ogg")
 
     def as_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,            # 1=newest overall (both fields share this convention)
             "screen_id": self.screen_id,  # 1=newest in this snapshot
             "sender": self.sender,
@@ -72,6 +74,11 @@ class Bubble:
             "bbox": self.bbox,
             "dom_id": self.dom_id,
         }
+        if self.transcript is not None:
+            d["transcript"] = self.transcript
+        if self.audio_path is not None:
+            d["audio_path"] = self.audio_path
+        return d
 
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
@@ -162,6 +169,43 @@ def classify_msg_type(text: str, raw_blocks: list[dict]) -> str:
     if not text.strip():
         return "media"
     return "text"
+
+
+def _parse_time_str(raw: str) -> str | None:
+    """Convert OCR time string to 24-h 'HH:MM'.
+
+    '9:43 a. m.' → '09:43'   '7:44 p.m.' → '19:44'
+    Bare 'H:MM' (Cyrillic fallback) is returned zero-padded as-is.
+    """
+    m = RE_CORE_TIME.search(raw)
+    if m:
+        h, mn = map(int, m.group(1).split(":"))
+        if m.group(2).lower() == "p" and h != 12:
+            h += 12
+        elif m.group(2).lower() == "a" and h == 12:
+            h = 0
+        return f"{h:02d}:{mn:02d}"
+    # Bare H:MM with no am/pm marker (Cyrillic OCR artifact)
+    m2 = re.match(r"^(\d{1,2}):(\d{2})$", raw.strip())
+    if m2:
+        return f"{int(m2.group(1)):02d}:{m2.group(2)}"
+    return None
+
+
+def _build_timestamp(date_str: str | None, raw_time: str | None) -> str | None:
+    """Combine ISO date and raw OCR time into 'YYYY-MM-DDTHH:MM'.
+
+    Falls back to bare 'HH:MM' when date is unknown, and to the raw string
+    when the time cannot be parsed (should not happen in practice).
+    """
+    if raw_time is None:
+        return None
+    time_24 = _parse_time_str(raw_time)
+    if time_24 is None:
+        return raw_time          # unparseable edge case — keep raw
+    if date_str is None:
+        return time_24           # no date context yet (e.g. wavi bubbles on a single shot)
+    return f"{date_str}T{time_24}"
 
 
 def _extract_timestamp(raw_blocks: list[dict]) -> str | None:
@@ -272,6 +316,32 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
     img_w, img_h = img.size
 
     blocks = ocr_tiled(cropped_path)
+
+    # Build date map from day-separator pills BEFORE processing bubbles.
+    # Each pill marks the date of everything below it; a bubble at y gets the
+    # date of the pill with the largest pill_y that is still <= bubble_y.
+    _pills = extract_day_pills(cropped_path)
+    _pill_map: list[tuple[int, str]] = []  # [(y_px, "YYYY-MM-DD"), ...]
+    if _pills:
+        from datetime import date as _Date
+        _today = _Date.today()
+        for _p in _pills:
+            _pd = _date_from_pill_text(_p["text"], _today)
+            if _pd is not None:
+                _pill_map.append((_p["y"], _pd.isoformat()))
+        _pill_map.sort(key=lambda x: x[0])
+
+    def _date_for_y(y: int) -> str | None:
+        if not _pill_map:
+            return None
+        chosen = _pill_map[0][1]
+        for pill_y, pill_date in _pill_map:
+            if pill_y <= y:
+                chosen = pill_date
+            else:
+                break
+        return chosen
+
     raw_bubbles = detect_bubbles(img, footer_px=70)
 
     split: list[dict] = []
@@ -307,7 +377,7 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
             screen_id   = local_id,
             sender      = bubble["type"],
             msg_type    = classify_msg_type(text, raw_blocks),
-            timestamp   = _extract_timestamp(raw_blocks),
+            timestamp   = _build_timestamp(_date_for_y(y0), _extract_timestamp(raw_blocks)),
             text        = text,
             bbox        = {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
             raw_blocks  = raw_blocks,
@@ -321,6 +391,111 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
             _save_debug_image(img, results, assets / (screenshot_path.stem + "_debug.png"))
 
     return results
+
+
+def _date_from_pill_text(text: str, today) -> "object | None":
+    """Parse a WA day-separator pill text into a datetime.date. Returns None if unrecognised."""
+    from datetime import date as _D, timedelta as _td
+    import re as _re
+
+    _MONTHS: dict[str, int] = {
+        "ene": 1, "enero": 1, "feb": 2, "febrero": 2, "mar": 3, "marzo": 3,
+        "abr": 4, "abril": 4, "may": 5, "mayo": 5, "jun": 6, "junio": 6,
+        "jul": 7, "julio": 7, "ago": 8, "agosto": 8, "sep": 9, "septiembre": 9,
+        "oct": 10, "octubre": 10, "nov": 11, "noviembre": 11, "dic": 12, "diciembre": 12,
+        "jan": 1, "january": 1, "february": 2, "march": 3, "apr": 4, "april": 4,
+        "june": 6, "july": 7, "aug": 8, "august": 8, "september": 9,
+        "october": 10, "november": 11, "dec": 12, "december": 12,
+    }
+    _WDAYS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    _WDAYS_EN = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+    t = text.strip().lower()
+    if t in ("hoy", "today"):
+        return today
+    if t in ("ayer", "yesterday"):
+        return today - _td(days=1)
+    for names in (_WDAYS_ES, _WDAYS_EN):
+        for i, name in enumerate(names):
+            if t == name:
+                days_back = (today.weekday() - i) % 7 or 7
+                return today - _td(days=days_back)
+    m = _re.match(r'^(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})$', t)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return _D(y if y > 100 else 2000 + y, mo, d)
+        except ValueError:
+            pass
+    m = _re.match(r'^(\d{1,2})\s+de\s+(\w+)(?:\s+de\s+(\d{4}))?$', t)
+    if m:
+        d, month_s = int(m.group(1)), m.group(2)
+        y = int(m.group(3)) if m.group(3) else today.year
+        mo = _MONTHS.get(month_s)
+        if mo:
+            try:
+                return _D(y, mo, d)
+            except ValueError:
+                pass
+    m = _re.match(r'^(\w+)\s+(\d{1,2})(?:,?\s*(\d{4}))?$', t)
+    if m:
+        month_s, d = m.group(1), int(m.group(2))
+        y = int(m.group(3)) if m.group(3) else today.year
+        mo = _MONTHS.get(month_s)
+        if mo:
+            try:
+                return _D(y, mo, d)
+            except ValueError:
+                pass
+    return None
+
+
+_RE_PILL = re.compile(
+    r"^(hoy|ayer|today|yesterday"
+    r"|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo"
+    r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    r"|\d{1,2}\s+de\s+\w+(?:\s+de\s+\d{4})?"   # "3 de junio [de 2025]"
+    r"|\w+\s+\d{1,2}(?:,?\s*\d{4})?"            # "June 1[, 2025]"
+    r"|\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}"    # "01/05/2025"
+    r")$",
+    re.I,
+)
+
+
+def extract_day_pills(cropped_path: Path) -> list[dict]:
+    """
+    Detect WA date-separator pills by OCR on the cropped chat panel.
+
+    Returns [{"text": str, "y": int}] sorted by y (crop-panel pixels).
+    OCR-based: immune to pill-color variation and blob-merging with adjacent bubbles.
+    """
+    img = Image.open(cropped_path)
+    img_h = img.size[1]
+
+    blocks = ocr_tiled(cropped_path)
+
+    results = []
+    for b in blocks:
+        text = b["text"].strip()
+        if not text or len(text) > 30:
+            continue
+        if not _RE_PILL.match(text):
+            continue
+        # Pills are centered: x_center between 0.20 and 0.80 (fractional)
+        x_center = b["x"] + b.get("w", 0.1) / 2
+        if not (0.20 < x_center < 0.80):
+            continue
+        results.append({"text": text, "y": int(b["y"] * img_h)})
+
+    results.sort(key=lambda d: d["y"])
+
+    # Deduplicate: OCR tiling may return the same pill twice at nearly the same y
+    deduped: list[dict] = []
+    for r in results:
+        if not deduped or abs(r["y"] - deduped[-1]["y"]) > 20:
+            deduped.append(r)
+
+    return deduped
 
 
 def _save_debug_image(

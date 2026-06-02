@@ -8,10 +8,15 @@ classification, then uses DOM queries to locate exact play button positions
 from __future__ import annotations
 
 import asyncio
+import re as _re
 import sys
 import tempfile
+from datetime import date as _Date, timedelta as _td
 from pathlib import Path
 from typing import Optional
+
+from wavi.transcription import transcribe as _transcribe_audio
+from wavi.vision import extract_day_pills as _extract_day_pills, _date_from_pill_text
 
 from wavi.session import WASession, WINDOW_W, WINDOW_H
 from wavi.vision import Bubble, analyze
@@ -34,6 +39,15 @@ _FIND_PLAY_BTNS_JS = """
         .filter(r => r.vx > 0 && r.vy > 0);
 }
 """
+
+
+# ── Date-pill parser ─────────────────────────────────────────────────────────
+
+
+
+def _parse_pill_date(text: str, today: _Date) -> _Date | None:
+    """Thin wrapper around vision._date_from_pill_text for use in runner."""
+    return _date_from_pill_text(text, today)
 
 
 # ── WARunner ──────────────────────────────────────────────────────────────────
@@ -229,7 +243,13 @@ class WARunner:
                 Path(assets_dir).mkdir(parents=True, exist_ok=True)
                 out_path = Path(assets_dir) / f"audio_{bubble.id}.ogg"
                 out_path.write_bytes(data)
+                # Store relative path so transcribe_history_audios can find it
+                # regardless of screen_id vs global_id renaming at the end.
+                bubble.audio_path = str(out_path)
                 print(f"[wavi]   saved {len(data)} bytes → {out_path.name}", file=sys.stderr)
+
+            # NOTE: transcription happens in a second pass (transcribe_history_audios)
+            # after the browser is closed, to avoid blocking Playwright during scroll.
 
             # Registrar que descargamos este dom_id para evitar duplicados
             if downloaded_ids is not None and bubble.dom_id:
@@ -269,6 +289,7 @@ class WARunner:
         settle_ms: int = 2500,
         backoff_css_px: int = 200,
         max_iterations: int = 300,
+        from_date: "_Date | None" = None,
     ) -> list[Bubble]:
         """
         Scroll from bottom to top capturing all unique messages.
@@ -443,6 +464,47 @@ class WARunner:
                     seen_keys.add(k)
                     new_items.append(b)
                     new_count += 1
+
+            # ── Detect day pills: assign dates + optional from_date stop ─────
+            # Runs always (dates are useful metadata regardless of from_date).
+            should_stop_from_date = False
+            if iter_assets:
+                cropped = iter_assets / "screenshot_cropped.png"
+                if cropped.exists():
+                    _pills = _extract_day_pills(cropped)
+                    _today = _Date.today()
+                    _parsed = [(p["y"], _parse_pill_date(p["text"], _today)) for p in _pills]
+                    _parsed = [(y, d) for y, d in _parsed if d is not None]
+                    if _parsed:
+                        if from_date is not None:
+                            top_date = min(_parsed, key=lambda x: x[0])[1]
+                            print(
+                                f"[wavi] iter={iteration+1}: day pills={[p['text'] for p in _pills]}, oldest={top_date}",
+                                file=sys.stderr,
+                            )
+                            if top_date < from_date:
+                                sorted_pills = sorted(_parsed, key=lambda x: x[0])
+                                kept = []
+                                for b in new_items:
+                                    by = b.bbox["y"]
+                                    date_of_bubble = sorted_pills[0][1]
+                                    for pill_y, pill_date in sorted_pills:
+                                        if pill_y <= by:
+                                            date_of_bubble = pill_date
+                                        else:
+                                            break
+                                    if date_of_bubble >= from_date:
+                                        kept.append(b)
+                                dropped = len(new_items) - len(kept)
+                                new_items = kept
+                                new_count = len(kept)
+                                print(
+                                    f"[wavi] reached {top_date} < --from {from_date} "
+                                    f"— kept {new_count}, dropped {dropped} (older)",
+                                    file=sys.stderr,
+                                )
+                                should_stop_from_date = True
+
             # Prepend older content so the list stays chronological (oldest first)
             all_bubbles = new_items + all_bubbles
 
@@ -451,6 +513,9 @@ class WARunner:
                 f"scrollTop {scroll_top_before:.0f}→{scroll_top_after:.0f}",
                 file=sys.stderr,
             )
+
+            if should_stop_from_date:
+                break
 
             if new_count == 0 and scroll_top_after < 20:
                 print("[wavi] No new bubbles and at top — done.", file=sys.stderr)
@@ -574,6 +639,7 @@ async def run_enhanced(
     assets_dir: Path | None = None,
     headless: bool = True,
     max_iterations: int = 300,
+    from_date: "_Date | None" = None,
 ) -> dict:
     """
     Extrapolation of run_once: same connect → open chat flow, then scrolls up
@@ -597,7 +663,67 @@ async def run_enhanced(
         raise RuntimeError("Connection timed out.")
 
     await runner.open_chat(contact)
-    bubbles = await runner.capture_full_history(assets_dir=assets_dir, max_iterations=max_iterations)
+    bubbles = await runner.capture_full_history(
+        assets_dir=assets_dir, max_iterations=max_iterations, from_date=from_date,
+    )
     await runner.close()
 
+    # Transcribe after browser is closed — avoids blocking Playwright during scroll
+    if assets_dir:
+        await transcribe_history_audios(Path(assets_dir))
+
     return {"bubbles": bubbles}
+
+
+async def transcribe_history_audios(history_dir: Path | str) -> int:
+    """
+    Second-pass transcription over already-downloaded audio files.
+
+    Reads history_bubbles.json, finds audio bubbles without a transcript,
+    locates the .ogg via bubble["audio_path"] (set during download), transcribes
+    each one, and rewrites history_bubbles.json with the transcript fields added.
+
+    Returns the number of audio bubbles successfully transcribed.
+    Call this after run_enhanced() if GROQ_API_KEY was not set during scraping,
+    or to retry failed transcriptions.
+    """
+    import json
+    history_dir = Path(history_dir)
+    json_path = history_dir / "history_bubbles.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"history_bubbles.json not found in {history_dir}")
+
+    bubbles = json.loads(json_path.read_text())
+
+    transcribed = 0
+    failed_ids: list[int] = []
+    for bubble in bubbles:
+        if bubble.get("msg_type") != "audio":
+            continue
+        if bubble.get("transcript") is not None:
+            continue
+        bid = bubble["id"]
+        raw_path = bubble.get("audio_path")
+        if not raw_path:
+            print(f"[wavi] transcribe_history: no audio_path for bubble#{bid}", file=sys.stderr)
+            failed_ids.append(bid)
+            continue
+        ogg_path = Path(raw_path)
+        if not ogg_path.exists():
+            print(f"[wavi] transcribe_history: file missing for bubble#{bid}: {ogg_path}", file=sys.stderr)
+            failed_ids.append(bid)
+            continue
+        result = await _transcribe_audio(ogg_path)
+        if result is not None:
+            bubble["transcript"] = result
+            transcribed += 1
+            print(f"[wavi] transcribed bubble#{bid}: {result[:80]!r}", file=sys.stderr)
+        else:
+            failed_ids.append(bid)
+            print(f"[wavi] transcription failed for bubble#{bid}", file=sys.stderr)
+
+    json_path.write_text(json.dumps(bubbles, indent=2, ensure_ascii=False))
+    if failed_ids:
+        print(f"[wavi] {len(failed_ids)} bubbles not transcribed: {failed_ids}", file=sys.stderr)
+    print(f"[wavi] transcribe_history_audios: {transcribed} new transcripts → {json_path}", file=sys.stderr)
+    return transcribed

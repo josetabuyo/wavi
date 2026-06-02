@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 
 import click
+from dotenv import load_dotenv
+load_dotenv()
 
 DEFAULT_SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
@@ -49,13 +51,36 @@ _HEADLESS_CHROME_ARGS = [
     # Without this, macOS Retina sets DPR=2 and the effective viewport is ~640x960,
     # producing "tiny" screenshots with few visible messages.
     "--force-device-scale-factor=1",
+    # Silence: prevent any audio from reaching the system speakers when wavi
+    # clicks play buttons to capture audio blobs. --headless=new suppresses
+    # most audio on Linux but on macOS CoreAudio can still route sound through.
+    "--mute-audio",
 ]
 
 _VISIBLE_CHROME_ARGS = _HEADLESS_CHROME_ARGS  # same flags, no --headless=new
 
 
+_DEFAULT_ALIAS_FILE = DEFAULT_SESSIONS_DIR / ".default"
+
+
 def _profile(session: str) -> Path:
+    """Return the filesystem path for a session.
+
+    'default' is an alias: it resolves to whatever session name is stored in
+    data/sessions/.default (written after QR scan or set manually).
+    If the alias file doesn't exist, falls back to the literal 'default' dir.
+    """
+    if session == "default" and _DEFAULT_ALIAS_FILE.exists():
+        target = _DEFAULT_ALIAS_FILE.read_text().strip()
+        if target:
+            return DEFAULT_SESSIONS_DIR / target
     return DEFAULT_SESSIONS_DIR / session
+
+
+def _set_default_alias(session_name: str) -> None:
+    """Point the 'default' alias to a specific session name."""
+    DEFAULT_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _DEFAULT_ALIAS_FILE.write_text(session_name)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -188,6 +213,9 @@ def connect(session: str):
     status = asyncio.run(_check_session_status(profile))
 
     if status == "restored":
+        # Keep default alias pointing to this session
+        if session != "default":
+            _set_default_alias(session)
         click.echo(f"Sesión restaurada — daemon headless activo (PID {headless_proc.pid}, CDP :{CDP_PORT}).")
         click.echo(f"Usá 'wavi full-sync {session} <contacto>' para capturar mensajes.")
         click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
@@ -229,7 +257,35 @@ def connect(session: str):
     # ── Flush WA state and switch to headless daemon ──────────────────────────
     click.echo("Guardando sesión de WhatsApp...")
 
-    async def _flush():
+    _JS_READ_PHONE = """
+    () => {
+        try {
+            // WA Web store — most reliable across versions
+            const Store = window.require && (
+                window.require('WAWebStorageLib/WAWebStorageLib') ||
+                window.require('WAWebStoreLib/WAWebStoreLib')
+            );
+            if (Store && Store.Me) {
+                const id = Store.Me.get('id');
+                if (id && id.user) return id.user;
+            }
+        } catch(e) {}
+        try {
+            // Fallback: WA Web renders the phone in the profile drawer
+            const spans = document.querySelectorAll('span[dir="ltr"]');
+            for (const s of spans) {
+                const t = s.textContent.trim().replace(/[^0-9]/g, '');
+                if (t.length >= 10 && t.length <= 15) return t;
+            }
+        } catch(e) {}
+        return null;
+    }
+    """
+
+    detected_phone = None
+
+    async def _flush_and_read_phone():
+        nonlocal detected_phone
         from playwright.async_api import async_playwright
         try:
             pw = await async_playwright().start()
@@ -237,8 +293,13 @@ def connect(session: str):
                 f"http://localhost:{CDP_PORT}", timeout=5_000
             )
             if browser.contexts and browser.contexts[0].pages:
+                page = browser.contexts[0].pages[0]
                 try:
-                    await browser.contexts[0].pages[0].goto("about:blank", timeout=5_000)
+                    detected_phone = await page.evaluate(_JS_READ_PHONE)
+                except Exception:
+                    pass
+                try:
+                    await page.goto("about:blank", timeout=5_000)
                     await asyncio.sleep(2)
                 except Exception:
                     pass
@@ -247,10 +308,24 @@ def connect(session: str):
         except Exception:
             pass
 
-    asyncio.run(_flush())
+    asyncio.run(_flush_and_read_phone())
     _terminate_proc(proc)
     (profile / "SingletonLock").unlink(missing_ok=True)
     time.sleep(1)
+
+    # If we got the phone number, rename the session and update the alias
+    if detected_phone and detected_phone != session:
+        phone_profile = DEFAULT_SESSIONS_DIR / detected_phone
+        if not phone_profile.exists():
+            profile.rename(phone_profile)
+            profile = phone_profile
+            click.echo(f"Sesión renombrada → '{detected_phone}'")
+        _set_default_alias(detected_phone)
+        click.echo(f"'default' ahora apunta a '{detected_phone}'")
+    elif session == "default" and not detected_phone:
+        pass  # keep as-is, alias not updated
+    else:
+        _set_default_alias(session)
 
     click.echo("Iniciando daemon headless...")
     headless_proc = _launch_headless_daemon(profile)
@@ -259,13 +334,15 @@ def connect(session: str):
     time.sleep(5)
 
     status = asyncio.run(_check_session_status(profile))
+    final_name = detected_phone or session
     if status == "restored":
         click.echo(f"Daemon headless activo (PID {headless_proc.pid}, CDP :{CDP_PORT}).")
+        click.echo(f"Sesión: '{final_name}'")
     else:
         click.echo(f"Advertencia: sesión={status}. Puede requerir re-autenticación.", err=True)
 
-    click.echo(f"Usá 'wavi full-sync {session} <contacto>' para capturar mensajes.")
-    click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
+    click.echo(f"Usá 'wavi full-sync {final_name} <contacto>' para capturar mensajes.")
+    click.echo(f"Usá 'wavi stop {final_name}' para cerrar Chrome de manera segura.")
 
 
 # ── stop ──────────────────────────────────────────────────────────────────────
@@ -407,7 +484,9 @@ def full_sync(session: str, contact: str, assets: str | None, headless: bool, js
 @click.option("--json-out", is_flag=True, help="Output results as JSON.")
 @click.option("--max-iter", default=300, show_default=True,
               help="Max scroll iterations (use 3 for quick debug).")
-def full_sync_enhanced(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int):
+@click.option("--from", "from_date", default=None,
+              help="Stop scrolling at this date (YYYY-MM-DD). Captures messages on or after this date.")
+def full_sync_enhanced(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None):
     """Like full-sync but scrolls up to capture the full message history.
 
     iter_000/ holds the same initial capture that full-sync produces.
@@ -417,8 +496,17 @@ def full_sync_enhanced(session: str, contact: str, assets: str | None, headless:
     NOTE: photos and videos are not detected by the vision pipeline.
     """
     from wavi.runner import run_enhanced
+    from datetime import date as _Date
 
     assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_") / "history"
+
+    from_date_obj: _Date | None = None
+    if from_date:
+        try:
+            from_date_obj = _Date.fromisoformat(from_date)
+        except ValueError:
+            click.echo(f"Error: --from debe ser una fecha en formato YYYY-MM-DD, recibido: {from_date}", err=True)
+            sys.exit(1)
 
     if assets_dir.exists():
         shutil.rmtree(assets_dir)
@@ -430,6 +518,7 @@ def full_sync_enhanced(session: str, contact: str, assets: str | None, headless:
             assets_dir=assets_dir,
             headless=headless,
             max_iterations=max_iter,
+            from_date=from_date_obj,
         )
 
     try:
