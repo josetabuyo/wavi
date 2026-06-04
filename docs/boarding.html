@@ -339,9 +339,12 @@
       padding: 8px 16px;
       border-bottom: 1px solid var(--border);
       font-size: 13px;
+      cursor: pointer;
+      user-select: none;
     }
-    .test-row:last-child { border-bottom: none; }
+    .test-row:last-of-type { border-bottom: none; }
     .test-row:hover { background: var(--surface2); }
+    .test-row.open { background: var(--surface2); }
     .test-status {
       width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
     }
@@ -349,7 +352,40 @@
     .test-status.failed { background: #fc6060; box-shadow: 0 0 6px #fc606066; }
     .test-status.skipped{ background: #f6c86b; }
     .test-name { flex: 1; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 12px; }
-    .test-dur  { color: var(--text-dim); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .test-dur  { color: var(--text-dim); font-size: 11px; font-family: 'JetBrains Mono', monospace; min-width: 48px; text-align: right; }
+    .test-chevron { color: var(--text-dim); font-size: 10px; transition: transform .15s; }
+    .test-row.open .test-chevron { transform: rotate(90deg); }
+    .test-detail {
+      display: none;
+      background: var(--code-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 16px 12px 34px;
+    }
+    .test-detail.open { display: block; }
+    .detail-nodeid {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      color: var(--text-dim); margin-bottom: 8px;
+    }
+    .detail-nodeid span { color: var(--teal); }
+    .detail-meta { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+    .detail-meta .pill {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; margin-right: 8px;
+    }
+    .pill.passed { background: rgba(37,211,102,.15); color: var(--green); }
+    .pill.failed { background: rgba(252,96,96,.15); color: #fc6060; }
+    .pill.skipped{ background: rgba(246,200,107,.15); color: #f6c86b; }
+    .detail-longrepr {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px; line-height: 1.6;
+      color: #fc9090;
+      white-space: pre-wrap; word-break: break-word;
+      max-height: 300px; overflow-y: auto;
+    }
     .no-results {
       background: var(--surface);
       border: 1px dashed var(--border);
@@ -1093,9 +1129,21 @@ flowchart TD
 
   // ── Suite expand/collapse ──────────────────────────────────────────────────
   document.addEventListener('click', e => {
+    // Suite header toggle
     const hdr = e.target.closest('.suite-header');
-    if (!hdr) return;
-    hdr.nextElementSibling.classList.toggle('open');
+    if (hdr) {
+      hdr.nextElementSibling.classList.toggle('open');
+      return;
+    }
+    // Test row toggle — find the detail panel right after
+    const row = e.target.closest('.test-row');
+    if (row) {
+      row.classList.toggle('open');
+      const detail = row.nextElementSibling;
+      if (detail && detail.classList.contains('test-detail')) {
+        detail.classList.toggle('open');
+      }
+    }
   });
 
   // ── Test results rendering ─────────────────────────────────────────────────
@@ -1178,15 +1226,32 @@ flowchart TD
           <div class="suite-tests">`;
 
       tests.forEach(t => {
-        const parts   = t.nodeid.split('::');
-        const name    = parts.slice(1).join(' › ');
-        const durStr  = t.duration ? `${(t.duration * 1000).toFixed(0)}ms` : '';
+        const parts  = t.nodeid.split('::');
+        const file   = parts[0];
+        const name   = parts.slice(1).join(' › ');
+        const ms     = t.duration != null ? t.duration * 1000 : null;
+        const durStr = ms == null ? '—' : ms < 1 ? '<1ms' : `${ms.toFixed(ms < 10 ? 1 : 0)}ms`;
+
+        const outcomeLabel = t.outcome === 'passed' ? '✓ passed' : t.outcome === 'failed' ? '✗ failed' : '⊘ skipped';
+        const longreprHtml = t.longrepr
+          ? `<div class="detail-longrepr">${t.longrepr.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`
+          : '';
+
         html += `
             <div class="test-row">
               <div class="test-status ${t.outcome}"></div>
               <div class="test-name">${name}</div>
               <div class="test-dur">${durStr}</div>
-            </div>`;
+              <div class="test-chevron">▶</div>
+            </div>
+            <div class="test-detail">
+              <div class="detail-nodeid"><span>${file}</span>::${parts.slice(1).join('::')}</div>
+              <div class="detail-meta">
+                <span class="pill ${t.outcome}">${outcomeLabel}</span>
+                <span>${durStr} total (setup + call + teardown)</span>
+              </div>
+              ${longreprHtml}
+            </div>`
       });
 
       html += `</div></div>`;

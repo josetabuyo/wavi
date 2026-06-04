@@ -739,7 +739,7 @@ def boarding(open_browser: bool):
         sys.exit(1)
     click.echo(str(html_path))
     if open_browser:
-        import webbrowser
-        webbrowser.open(f"file://{html_path}")
+        import subprocess
+        subprocess.run(["open", f"file://{html_path}"])
 
 

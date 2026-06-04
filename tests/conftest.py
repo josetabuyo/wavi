@@ -13,18 +13,22 @@ def pytest_sessionstart(session):
 
 
 def pytest_runtest_logreport(report):
-    if report.when not in ("call", "setup"):
+    if report.when not in ("setup", "call", "teardown"):
         return
     nodeid = report.nodeid
     if nodeid not in _results:
         _results[nodeid] = {"nodeid": nodeid, "outcome": "passed", "duration": 0.0, "longrepr": None}
     if report.failed:
         _results[nodeid]["outcome"] = "failed"
-        _results[nodeid]["longrepr"] = str(report.longrepr)[:500]
+        _results[nodeid]["longrepr"] = str(report.longrepr)[:3000]
     elif report.skipped and _results[nodeid]["outcome"] != "failed":
         _results[nodeid]["outcome"] = "skipped"
-    if report.when == "call":
-        _results[nodeid]["duration"] = round(report.duration, 4)
+        if report.longrepr:
+            _results[nodeid]["longrepr"] = str(report.longrepr)
+    # Accumulate duration across setup + call + teardown phases
+    _results[nodeid]["duration"] = round(
+        (_results[nodeid].get("duration") or 0.0) + (report.duration or 0.0), 6
+    )
 
 
 def pytest_sessionfinish(session, exitstatus):
