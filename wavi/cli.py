@@ -264,6 +264,232 @@ async def _check_session_status(profile: Path) -> str:
         return "error"
 
 
+# ── QR HTML helpers ───────────────────────────────────────────────────────────
+
+def _write_qr_html(path: Path, qr_b64: str) -> None:
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="20">
+  <title>wavi — Vincular WhatsApp</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px; color: #1d1d1d; text-align: center;
+    }}
+    .card {{
+      background: white; border-radius: 16px; padding: 32px 40px;
+      box-shadow: 0 2px 16px rgba(0,0,0,.1); max-width: 380px; width: 100%;
+    }}
+    .badge {{
+      display: inline-block; background: #25d366; color: white;
+      border-radius: 20px; padding: 4px 14px;
+      font-size: .8rem; font-weight: 600; margin-bottom: 16px;
+    }}
+    h1 {{ font-size: 1.25rem; font-weight: 600; margin-bottom: 6px; }}
+    .sub {{ color: #667; font-size: .85rem; margin-bottom: 20px; line-height: 1.5; }}
+    img.qr {{
+      width: 300px; height: 300px; border: 1px solid #e9edef;
+      border-radius: 8px; display: block; margin: 0 auto 20px;
+    }}
+    #status {{ font-size: .9rem; color: #667; }}
+    #status b {{ color: #222; }}
+    .expired {{ color: #e53935 !important; font-weight: 600; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">wavi</div>
+    <h1>Escaneá el QR en WhatsApp</h1>
+    <p class="sub">WhatsApp → <strong>Dispositivos vinculados</strong> → Vincular dispositivo</p>
+    <img class="qr" src="data:image/png;base64,{qr_b64}" alt="WhatsApp QR">
+    <p id="status">Este QR expira en <b id="sec">20</b>s</p>
+  </div>
+  <script>
+    var sec = 20, el = document.getElementById('sec'), st = document.getElementById('status');
+    var t = setInterval(function() {{
+      sec--;
+      if (sec <= 0) {{
+        clearInterval(t);
+        st.className = 'expired';
+        st.textContent = 'QR expirado. Actualizando...';
+      }} else {{ el.textContent = sec; }}
+    }}, 1000);
+  </script>
+</body>
+</html>"""
+    path.write_text(html, encoding="utf-8")
+
+
+def _write_connected_html(path: Path) -> None:
+    html = """<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>wavi — Vinculado</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px; text-align: center;
+    }
+    .card {
+      background: white; border-radius: 16px; padding: 40px;
+      box-shadow: 0 2px 16px rgba(0,0,0,.1); max-width: 360px; width: 100%;
+    }
+    .icon { font-size: 3rem; margin-bottom: 12px; }
+    h1 { font-size: 1.3rem; color: #25d366; font-weight: 600; margin-bottom: 8px; }
+    p { color: #667; font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">&#10003;</div>
+    <h1>&#161;WhatsApp vinculado!</h1>
+    <p>wavi está conectado. Podés cerrar esta ventana.</p>
+  </div>
+</body>
+</html>"""
+    path.write_text(html, encoding="utf-8")
+
+
+def _write_expired_html(path: Path) -> None:
+    html = """<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>wavi — QR expirado</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      min-height: 100vh; padding: 24px; text-align: center;
+    }
+    .card {
+      background: white; border-radius: 16px; padding: 40px;
+      box-shadow: 0 2px 16px rgba(0,0,0,.1); max-width: 360px; width: 100%;
+    }
+    .icon { font-size: 3rem; margin-bottom: 12px; }
+    h1 { font-size: 1.3rem; color: #e53935; font-weight: 600; margin-bottom: 8px; }
+    p { color: #667; font-size: .9rem; margin-bottom: 16px; }
+    code {
+      background: #f4f4f4; border-radius: 6px; padding: 10px 16px;
+      display: block; font-size: .9rem; color: #333; text-align: left;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">&#9201;</div>
+    <h1>QR expirado</h1>
+    <p>El código expiró antes de ser escaneado.</p>
+    <code>wavi connect</code>
+  </div>
+</body>
+</html>"""
+    path.write_text(html, encoding="utf-8")
+
+
+async def _qr_to_html_loop(
+    profile: Path,
+    open_browser: bool,
+    load_timeout_s: int = 60,
+) -> str:
+    """
+    Connects to the running headless Chrome (WA Web at QR screen),
+    captures the QR as a local HTML file, optionally opens it in the browser.
+    Polls until the user authenticates or the QR expires (data-ref changes).
+    Returns 'authenticated', 'expired', or 'timeout'.
+    """
+    import base64
+    import tempfile
+    from playwright.async_api import async_playwright
+
+    port = _session_port(profile)
+    pw = await async_playwright().start()
+    try:
+        browser = await pw.chromium.connect_over_cdp(
+            f"http://localhost:{port}", timeout=10_000
+        )
+        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+
+        QR_SEL = "[data-testid='qrcode']"
+        AUTH_SEL = "[data-testid='chat-list'], #side, input[role='textbox']"
+        _DATA_REF_JS = (
+            "() => { const el = document.querySelector('div[data-ref]'); "
+            "return el ? el.getAttribute('data-ref') : null; }"
+        )
+
+        html_path = Path(tempfile.gettempdir()) / "wavi_qr.html"
+
+        try:
+            await page.wait_for_selector(
+                f"{AUTH_SEL}, {QR_SEL}", timeout=load_timeout_s * 1000
+            )
+        except Exception:
+            await browser.close()
+            await pw.stop()
+            return "timeout"
+
+        if await page.query_selector(AUTH_SEL):
+            await browser.close()
+            await pw.stop()
+            return "authenticated"
+
+        qr_el = await page.query_selector(QR_SEL)
+        if not qr_el:
+            await browser.close()
+            await pw.stop()
+            return "timeout"
+
+        initial_ref = await page.evaluate(_DATA_REF_JS)
+        if not initial_ref:
+            await asyncio.sleep(2)
+            initial_ref = await page.evaluate(_DATA_REF_JS)
+
+        qr_bytes = await qr_el.screenshot()
+        qr_b64 = base64.b64encode(qr_bytes).decode()
+        _write_qr_html(html_path, qr_b64)
+        click.echo(f"QR → {html_path}")
+        if open_browser:
+            subprocess.run(["open", f"file://{html_path}"])
+
+        while True:
+            await asyncio.sleep(2)
+
+            if await page.query_selector(AUTH_SEL):
+                _write_connected_html(html_path)
+                click.echo("Autenticado correctamente.")
+                await browser.close()
+                await pw.stop()
+                return "authenticated"
+
+            curr_ref = await page.evaluate(_DATA_REF_JS)
+            if curr_ref != initial_ref:
+                _write_expired_html(html_path)
+                click.echo("QR expirado — ejecutá 'wavi connect' de nuevo para un QR fresco.")
+                await browser.close()
+                await pw.stop()
+                return "expired"
+
+    except Exception as e:
+        click.echo(f"Error en bucle QR: {e}", err=True)
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+        return "timeout"
+
+
 # ── CLI root ──────────────────────────────────────────────────────────────────
 
 @click.group()
@@ -275,11 +501,19 @@ def main():
 
 @main.command()
 @click.argument("session", default="default")
-def connect(session: str):
-    """Start Chrome daemon and authenticate (headless if session exists, QR if not).
+@click.option("--open", "open_browser", is_flag=True, help="Open QR page in the default browser.")
+@click.option("--new", "force_new", is_flag=True, help="Force a fresh QR scan (creates a new profile, skips any existing session).")
+def connect(session: str, open_browser: bool, force_new: bool):
+    """Start Chrome daemon and authenticate (headless + QR HTML if needed).
 
     Tries headless first — if WhatsApp loads authenticated no visible window
-    ever opens.  Only falls back to a visible window when QR scan is needed.
+    ever opens.  If QR is needed, captures it headlessly and writes a local
+    HTML file with a live countdown.  Pass --open to launch that page
+    automatically.  The connect session closes when the QR is scanned or
+    expires.
+
+    Use --new to skip any existing session and force a fresh QR scan.  The
+    session folder is automatically named after the phone number once scanned.
 
     SESSION is any name you choose (default: 'default').
     """
@@ -287,40 +521,45 @@ def connect(session: str):
         click.echo(f"Chrome not found: {REAL_CHROME}", err=True)
         sys.exit(1)
 
-    profile = _profile(session)
-    profile.mkdir(parents=True, exist_ok=True)
-    click.echo(f"Session '{session}' → {profile}")
+    if force_new:
+        profile = DEFAULT_SESSIONS_DIR / f"_new_{int(time.time())}"
+        profile.mkdir(parents=True, exist_ok=True)
+        click.echo(f"Perfil temporal → {profile}")
+    else:
+        profile = _profile(session)
+        profile.mkdir(parents=True, exist_ok=True)
+        click.echo(f"Session '{session}' → {profile}")
 
-    # ── Fast path: daemon already alive and authenticated ─────────────────────
-    from wavi.session import WASession, _is_process_alive
-    s = WASession(profile)
-    if s.daemon_alive():
-        click.echo("Daemon detectado, verificando sesión...")
-        status = asyncio.run(_check_session_status(profile))
-        if status == "restored":
-            pid = s._load_pid()
-            port = _session_port(profile)
-            click.echo(f"Sesión '{session}' ya activa y autenticada (PID {pid}, CDP :{port}).")
-            click.echo(f"Usá 'wavi get {session} <contacto>' para capturar mensajes.")
-            click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
-            return
-        click.echo(f"Daemon vivo pero sesión={status}. Relanzando...")
+        # ── Fast path: daemon already alive and authenticated ─────────────────
+        from wavi.session import WASession, _is_process_alive
+        s = WASession(profile)
+        if s.daemon_alive():
+            click.echo("Daemon detectado, verificando sesión...")
+            status = asyncio.run(_check_session_status(profile))
+            if status == "restored":
+                pid = s._load_pid()
+                port = _session_port(profile)
+                click.echo(f"Sesión '{session}' ya activa y autenticada (PID {pid}, CDP :{port}).")
+                click.echo(f"Usá 'wavi get {session} <contacto>' para capturar mensajes.")
+                click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
+                return
+            click.echo(f"Daemon vivo pero sesión={status}. Relanzando...")
 
     # ── Claim a port from the society registry (or local fallback) ──────────
     port = _claim_port(str(profile))
     _kill_port_processes(port)
     time.sleep(1)
 
-    # ── Optimistic: try headless first ────────────────────────────────────────
+    # ── Launch headless Chrome ────────────────────────────────────────────────
     _set_chrome_prefs(profile)
-    click.echo("Intentando restaurar sesión en modo headless...")
+    if not force_new:
+        click.echo("Intentando restaurar sesión en modo headless...")
     headless_proc = _launch_headless_daemon(profile, port)
-    time.sleep(3)  # Give Chrome time to start before CDP connect attempt
+    time.sleep(3)
 
     status = asyncio.run(_check_session_status(profile))
 
-    if status == "restored":
-        # Keep default alias pointing to this session
+    if not force_new and status == "restored":
         if session != "default":
             _set_default_alias(session)
         click.echo(f"Sesión restaurada — daemon headless activo (PID {headless_proc.pid}, CDP :{port}).")
@@ -328,38 +567,14 @@ def connect(session: str):
         click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
         return
 
-    # ── QR needed: kill headless, open visible window ─────────────────────────
-    click.echo(f"Sesión no encontrada (estado={status}) — QR requerido.")
-    click.echo("Cerrando Chrome headless...")
-    _terminate_proc(headless_proc)
-    (profile / "SingletonLock").unlink(missing_ok=True)
-    time.sleep(1)
+    # ── QR needed ────────────────────────────────────────────────────────────
+    if not force_new:
+        click.echo(f"Sesión no encontrada (estado={status}) — QR requerido.")
+    click.echo("Capturando QR en modo headless...")
 
-    _cleanup_crash_files(profile)
-
-    click.echo("Abriendo Chrome visible para escanear QR...")
-    proc = subprocess.Popen(
-        ["arch", "-arm64", str(REAL_CHROME)]
-        + [f"--user-data-dir={profile}", f"--remote-debugging-port={port}"]
-        + _VISIBLE_CHROME_ARGS
-        + [f"--window-size={WINDOW_W},{WINDOW_H}", "https://web.whatsapp.com"],
-    )
-    (profile / PID_FILE).write_text(str(proc.pid))
-    (profile / PORT_FILE).write_text(str(port))
-
-    click.echo(f"Chrome abierto (PID {proc.pid}, CDP :{port}).")
-    click.echo()
-    click.echo("1. Escaneá el QR en WhatsApp Web")
-    click.echo("2. Esperá que carguen tus chats")
-    click.echo("3. Presioná Enter aquí — Chrome se cerrará y arrancará en modo headless")
-    try:
-        input()
-    except (EOFError, KeyboardInterrupt):
-        pass
-
-    if proc.poll() is not None:
-        click.echo("Error: Chrome se cerró antes de que confirmaras. Intentá de nuevo.", err=True)
-        (profile / PID_FILE).unlink(missing_ok=True)
+    auth_result = asyncio.run(_qr_to_html_loop(profile, open_browser))
+    if auth_result != "authenticated":
+        _terminate_proc(headless_proc)
         sys.exit(1)
 
     # ── Flush WA state and switch to headless daemon ──────────────────────────
@@ -417,19 +632,29 @@ def connect(session: str):
             pass
 
     asyncio.run(_flush_and_read_phone())
-    _terminate_proc(proc)
+    _terminate_proc(headless_proc)
     (profile / "SingletonLock").unlink(missing_ok=True)
     time.sleep(1)
 
-    # If we got the phone number, rename the session and update the alias
-    if detected_phone and detected_phone != session:
+    # Rename session folder to phone number (or replace stale one with --new)
+    if detected_phone and detected_phone != (profile.name if force_new else session):
         phone_profile = DEFAULT_SESSIONS_DIR / detected_phone
         if not phone_profile.exists():
             profile.rename(phone_profile)
             profile = phone_profile
-            click.echo(f"Sesión renombrada → '{detected_phone}'")
+            click.echo(f"Sesión creada → '{detected_phone}'")
+        elif force_new:
+            shutil.rmtree(phone_profile, ignore_errors=True)
+            profile.rename(phone_profile)
+            profile = phone_profile
+            click.echo(f"Sesión '{detected_phone}' actualizada.")
+        else:
+            click.echo(f"Sesión '{detected_phone}' ya existe.")
         _set_default_alias(detected_phone)
         click.echo(f"'default' ahora apunta a '{detected_phone}'")
+    elif not detected_phone and force_new:
+        click.echo(f"No se detectó el número. Sesión guardada como '{profile.name}'.")
+        _set_default_alias(profile.name)
     elif session == "default" and not detected_phone:
         pass  # keep as-is, alias not updated
     else:
@@ -442,7 +667,7 @@ def connect(session: str):
     time.sleep(5)
 
     status = asyncio.run(_check_session_status(profile))
-    final_name = detected_phone or session
+    final_name = detected_phone or profile.name
     if status == "restored":
         click.echo(f"Daemon headless activo (PID {headless_proc.pid}, CDP :{port}).")
         click.echo(f"Sesión: '{final_name}'")
