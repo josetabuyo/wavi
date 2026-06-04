@@ -1,5 +1,6 @@
-"""pytest plugin: saves test results to docs/reports/test_results.js after each run."""
+"""pytest plugin: embeds test results into boarding.html after each run."""
 import json
+import re
 import time
 from pathlib import Path
 
@@ -43,8 +44,24 @@ def pytest_sessionfinish(session, exitstatus):
         "exit_code": int(exitstatus),
         "tests": tests,
     }
-    out = Path(__file__).parent.parent / "docs" / "reports" / "test_results.js"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
+    root = Path(__file__).parent.parent
+
+    # 1. Sidecar .js for machine/API use
+    js_out = root / "docs" / "reports" / "test_results.js"
+    js_out.parent.mkdir(parents=True, exist_ok=True)
+    js_out.write_text(
         f"window.WAVI_TEST_RESULTS = {json.dumps(data, indent=2, ensure_ascii=False)};\n"
     )
+
+    # 2. Embed JSON inline in boarding.html (works on file:// — no CORS issues)
+    html_path = root / "docs" / "boarding.html"
+    if html_path.exists():
+        html = html_path.read_text()
+        json_str = json.dumps(data, ensure_ascii=False)
+        html = re.sub(
+            r'(<script id="wavi-test-results" type="application/json">).*?(</script>)',
+            rf'\g<1>{json_str}\g<2>',
+            html,
+            flags=re.DOTALL,
+        )
+        html_path.write_text(html)
