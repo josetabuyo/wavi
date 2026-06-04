@@ -529,7 +529,8 @@ def status(session: str):
               help="Max scroll iterations (use 3 for quick debug).")
 @click.option("--from", "from_date", default=None,
               help="Stop scrolling at this date (YYYY-MM-DD). Captures messages on or after this date.")
-def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None):
+@click.option("--newest", is_flag=True, help="Incremental update: stop when the first already-known message is found.")
+def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None, newest: bool):
     """Capture the full message history from CONTACT's chat.
 
     Scrolls up from the most recent message, capturing all visible bubbles per
@@ -551,7 +552,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             click.echo(f"Error: --from debe ser una fecha en formato YYYY-MM-DD, recibido: {from_date}", err=True)
             sys.exit(1)
 
-    if assets_dir.exists():
+    if assets_dir.exists() and not newest:
         shutil.rmtree(assets_dir)
 
     async def _go():
@@ -562,6 +563,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             headless=headless,
             max_iterations=max_iter,
             from_date=from_date_obj,
+            newest=newest,
         )
 
     from wavi.queue import session_lock, is_locked
@@ -713,5 +715,31 @@ def bubbles(screenshot: str, assets: str | None, json_out: bool, debug: bool):
     for b in result:
         ts = f" [{b.timestamp}]" if b.timestamp else ""
         click.echo(f"  #{b.id:02d} {b.sender:5s} {b.msg_type:6s}{ts}  {b.text[:80]}")
+
+
+# ── boarding ──────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.option("--open", "open_browser", is_flag=True, help="Open in the default browser.")
+def boarding(open_browser: bool):
+    """Print the path to the wavi onboarding page.
+
+    By default prints the file path (safe for agent/script use).
+    Pass --open to launch the default browser.
+
+    \b
+    Examples:
+      wavi boarding                  # print path
+      wavi boarding --open           # open in browser
+      open $(wavi boarding)          # shell one-liner
+    """
+    html_path = (Path(__file__).parent.parent / "docs" / "boarding.html").resolve()
+    if not html_path.exists():
+        click.echo(f"boarding.html not found at {html_path}", err=True)
+        sys.exit(1)
+    click.echo(str(html_path))
+    if open_browser:
+        import webbrowser
+        webbrowser.open(f"file://{html_path}")
 
 

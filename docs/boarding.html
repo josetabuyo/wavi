@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>wavi — WhatsApp automation via vision</title>
+  <script src="reports/test_results.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg:        #0b0e13;
+      --surface:   #141920;
+      --surface2:  #1c2330;
+      --surface3:  #242d3a;
+      --border:    #2a3547;
+      --green:     #25d366;
+      --green-dk:  #128c7e;
+      --green-dim: rgba(37,211,102,.12);
+      --green-glow:rgba(37,211,102,.25);
+      --teal:      #34b8ac;
+      --text:      #d4dce8;
+      --text-dim:  #7a8a9e;
+      --text-head: #f0f6ff;
+      --code-bg:   #0d1117;
+      --badge-bg:  #1a2535;
+      --radius:    8px;
+      --radius-lg: 14px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      min-height: 100vh;
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    /* ── Sidebar ───────────────────────────────────────────────── */
+    .sidebar {
+      width: 240px;
+      min-width: 240px;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 28px 0 40px;
+      z-index: 100;
+    }
+    .sidebar-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 24px 28px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+    .sidebar-logo .logo-mark {
+      width: 36px; height: 36px;
+      background: var(--green);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 700; color: #000;
+      flex-shrink: 0;
+    }
+    .sidebar-logo .logo-text { font-size: 20px; font-weight: 700; color: var(--text-head); }
+    .sidebar-logo .logo-sub  { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+    .nav-section { margin-bottom: 6px; }
+    .nav-label {
+      font-size: 10px; font-weight: 600; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--text-dim);
+      padding: 10px 24px 4px;
+    }
+    .nav-link {
+      display: flex; align-items: center; gap: 9px;
+      padding: 7px 24px;
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 13.5px;
+      border-left: 2px solid transparent;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .nav-link:hover, .nav-link.active {
+      color: var(--text-head);
+      background: var(--green-dim);
+      border-left-color: var(--green);
+    }
+    .nav-link .dot { font-size: 8px; opacity: .5; }
+    .sidebar-footer {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      padding: 16px 24px;
+      border-top: 1px solid var(--border);
+      font-size: 11px; color: var(--text-dim);
+    }
+
+    /* ── Main content ───────────────────────────────────────────── */
+    main {
+      margin-left: 240px;
+      flex: 1;
+      max-width: 960px;
+      padding: 0 48px 80px;
+    }
+    section {
+      padding-top: 80px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 64px;
+    }
+    section:last-child { border-bottom: none; }
+
+    h1 { font-size: 48px; font-weight: 700; color: var(--text-head); line-height: 1.1; }
+    h2 { font-size: 28px; font-weight: 600; color: var(--text-head); margin-bottom: 24px; }
+    h3 { font-size: 18px; font-weight: 600; color: var(--text-head); margin: 28px 0 12px; }
+    h4 { font-size: 14px; font-weight: 600; color: var(--green); text-transform: uppercase;
+         letter-spacing: .07em; margin-bottom: 6px; }
+    p  { color: var(--text); margin-bottom: 14px; max-width: 700px; }
+    ul { padding-left: 20px; margin-bottom: 14px; }
+    li { margin-bottom: 6px; }
+
+    /* ── Hero ───────────────────────────────────────────────────── */
+    #hero { border-bottom: 1px solid var(--border); }
+    .hero-eyebrow {
+      font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--green); margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .hero-eyebrow::before {
+      content: ''; display: inline-block;
+      width: 20px; height: 2px; background: var(--green);
+    }
+    .hero-title {
+      font-size: 64px; font-weight: 700; color: var(--text-head);
+      letter-spacing: -.02em; line-height: 1;
+      text-shadow: 0 0 60px var(--green-glow);
+      margin-bottom: 8px;
+    }
+    .hero-title span { color: var(--green); }
+    .hero-tagline {
+      font-size: 20px; color: var(--text-dim); font-weight: 300;
+      margin-bottom: 32px; max-width: 560px;
+    }
+    .hero-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 36px; }
+    .badge {
+      background: var(--badge-bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 12px; font-weight: 500;
+      color: var(--text-dim);
+    }
+    .badge.green { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .hero-demo {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      max-width: 620px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-demo::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--green-dk), var(--green), var(--teal));
+    }
+    .hero-demo .prompt { color: var(--green); }
+    .hero-demo .cmd    { color: var(--text-head); }
+    .hero-demo .cmt    { color: var(--text-dim); }
+    .hero-demo .out    { color: var(--teal); }
+    .hero-demo .line   { display: block; line-height: 1.8; }
+
+    /* ── Cards ──────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      margin-bottom: 16px;
+      transition: border-color .2s;
+    }
+    .card:hover { border-color: var(--green-dk); }
+    .card-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 10px; }
+    .card-icon {
+      width: 38px; height: 38px; border-radius: 10px;
+      background: var(--green-dim);
+      border: 1px solid var(--green-dk);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; flex-shrink: 0;
+    }
+    .card-title { font-weight: 600; color: var(--text-head); font-size: 15px; }
+    .card-sub   { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+    .card p { margin-bottom: 0; font-size: 14px; }
+
+    /* ── Command table ──────────────────────────────────────────── */
+    .cmd-grid { display: grid; gap: 12px; }
+    .cmd-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: border-color .2s;
+    }
+    .cmd-card:hover { border-color: var(--green); }
+    .cmd-header {
+      background: var(--surface2);
+      padding: 12px 16px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .cmd-name {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px; font-weight: 500; color: var(--green);
+    }
+    .cmd-sig {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; color: var(--text-dim);
+    }
+    .cmd-body { padding: 12px 16px; font-size: 14px; }
+    .cmd-body code {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--teal);
+    }
+    .flag-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .flag {
+      background: var(--badge-bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 3px 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--text-dim);
+    }
+
+    /* ── Diagrams ───────────────────────────────────────────────── */
+    .diagram-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      margin: 20px 0;
+      overflow-x: auto;
+    }
+    .diagram-wrap .mermaid { min-width: 0; }
+
+    /* ── Pipeline steps ─────────────────────────────────────────── */
+    .pipeline {
+      display: flex; flex-direction: column; gap: 0;
+      margin: 24px 0;
+    }
+    .pipe-step {
+      display: flex; gap: 0; position: relative;
+    }
+    .pipe-step:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      left: 19px; top: 44px; bottom: -12px;
+      width: 2px; background: var(--border);
+    }
+    .pipe-num {
+      width: 40px; height: 40px; flex-shrink: 0;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 2px solid var(--green-dk);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 700; color: var(--green);
+      margin-right: 16px; margin-top: 2px;
+    }
+    .pipe-content { padding-bottom: 28px; }
+    .pipe-title { font-weight: 600; color: var(--text-head); margin-bottom: 4px; }
+    .pipe-desc  { font-size: 13.5px; color: var(--text-dim); max-width: 580px; }
+
+    /* ── ADR cards ──────────────────────────────────────────────── */
+    .adr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 700px) { .adr-grid { grid-template-columns: 1fr; } }
+    .adr-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 18px 20px;
+      border-top: 3px solid var(--green-dk);
+      transition: border-top-color .2s;
+    }
+    .adr-card:hover { border-top-color: var(--green); }
+    .adr-number { font-size: 11px; font-weight: 600; color: var(--green-dk); letter-spacing: .1em; text-transform: uppercase; }
+    .adr-title  { font-size: 15px; font-weight: 600; color: var(--text-head); margin: 6px 0 10px; }
+    .adr-body   { font-size: 13.5px; color: var(--text-dim); }
+    .adr-body strong { color: var(--text); }
+
+    /* ── Tests ──────────────────────────────────────────────────── */
+    .test-summary {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+      margin-bottom: 24px;
+    }
+    .stat-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px 20px;
+      text-align: center;
+    }
+    .stat-box .stat-val { font-size: 32px; font-weight: 700; color: var(--text-head); line-height: 1; }
+    .stat-box .stat-lbl { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+    .stat-box.pass .stat-val { color: var(--green); }
+    .stat-box.fail .stat-val { color: #fc6060; }
+    .stat-box.skip .stat-val { color: #f6c86b; }
+    .test-suite { margin-bottom: 20px; }
+    .suite-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius) var(--radius) 0 0;
+      cursor: pointer;
+    }
+    .suite-name { font-weight: 600; color: var(--text-head); font-size: 14px; }
+    .suite-file { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-dim); }
+    .suite-count { font-size: 12px; font-weight: 600; }
+    .suite-count.all-pass { color: var(--green); }
+    .suite-count.has-fail { color: #fc6060; }
+    .suite-tests {
+      border: 1px solid var(--border); border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+      overflow: hidden;
+      display: none;
+    }
+    .suite-tests.open { display: block; }
+    .test-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .test-row:last-child { border-bottom: none; }
+    .test-row:hover { background: var(--surface2); }
+    .test-status {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .test-status.passed { background: var(--green); }
+    .test-status.failed { background: #fc6060; box-shadow: 0 0 6px #fc606066; }
+    .test-status.skipped{ background: #f6c86b; }
+    .test-name { flex: 1; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+    .test-dur  { color: var(--text-dim); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .no-results {
+      background: var(--surface);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-lg);
+      padding: 40px 24px;
+      text-align: center;
+    }
+    .no-results h3 { color: var(--text-dim); }
+    .no-results code {
+      background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 16px;
+      font-family: 'JetBrains Mono', monospace; font-size: 13px;
+      color: var(--green); display: inline-block; margin-top: 12px;
+    }
+    .timestamp-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--badge-bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 12px; color: var(--text-dim);
+      margin-bottom: 20px;
+    }
+    .timestamp-badge .dot { color: var(--green); }
+    .progress-bar {
+      height: 6px; background: var(--surface3);
+      border-radius: 3px; overflow: hidden;
+      margin: 12px 0;
+    }
+    .progress-fill {
+      height: 100%; border-radius: 3px;
+      background: linear-gradient(90deg, var(--green-dk), var(--green));
+      transition: width .6s ease;
+    }
+
+    /* ── Code blocks ────────────────────────────────────────────── */
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      margin: 12px 0 20px;
+    }
+    code { font-family: 'JetBrains Mono', monospace; font-size: .9em; }
+    .kw  { color: #c792ea; }
+    .fn  { color: var(--green); }
+    .st  { color: #f8bf6a; }
+    .cm  { color: var(--text-dim); font-style: italic; }
+    .nb  { color: var(--teal); }
+
+    /* ── Philosophy callouts ────────────────────────────────────── */
+    .callout {
+      border-left: 3px solid var(--green);
+      background: var(--green-dim);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 14px 18px;
+      margin: 20px 0;
+    }
+    .callout p { margin-bottom: 0; font-style: italic; }
+    .callout-title { font-weight: 600; color: var(--green); margin-bottom: 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .07em; }
+
+    /* ── Scrollbar ──────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--green-dk); }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .sidebar { width: 200px; min-width: 200px; }
+      main { margin-left: 200px; padding: 0 24px 80px; }
+    }
+    @media (max-width: 640px) {
+      .sidebar { display: none; }
+      main { margin-left: 0; padding: 0 16px 80px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar nav ─────────────────────────────────────────────────── -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">w</div>
+    <div>
+      <div class="logo-text">wavi</div>
+      <div class="logo-sub">v0.1 · macOS · Python 3.11+</div>
+    </div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-label">Getting started</div>
+    <a class="nav-link" href="#hero">Overview</a>
+    <a class="nav-link" href="#philosophy">Philosophy</a>
+    <a class="nav-link" href="#quickstart">Quick start</a>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-label">Reference</div>
+    <a class="nav-link" href="#commands">Commands</a>
+    <a class="nav-link" href="#architecture">Architecture</a>
+    <a class="nav-link" href="#pipeline">Vision pipeline</a>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-label">Quality</div>
+    <a class="nav-link" href="#tests">Test suite</a>
+    <a class="nav-link" href="#decisions">Design decisions</a>
+  </div>
+
+  <div class="sidebar-footer">
+    Open source · MIT
+  </div>
+</nav>
+
+<!-- ── Main ────────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- HERO -->
+  <section id="hero">
+    <div class="hero-eyebrow">WhatsApp automation via vision</div>
+    <h1 class="hero-title"><span>wavi</span></h1>
+    <p class="hero-tagline">Read full chat histories. Capture audio. Transcribe voice messages. Without touching the DOM.</p>
+
+    <div class="hero-badges">
+      <span class="badge green">Python 3.11+</span>
+      <span class="badge green">macOS arm64</span>
+      <span class="badge">Playwright CDP</span>
+      <span class="badge">Apple Vision OCR</span>
+      <span class="badge">Groq Whisper</span>
+      <span class="badge">headless Chrome</span>
+    </div>
+
+    <div class="hero-demo">
+      <span class="line"><span class="prompt">$</span> <span class="cmd">wavi connect</span>   <span class="cmt"># authenticates once, stays headless</span></span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">wavi get default "Ana García" --from 2025-01-01</span></span>
+      <span class="line"><span class="out">✓ 247 mensajes capturados, 12 audios transcritos → output/ana_garcía/history_bubbles.json</span></span>
+      <span class="line">&nbsp;</span>
+      <span class="line"><span class="prompt">$</span> <span class="cmd">wavi send default "Ana García" "Hola, te paso el resumen"</span></span>
+      <span class="line"><span class="out">✓ Mensaje enviado</span></span>
+    </div>
+  </section>
+
+  <!-- PHILOSOPHY -->
+  <section id="philosophy">
+    <h2>Philosophy</h2>
+
+    <p>WhatsApp Web is a black box. Its DOM changes with every deploy, its CSS selectors rotate without warning, and its JavaScript API is private. Any scraper that reads the DOM is brittle by design.</p>
+
+    <p>wavi takes a different bet: <strong>what a human sees on screen is stable even when the internals change</strong>. Chat bubbles look like chat bubbles. Timestamps look like timestamps. Voice messages look like voice messages. That rendering contract is anchored to human expectation — it barely changes across WA versions.</p>
+
+    <div class="callout">
+      <div class="callout-title">The core thesis</div>
+      <p>Vision-based extraction is slower than DOM parsing but orders of magnitude more resilient. The investment in OCR and image analysis pays dividends every time WhatsApp ships a breaking DOM change — because wavi doesn't care.</p>
+    </div>
+
+    <h3>Why this matters beyond WhatsApp</h3>
+    <p>Every technique in this codebase — bubble detection, OCR timestamp extraction, blob URL interception, DOM anchor deduplication — is a reusable building block. The same approach applies to Telegram Web, Slack, or any chat UI that follows a similar visual grammar.</p>
+    <p>We are building a vocabulary for visual automation. Each solved problem here is a solved problem everywhere.</p>
+
+    <h3>Speed is not the enemy</h3>
+    <p>Chrome headless + Playwright CDP + Apple Vision OCR is fast enough. A 300-message chat captures in under 2 minutes. A 1000-message chat in under 10. That's fast enough for any real workflow.</p>
+    <p>The system prioritizes <strong>correctness</strong> over raw speed: DOM anchor deduplication ensures no message appears twice even across overlapping scroll windows; DOM IDs take priority over OCR text for dedup keys because OCR is imperfect. Every piece has a fallback.</p>
+  </section>
+
+  <!-- QUICK START -->
+  <section id="quickstart">
+    <h2>Quick start</h2>
+
+    <div class="pipeline">
+      <div class="pipe-step">
+        <div class="pipe-num">1</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Install</div>
+          <div class="pipe-desc">Requires Python 3.11+, pipx, and Google Chrome for macOS (arm64).</div>
+          <pre><code><span class="cm"># Isolated global install via pipx</span>
+pipx install --editable .
+
+<span class="cm"># Or dev install in the project venv</span>
+pip install -e ".[dev]"</code></pre>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">2</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Connect once</div>
+          <div class="pipe-desc">Launches Chrome headless. On first use, opens a visible window for QR scan, then switches back to headless. The session persists between reboots.</div>
+          <pre><code>wavi connect         <span class="cm"># tries headless first, QR if needed</span>
+wavi status          <span class="cm"># verify: daemon=running, session=restored</span></code></pre>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">3</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Set GROQ_API_KEY (optional)</div>
+          <div class="pipe-desc">Required for voice message transcription via Whisper. Free tier available at console.groq.com.</div>
+          <pre><code><span class="kw">echo</span> <span class="st">"GROQ_API_KEY=gsk_..."</span> >> .env</code></pre>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">4</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Capture a chat</div>
+          <div class="pipe-desc">Scrolls the full history, captures every bubble, downloads audio files, transcribes them. Output in <code>output/&lt;contact&gt;/</code>.</div>
+          <pre><code>wavi get default "Ana García"
+<span class="cm"># → output/ana_garcía/history_bubbles.json</span>
+<span class="cm"># → output/ana_garcía/iter_*/screenshot.png</span>
+<span class="cm"># → output/ana_garcía/iter_*/audio_*.ogg</span></code></pre>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">5</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Send a message</div>
+          <div class="pipe-desc">Navigates to the contact, types the message, presses Enter. Optionally saves a screenshot of the chat after sending.</div>
+          <pre><code>wavi send default "Ana García" "Hola!"
+wavi send default "+54 9 11 5561 2767" "test" --screenshot-out sent.png</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMMANDS -->
+  <section id="commands">
+    <h2>Commands</h2>
+    <p>All commands accept an optional <code>SESSION</code> argument (default: <code>"default"</code>). Multiple sessions can run simultaneously on different CDP ports.</p>
+
+    <div class="cmd-grid">
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi connect</span>
+          <span class="cmd-sig">[SESSION]</span>
+        </div>
+        <div class="cmd-body">
+          <p>Start or recover the Chrome daemon. Tries headless first — no visible window if the session is already authenticated. Falls back to a visible window for QR scan, then returns to headless.</p>
+          <div class="flag-list">
+          </div>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi get</span>
+          <span class="cmd-sig">[SESSION] CONTACT</span>
+        </div>
+        <div class="cmd-body">
+          <p>Scroll the full chat history with CONTACT. Deduplicates messages across scroll iterations. Downloads and transcribes audio messages if <code>GROQ_API_KEY</code> is set.</p>
+          <div class="flag-list">
+            <span class="flag">--from YYYY-MM-DD</span>
+            <span class="flag">--newest</span>
+            <span class="flag">--max-iter N</span>
+            <span class="flag">--assets DIR</span>
+            <span class="flag">--json-out</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi send</span>
+          <span class="cmd-sig">[SESSION] CONTACT MESSAGE</span>
+        </div>
+        <div class="cmd-body">
+          <p>Open CONTACT's chat and send MESSAGE. Use your own phone number as CONTACT for self-message testing.</p>
+          <div class="flag-list">
+            <span class="flag">--screenshot-out FILE</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi status</span>
+          <span class="cmd-sig">[SESSION]</span>
+        </div>
+        <div class="cmd-body">
+          <p>Check if the Chrome daemon is running and whether WhatsApp is authenticated. Returns <code>session=restored</code> when ready.</p>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi stop</span>
+          <span class="cmd-sig">[SESSION]</span>
+        </div>
+        <div class="cmd-body">
+          <p>Gracefully shut down the Chrome daemon. Navigates to <code>about:blank</code> first so WhatsApp flushes IndexedDB before SIGTERM. Never use <code>kill -9</code> directly.</p>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi queue</span>
+          <span class="cmd-sig">[SESSION]</span>
+        </div>
+        <div class="cmd-body">
+          <p>Show the current operation status for a session. Prints <code>idle</code> or details of the running operation (type, contact, PID, elapsed time).</p>
+          <div class="flag-list">
+            <span class="flag">--json-out</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi bubbles</span>
+          <span class="cmd-sig">SCREENSHOT</span>
+        </div>
+        <div class="cmd-body">
+          <p>Run the vision pipeline on a saved screenshot file. No browser needed. Useful for debugging OCR and bubble detection on a specific frame.</p>
+          <div class="flag-list">
+            <span class="flag">--assets DIR</span>
+            <span class="flag">--json-out</span>
+            <span class="flag">--debug/--no-debug</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cmd-card">
+        <div class="cmd-header">
+          <span class="cmd-name">wavi boarding</span>
+          <span class="cmd-sig"></span>
+        </div>
+        <div class="cmd-body">
+          <p>Open this page in the default browser.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE -->
+  <section id="architecture">
+    <h2>Architecture</h2>
+
+    <h3>System overview</h3>
+    <p>wavi is a thin CLI on top of a three-layer stack: <em>session management</em> (Chrome CDP via Playwright), <em>vision</em> (pure image processing), and <em>orchestration</em> (WARunner ties them together with scroll logic and audio capture).</p>
+
+    <div class="diagram-wrap">
+      <div class="mermaid">
+graph LR
+    subgraph CLI["cli.py · Click"]
+        connect; get; send; stop; status; queue; bubbles; boarding
+    end
+    subgraph Core["Core modules"]
+        session["session.py\nWASession · CDP"]
+        runner["runner.py\nWARunner · orchestrator"]
+        vision["vision.py\nOCR + classify"]
+        detector["element_detector.py\nbbox detection"]
+        transcribe["transcription.py\nGroq Whisper"]
+        q["queue.py\nsession lock"]
+    end
+    subgraph External["External"]
+        chrome["Chrome headless\nCDP :9200+"]
+        wa["WhatsApp Web"]
+        groq["Groq API\nwhisper-large-v3"]
+    end
+    subgraph Output["Output"]
+        json["history_bubbles.json"]
+        ogg["audio_*.ogg"]
+    end
+
+    CLI --> session
+    CLI --> runner
+    CLI --> q
+    runner --> session
+    runner --> vision
+    runner --> transcribe
+    vision --> detector
+    session --> chrome
+    chrome --> wa
+    transcribe --> groq
+    runner --> json
+    runner --> ogg
+      </div>
+    </div>
+
+    <h3>Module dependency graph</h3>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+graph TD
+    cli["cli.py"]
+    runner["runner.py"]
+    session["session.py"]
+    vision["vision.py"]
+    detector["element_detector.py"]
+    transcription["transcription.py"]
+    queue["queue.py"]
+
+    cli --> runner
+    cli --> session
+    cli --> queue
+    runner --> session
+    runner --> vision
+    runner --> transcription
+    vision --> detector
+
+    style cli fill:#128C7E,color:#fff,stroke:#25D366
+    style runner fill:#1c2330,color:#d4dce8,stroke:#2a3547
+    style session fill:#1c2330,color:#d4dce8,stroke:#2a3547
+    style vision fill:#1c2330,color:#d4dce8,stroke:#2a3547
+    style detector fill:#141920,color:#7a8a9e,stroke:#2a3547
+    style transcription fill:#141920,color:#7a8a9e,stroke:#2a3547
+    style queue fill:#141920,color:#7a8a9e,stroke:#2a3547
+      </div>
+    </div>
+
+    <h3>wavi get · sequence</h3>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant CLI as cli.py
+    participant Q as queue.py
+    participant R as WARunner
+    participant S as WASession
+    participant C as Chrome CDP
+    participant V as vision.py
+    participant G as Groq API
+
+    U->>CLI: wavi get session contact
+    CLI->>Q: session_lock()
+    CLI->>R: run_enhanced()
+    R->>S: connect() via CDP
+    S->>C: Playwright connect_over_cdp()
+    C-->>S: browser context
+    R->>S: navigate_to_contact(contact)
+    S->>C: mouse.click + keyboard type
+    R->>S: install_blob_monitor()
+    loop scroll iterations
+        R->>S: screenshot()
+        S-->>R: PNG bytes
+        R->>V: analyze(screenshot)
+        V-->>R: Bubble[]
+        R->>S: get_visible_message_ids()
+        R->>R: assign_dom_ids + dedup
+        R->>S: find play buttons (DOM)
+        R->>S: click + drain_blobs()
+        R->>S: scroll_chat_up(px)
+    end
+    R->>G: transcribe each .ogg
+    G-->>R: transcript text
+    R->>R: write history_bubbles.json
+    R-->>CLI: bubbles list
+    CLI-->>U: formatted output
+      </div>
+    </div>
+
+    <h3>Key classes</h3>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+classDiagram
+    class Bubble {
+        +int id
+        +int screen_id
+        +str sender
+        +str msg_type
+        +str|None timestamp
+        +str text
+        +dict bbox
+        +str|None dom_id
+        +str|None audio_path
+        +str|None transcript
+        +as_dict() dict
+    }
+    class WASession {
+        +Path profile_dir
+        +bool headless
+        +connect() str
+        +navigate_to_contact(contact)
+        +screenshot() bytes
+        +get_chat_scroll_state() dict
+        +scroll_chat_up(px)
+        +install_blob_monitor()
+        +drain_blobs() list
+        +get_dpr() float
+        +get_visible_message_ids() list
+        +fetch_blob(url) bytes
+        +stop_daemon()
+        +daemon_alive() bool
+    }
+    class WARunner {
+        +WASession session
+        +connect() str
+        +open_chat(contact)
+        +get_bubbles(assets_dir) list
+        +find_play_buttons() list
+        +capture_full_history() list
+        +capture_audio_bubbles() list
+    }
+    WARunner "1" --> "1" WASession
+    WARunner ..> Bubble : produces
+      </div>
+    </div>
+  </section>
+
+  <!-- VISION PIPELINE -->
+  <section id="pipeline">
+    <h2>Vision pipeline</h2>
+    <p>The vision pipeline is <strong>pure</strong> — no browser, no network, no side effects. It takes a PNG file and returns a list of classified Bubbles. This makes it fully testable without mocking anything real.</p>
+
+    <div class="pipeline">
+      <div class="pipe-step">
+        <div class="pipe-num">1</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Crop — remove chrome</div>
+          <div class="pipe-desc">The 1280×1920 screenshot includes WhatsApp's sidebar (left 580px) and header (top 60px). These are cropped out. The resulting panel is pure chat bubbles, left-right aligned by sender.</div>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">2</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Bubble detection — numpy</div>
+          <div class="pipe-desc"><code>element_detector.py</code> converts the image to LAB color space, finds light-colored regions (bubbles are white/light-green against a dark background), labels connected components, and filters by area and aspect ratio. Each region becomes a bounding box.</div>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">3</div>
+        <div class="pipe-content">
+          <div class="pipe-title">OCR — Apple Vision</div>
+          <div class="pipe-desc">Each bubble is cropped from the image and passed to <code>swift/ocr_vision.swift</code>, which calls macOS's Vision framework (<code>VNRecognizeTextRequest</code>). Returns a JSON array of text blocks with coordinates. Fast, accurate, offline.</div>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">4</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Classify — text / audio / file / media</div>
+          <div class="pipe-desc"><code>classify_msg_type()</code> inspects the OCR blocks: duration patterns (<code>0:21</code>) → audio; file extensions or sizes → file; all-blank blocks → media (likely a photo/video); anything else → text. Sender is inferred from x-position (right = "me", left = "other").</div>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">5</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Timestamp extraction</div>
+          <div class="pipe-desc">Timestamps are extracted with regex against known WA formats (<code>2:15 p. m.</code>). Special handling for Cyrillic OCR artifacts where Apple Vision misreads Latin "p" as Cyrillic "р" in some locales.</div>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">6</div>
+        <div class="pipe-content">
+          <div class="pipe-title">DOM anchor matching</div>
+          <div class="pipe-desc">Each Bubble gets a <code>dom_id</code> assigned by matching its y-center (crop coords → CSS viewport via DPR) against WA's data-id attributes queried from the DOM. DOM ID is the primary dedup key — stable even when OCR produces different text for the same message.</div>
+        </div>
+      </div>
+
+      <div class="pipe-step">
+        <div class="pipe-num">7</div>
+        <div class="pipe-content">
+          <div class="pipe-title">Audio capture — blob monitor</div>
+          <div class="pipe-desc">A JavaScript hook intercepts <code>HTMLMediaElement.src</code>, <code>URL.createObjectURL</code>, and <code>play()</code> calls. When wavi clicks a play button, the hook captures the blob URL. The blob is then fetched as binary and saved as <code>audio_N.ogg</code>.</div>
+        </div>
+      </div>
+    </div>
+
+    <h3>Vision pipeline — flowchart</h3>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+flowchart TD
+    A["📸 screenshot.png\n1280×1920px, DPR=1"] --> B
+    B["✂️ Crop\nremove sidebar 580px\nremove header 60px"] --> C
+    C["🔍 detect_bubbles\nnumpy LAB color space\nconnected components"] --> D
+    D["📝 Swift Vision OCR\nVNRecognizeTextRequest\ntext blocks with bboxes"] --> E
+    E["🏷️ classify_msg_type\ntext / audio / file / media"] --> F
+    F["⚓ assign_dom_ids\ny-proximity matching\ncrop px → CSS viewport"] --> G
+    G["🔀 Dedup\ndom_id primary key\nOCR fallback"] --> H
+    H["📄 Bubble list\nid · sender · type\ntimestamp · text · bbox"]
+      </div>
+    </div>
+  </section>
+
+  <!-- TESTS -->
+  <section id="tests">
+    <h2>Test suite</h2>
+    <p>All tests run offline — no browser, no real WA account, no API calls. Browser methods are mocked with <code>AsyncMock</code>. The vision tests use synthetic images generated in-memory with Pillow + numpy.</p>
+
+    <div id="test-content"></div>
+  </section>
+
+  <!-- DESIGN DECISIONS -->
+  <section id="decisions">
+    <h2>Design decisions</h2>
+    <p>Key architectural choices and the reasoning behind them.</p>
+
+    <div class="adr-grid">
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-001</div>
+        <div class="adr-title">Vision over DOM</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> extract data via screenshots + OCR, not DOM selectors.<br><br>
+          <strong>Why:</strong> WhatsApp Web's DOM is minified, obfuscated, and changes with every deploy. CSS selectors and JS APIs that work today silently break tomorrow. Visual rendering is stable because it is anchored to human perception.<br><br>
+          <strong>Trade-off:</strong> slower than DOM parsing, but resilient to any non-visual WA change.
+        </div>
+      </div>
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-002</div>
+        <div class="adr-title">Force DPR=1 in headless Chrome</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> pass <code>--force-device-scale-factor=1</code> to Chrome.<br><br>
+          <strong>Why:</strong> on macOS Retina, Chrome defaults to DPR=2. With a 1280×1920 window spec, the effective CSS viewport becomes 640×960 — half the pixels. Screenshots show far fewer messages and bounding box math breaks. Forcing DPR=1 maps <code>--window-size</code> 1:1 to CSS pixels.<br><br>
+          <strong>Test guard:</strong> <code>TestViewportRegression</code> ensures this never regresses.
+        </div>
+      </div>
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-003</div>
+        <div class="adr-title">Chrome as a long-lived daemon</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> <code>wavi connect</code> starts Chrome once; all other commands connect via CDP and never kill Chrome.<br><br>
+          <strong>Why:</strong> WhatsApp stores its auth state in IndexedDB inside the Chrome user-data-dir. Killing Chrome mid-session corrupts IndexedDB and forces re-authentication. CDP connect/disconnect is cheap; Chrome restart is expensive and lossy.<br><br>
+          <strong>Shutdown:</strong> always via <code>wavi stop</code> which navigates to <code>about:blank</code> first.
+        </div>
+      </div>
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-004</div>
+        <div class="adr-title">DOM anchor dedup + OCR fallback</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> primary dedup key = <code>dom_id</code> (WA's <code>data-id</code>); fallback = OCR content key.<br><br>
+          <strong>Why:</strong> scroll regions overlap by ~15%. A message visible at the bottom of frame N appears again at the top of frame N+1. OCR text alone can vary between captures (noise, punctuation). The DOM ID is immutable for a given message.<br><br>
+          <strong>Fallback:</strong> when DOM ID assignment fails (element off-screen), OCR key (sender + type + text[:80] + timestamp) handles it.
+        </div>
+      </div>
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-005</div>
+        <div class="adr-title">ARM64 Chrome on macOS</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> launch Chrome with <code>arch -arm64</code>.<br><br>
+          <strong>Why:</strong> on Apple Silicon, Chrome launched without explicit arch may run under Rosetta (x86 emulation). WhatsApp Web's service worker and IndexedDB behave inconsistently under Rosetta — the session appears authenticated but the chat list never loads (frozen). ARM64 native is stable.<br><br>
+          <strong>Memory:</strong> this is saved in project memory to prevent regression.
+        </div>
+      </div>
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-006</div>
+        <div class="adr-title">Optimistic headless connect</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> always try headless first in <code>wavi connect</code>; only open a visible window if QR is needed.<br><br>
+          <strong>Why:</strong> once authenticated, the session is stored in the Chrome user-data-dir. Headless restores it silently. Opening a visible window unnecessarily is disruptive and slower.<br><br>
+          <strong>Strategy:</strong> headless → check WA auth → if QR needed, kill headless, open visible → scan → kill visible → restart headless.
+        </div>
+      </div>
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-007</div>
+        <div class="adr-title">Transcription after browser closes</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> <code>transcribe_history_audios()</code> runs after <code>runner.close()</code>, not during the scroll loop.<br><br>
+          <strong>Why:</strong> Groq API calls can take 1-3 seconds each. Running them inside the Playwright event loop while Chrome is open risks timeouts and interleaves async operations in hard-to-predict ways. Closing the browser first, then transcribing serially, is safe and deterministic.
+        </div>
+      </div>
+
+      <div class="adr-card">
+        <div class="adr-number">ADR-008</div>
+        <div class="adr-title">Session port registry via Local Agent Society</div>
+        <div class="adr-body">
+          <strong>Decision:</strong> claim CDP ports from the Local Agent Society registry (<code>http://localhost:8700</code>); fall back to local socket scan.<br><br>
+          <strong>Why:</strong> multiple wavi sessions (and other local agents) share the 9200–9249 port range. Atomic <code>POST /ports/claim</code> prevents race conditions when two sessions start simultaneously. Three-tier fallback (claim → free+register → local scan) ensures the tool works even without the society daemon.
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // ── Mermaid init ───────────────────────────────────────────────────────────
+  mermaid.initialize({
+    theme: 'dark',
+    fontFamily: 'Inter, sans-serif',
+    fontSize: 14,
+    themeVariables: {
+      background:             '#141920',
+      primaryColor:           '#1c4a42',
+      primaryBorderColor:     '#25d366',
+      primaryTextColor:       '#d4dce8',
+      secondaryColor:         '#1c2330',
+      tertiaryColor:          '#242d3a',
+      lineColor:              '#4a5568',
+      textColor:              '#d4dce8',
+      nodeBorder:             '#25d366',
+      clusterBkg:             '#1c2330',
+      clusterBorder:          '#2a3547',
+      titleColor:             '#25d366',
+      edgeLabelBackground:    '#1c2330',
+      actorBkg:               '#1c2330',
+      actorBorder:            '#25d366',
+      actorTextColor:         '#d4dce8',
+      actorLineColor:         '#4a5568',
+      signalColor:            '#25d366',
+      signalTextColor:        '#d4dce8',
+      labelBoxBkgColor:       '#1c2330',
+      labelBoxBorderColor:    '#2a3547',
+      labelTextColor:         '#d4dce8',
+      loopTextColor:          '#d4dce8',
+      noteBorderColor:        '#2a3547',
+      noteBkgColor:           '#1c2330',
+      noteTextColor:          '#7a8a9e',
+      activationBorderColor:  '#25d366',
+      activationBkgColor:     '#1c4a42',
+      sequenceNumberColor:    '#000',
+      fillType0:              '#1c4a42',
+      fillType1:              '#1c2330',
+      fillType2:              '#242d3a',
+    },
+    flowchart: { curve: 'basis', nodeSpacing: 50, rankSpacing: 60 },
+    sequence:  { mirrorActors: false, width: 180, height: 65 },
+    classDiagram: { diagramPadding: 20 },
+  });
+
+  // ── Sidebar active link on scroll ──────────────────────────────────────────
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks  = document.querySelectorAll('.nav-link');
+  const observer  = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        navLinks.forEach(l => l.classList.remove('active'));
+        const active = document.querySelector(`.nav-link[href="#${e.target.id}"]`);
+        if (active) active.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-30% 0px -60% 0px' });
+  sections.forEach(s => observer.observe(s));
+
+  // ── Suite expand/collapse ──────────────────────────────────────────────────
+  document.addEventListener('click', e => {
+    const hdr = e.target.closest('.suite-header');
+    if (!hdr) return;
+    hdr.nextElementSibling.classList.toggle('open');
+  });
+
+  // ── Test results rendering ─────────────────────────────────────────────────
+  function renderTests() {
+    const container = document.getElementById('test-content');
+    const data = window.WAVI_TEST_RESULTS;
+
+    if (!data) {
+      container.innerHTML = `
+        <div class="no-results">
+          <h3>No test results yet</h3>
+          <p>Run the test suite to populate this section.</p>
+          <code>make test</code>
+        </div>`;
+      return;
+    }
+
+    const pct = data.total > 0 ? Math.round((data.passed / data.total) * 100) : 0;
+    const statusColor = data.failed > 0 ? '#fc6060' : '#25d366';
+    const statusText  = data.failed > 0 ? `${data.failed} FAILING` : 'ALL PASSING';
+
+    // Summary bar
+    let html = `
+      <div class="timestamp-badge">
+        <span class="dot">●</span>
+        Last run: ${data.timestamp} &nbsp;·&nbsp; ${data.duration}s &nbsp;·&nbsp;
+        <strong style="color:${statusColor}">${statusText}</strong>
+      </div>
+      <div class="test-summary">
+        <div class="stat-box pass">
+          <div class="stat-val">${data.passed}</div>
+          <div class="stat-lbl">passed</div>
+        </div>
+        <div class="stat-box fail">
+          <div class="stat-val">${data.failed}</div>
+          <div class="stat-lbl">failed</div>
+        </div>
+        <div class="stat-box skip">
+          <div class="stat-val">${data.skipped}</div>
+          <div class="stat-lbl">skipped</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val">${data.total}</div>
+          <div class="stat-lbl">total</div>
+        </div>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width:${pct}%"></div>
+      </div>`;
+
+    // Group by file
+    const byFile = {};
+    (data.tests || []).forEach(t => {
+      const file = t.nodeid.split('::')[0];
+      (byFile[file] = byFile[file] || []).push(t);
+    });
+
+    const fileDescriptions = {
+      'tests/test_vision.py':        'Vision pipeline — OCR classification, timestamp extraction, noise filtering, bubble detection, debug image rendering.',
+      'tests/test_session.py':       'WASession — navigation, viewport setup, DPR regression guards, scroll strategies.',
+      'tests/test_runner.py':        'WARunner — coordinate matching, full-history dedup, audio download, anchor strategy, bubble key logic.',
+      'tests/test_transcription.py': 'Transcription — Groq API calls, fallback chain, Bubble.transcript field, history JSON rewrite.',
+    };
+
+    Object.entries(byFile).forEach(([file, tests]) => {
+      const failed = tests.filter(t => t.outcome === 'failed').length;
+      const cls    = failed > 0 ? 'has-fail' : 'all-pass';
+      const label  = failed > 0 ? `${failed} failed` : `${tests.length} passed`;
+      const desc   = fileDescriptions[file] || '';
+
+      html += `
+        <div class="test-suite">
+          <div class="suite-header">
+            <div>
+              <div class="suite-name">${file.replace('tests/', '')}</div>
+              <div class="suite-file" style="margin-top:2px;font-size:12px;color:var(--text-dim)">${desc}</div>
+            </div>
+            <span class="suite-count ${cls}">${label}</span>
+          </div>
+          <div class="suite-tests">`;
+
+      tests.forEach(t => {
+        const parts   = t.nodeid.split('::');
+        const name    = parts.slice(1).join(' › ');
+        const durStr  = t.duration ? `${(t.duration * 1000).toFixed(0)}ms` : '';
+        html += `
+            <div class="test-row">
+              <div class="test-status ${t.outcome}"></div>
+              <div class="test-name">${name}</div>
+              <div class="test-dur">${durStr}</div>
+            </div>`;
+      });
+
+      html += `</div></div>`;
+    });
+
+    container.innerHTML = html;
+  }
+
+  renderTests();
+</script>
+</body>
+</html>
