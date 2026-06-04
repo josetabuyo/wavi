@@ -19,6 +19,7 @@ WA_URL      = "https://web.whatsapp.com/"
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 CDP_PORT    = 9222
 PID_FILE    = "chrome_daemon.pid"
+PORT_FILE   = "chrome_daemon.port"
 
 # Viewport size for headless daemon. Width=1280 is the calibrated base for the
 # sidebar crop formula (vision.py: sidebar_x = w * SIDEBAR_PX/1280).
@@ -194,6 +195,59 @@ _GET_VISIBLE_MSG_IDS_JS = """
 }
 """
 
+_FIND_COMPOSE_INPUT_JS = """
+() => {
+    const sels = [
+        'footer [contenteditable="true"]',
+        '#main footer [contenteditable="true"]',
+        '[data-tab][contenteditable="true"]',
+        '[data-testid="conversation-compose-box-input"]',
+    ];
+    for (const s of sels) {
+        const el = document.querySelector(s);
+        if (el) {
+            const r = el.getBoundingClientRect();
+            return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), found: true, selector: s };
+        }
+    }
+    return { found: false };
+}
+"""
+
+_CHECK_COMPOSE_EMPTY_JS = """
+() => {
+    const sels = [
+        'footer [contenteditable="true"]',
+        '#main footer [contenteditable="true"]',
+        '[data-tab][contenteditable="true"]',
+        '[data-testid="conversation-compose-box-input"]',
+    ];
+    for (const s of sels) {
+        const el = document.querySelector(s);
+        if (el) return (el.innerText || el.textContent || '').trim() === '';
+    }
+    return true;
+}
+"""
+
+_CLICK_SEND_BTN_JS = """
+() => {
+    // Prefer the icon-based selector (locale-agnostic).
+    // Fall back to aria-label in Spanish and English.
+    const iconEl = document.querySelector('span[data-icon="send"]');
+    if (iconEl) {
+        const btn = iconEl.closest('button') || iconEl;
+        btn.click();
+        return true;
+    }
+    for (const lbl of ['Enviar', 'Send']) {
+        const btn = document.querySelector(`button[aria-label="${lbl}"]`);
+        if (btn) { btn.click(); return true; }
+    }
+    return false;
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -241,6 +295,7 @@ class WASession:
         self._context      = None
         self._page         = None
         self._chrome_proc  = None  # set only when WE started Chrome
+        self._port: int    = self._load_port()
 
     # ── Daemon helpers ────────────────────────────────────────────────────────
 
@@ -252,6 +307,12 @@ class WASession:
             return int((self.profile_dir / PID_FILE).read_text().strip())
         except Exception:
             return None
+
+    def _load_port(self) -> int:
+        try:
+            return int((self.profile_dir / PORT_FILE).read_text().strip())
+        except Exception:
+            return CDP_PORT  # fallback for old sessions
 
     def daemon_alive(self) -> bool:
         pid = self._load_pid()
@@ -274,7 +335,7 @@ class WASession:
         if pid and _is_process_alive(pid):
             try:
                 self._browser = await self._pw.chromium.connect_over_cdp(
-                    f"http://localhost:{CDP_PORT}", timeout=5_000
+                    f"http://localhost:{self._port}", timeout=5_000
                 )
                 return await self._setup_page()
             except Exception as e:
@@ -287,13 +348,13 @@ class WASession:
         print(f"⚠️  No daemon detectado — abriendo Chrome en fallback headless...", file=sys.stderr)
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        _kill_port(CDP_PORT)
+        _kill_port(self._port)
         (self.profile_dir / "SingletonLock").unlink(missing_ok=True)
 
         args = [
             str(REAL_CHROME),
             f"--user-data-dir={self.profile_dir}",
-            f"--remote-debugging-port={CDP_PORT}",
+            f"--remote-debugging-port={self._port}",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-blink-features=AutomationControlled",
@@ -315,14 +376,14 @@ class WASession:
         for _ in range(30):
             try:
                 self._browser = await self._pw.chromium.connect_over_cdp(
-                    f"http://localhost:{CDP_PORT}", timeout=1_000
+                    f"http://localhost:{self._port}", timeout=1_000
                 )
                 break
             except Exception:
                 await asyncio.sleep(1)
         else:
             self._chrome_proc.terminate()
-            raise RuntimeError(f"Chrome did not expose CDP on port {CDP_PORT}")
+            raise RuntimeError(f"Chrome did not expose CDP on port {self._port}")
 
         return await self._setup_page()
 
@@ -416,6 +477,7 @@ class WASession:
 
         (self.profile_dir / "SingletonLock").unlink(missing_ok=True)
         (self.profile_dir / PID_FILE).unlink(missing_ok=True)
+        (self.profile_dir / PORT_FILE).unlink(missing_ok=True)
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
@@ -424,8 +486,10 @@ class WASession:
         await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
         await self._page.wait_for_timeout(300)
 
-        # Limpiar con teclado — Cmd+A selecciona todo en macOS, Delete borra
-        await self._page.keyboard.press("Meta+a")
+        # Limpiar: seleccionar todo y borrar (Mac: Cmd+A, Windows: Ctrl+A)
+        import sys as _sys
+        _select_all = "Meta+a" if _sys.platform == "darwin" else "Control+a"
+        await self._page.keyboard.press(_select_all)
         await self._page.wait_for_timeout(100)
         await self._page.keyboard.press("Delete")
         await self._page.wait_for_timeout(200)
@@ -548,6 +612,50 @@ class WASession:
         """Return True if the chat scroll container is at the top (scrollTop < 20)."""
         state = await self.get_chat_scroll_state()
         return state is not None and state["scrollTop"] < 20
+
+    async def send_message(self, text: str) -> dict:
+        """Type and send a message in the currently open chat.
+
+        Handles multi-line text (\\n → Shift+Enter so WA doesn't send early).
+        After pressing Enter, verifies compose box emptied; falls back to the
+        send button if Enter was configured as new-line in this WA session.
+
+        Returns metadata: {selector, x, y} of the input box used.
+        Raises RuntimeError if no compose input is found or send fails.
+        """
+        info = await self._page.evaluate(_FIND_COMPOSE_INPUT_JS)
+        if not info.get("found"):
+            raise RuntimeError("No se encontró el input de mensajes (compose box) en el chat actual")
+
+        await self._page.mouse.click(info["x"], info["y"])
+        await self._page.wait_for_timeout(300)
+
+        # Split on newlines — use Shift+Enter for line breaks so WA doesn't
+        # send each line as a separate message.
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if line:
+                await self._page.keyboard.type(line, delay=30)
+            if i < len(lines) - 1:
+                await self._page.keyboard.press("Shift+Enter")
+        await self._page.wait_for_timeout(500)
+
+        await self._page.keyboard.press("Enter")
+        await self._page.wait_for_timeout(1000)
+
+        # Verify the compose box is now empty (message was sent, not just new-lined).
+        sent = await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS)
+        if not sent:
+            # WA may be configured to use Enter as new-line — click the send button.
+            clicked = await self._page.evaluate(_CLICK_SEND_BTN_JS)
+            await self._page.wait_for_timeout(800)
+            if not clicked:
+                raise RuntimeError("No se pudo enviar el mensaje: Enter no envió y no se encontró botón Send")
+            still_there = not await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS)
+            if still_there:
+                raise RuntimeError("Mensaje sigue en el compose box después de intentar Send — no fue enviado")
+
+        return {"selector": info.get("selector"), "x": info["x"], "y": info["y"]}
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

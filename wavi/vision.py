@@ -157,6 +157,8 @@ def _is_noise(text: str) -> bool:
 def _is_waveform_garbage(text: str) -> bool:
     if len(text) < 5:
         return False
+    if RE_TIME.search(text):  # timestamps ("10:17 a. m.") are not waveforms
+        return False
     noise = sum(1 for c in text if c in '|•01-[]lL ')
     return noise / len(text) > 0.45
 

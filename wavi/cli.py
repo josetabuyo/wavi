@@ -4,7 +4,7 @@ cli.py — wavi command-line interface.
 Commands:
   wavi connect   [session]            — start Chrome daemon + QR scan (if needed)
   wavi stop      [session]            — gracefully shut down Chrome daemon
-  wavi full-sync [session] <contact>  — capture messages + audio from a chat
+  wavi get       [session] <contact>  — capture full message history from a chat
   wavi status    [session]            — check if session daemon is alive + authenticated
   wavi bubbles   <screenshot>         — run vision pipeline on a local screenshot
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -33,7 +34,7 @@ load_dotenv()
 
 DEFAULT_SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-from wavi.session import CDP_PORT, PID_FILE, WINDOW_W, WINDOW_H
+from wavi.session import CDP_PORT, PID_FILE, PORT_FILE, WINDOW_W, WINDOW_H
 
 _HEADLESS_CHROME_ARGS = [
     "--no-first-run",
@@ -85,14 +86,117 @@ def _set_default_alias(session_name: str) -> None:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _kill_port_processes() -> None:
+def _kill_port_processes(port: int) -> None:
     result = subprocess.run(
-        ["lsof", "-ti", f"tcp:{CDP_PORT}", "-sTCP:LISTEN"],
+        ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
         capture_output=True, text=True,
     )
     for pid in result.stdout.strip().split("\n"):
         if pid.strip():
             subprocess.run(["kill", "-TERM", pid.strip()], capture_output=True)
+
+
+_SOCIETY_URL    = "http://localhost:8700"
+_WAVI_PORT_START = 9200
+_WAVI_PORT_END   = 9249
+
+
+def _claim_port(session_path: str) -> int:
+    """
+    Claim a CDP port from the Local Agent Society registry (atomic find+register).
+    Falls back to GET /ports/free + POST /ports if /ports/claim not yet available.
+    Final fallback: local socket scan.
+    """
+    import urllib.request as _req
+    import urllib.error as _err
+
+    payload = json.dumps({
+        "app": "WhatsApp CDP daemon",
+        "local_agent": "Wavi",
+        "path": session_path,
+        "start": _WAVI_PORT_START,
+        "end": _WAVI_PORT_END,
+    }).encode()
+
+    # ── 1. Atomic claim (preferred) ───────────────────────────────────────────
+    try:
+        r = _req.urlopen(
+            _req.Request(
+                f"{_SOCIETY_URL}/ports/claim",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=2,
+        )
+        return json.loads(r.read())["port"]
+    except _err.HTTPError as e:
+        if e.code != 404:
+            raise
+    except Exception:
+        pass
+
+    # ── 2. Two-step fallback (GET free → POST register) ───────────────────────
+    try:
+        r = _req.urlopen(
+            f"{_SOCIETY_URL}/ports/free?start={_WAVI_PORT_START}&end={_WAVI_PORT_END}",
+            timeout=2,
+        )
+        port = json.loads(r.read())["port"]
+        reg_payload = json.dumps({
+            "port": port,
+            "app": "WhatsApp CDP daemon",
+            "local_agent": "Wavi",
+            "path": session_path,
+        }).encode()
+        _req.urlopen(
+            _req.Request(
+                f"{_SOCIETY_URL}/ports",
+                data=reg_payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            timeout=2,
+        )
+        return port
+    except Exception:
+        pass
+
+    # ── 3. Last resort: local socket scan (no registry, no society) ───────────
+    for port in range(_WAVI_PORT_START, _WAVI_PORT_END + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+    return _WAVI_PORT_START
+
+
+def _release_port(port: int) -> None:
+    """Release a CDP port back to the society registry."""
+    import urllib.request as _req
+    try:
+        _req.urlopen(
+            _req.Request(f"{_SOCIETY_URL}/ports/{port}", method="DELETE"),
+            timeout=2,
+        )
+    except Exception:
+        pass
+
+
+def _pick_free_port(start: int = 9200, end: int = 9299) -> int:
+    """Local socket scan fallback — prefer _claim_port() for new sessions."""
+    for port in range(start, end + 1):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return port
+    return start
+
+
+def _session_port(profile: Path) -> int:
+    """Read the CDP port for a session from disk, fallback to CDP_PORT."""
+    try:
+        return int((profile / PORT_FILE).read_text().strip())
+    except Exception:
+        return CDP_PORT
 
 
 def _set_chrome_prefs(profile: Path) -> None:
@@ -124,18 +228,19 @@ def _cleanup_crash_files(profile: Path) -> None:
             shutil.rmtree(p, ignore_errors=True)
 
 
-def _launch_headless_daemon(profile: Path) -> subprocess.Popen:
-    """Launch headless Chrome daemon, save PID, return the process."""
+def _launch_headless_daemon(profile: Path, port: int) -> subprocess.Popen:
+    """Launch headless Chrome daemon on `port`, save PID and port, return the process."""
     (profile / "SingletonLock").unlink(missing_ok=True)
     proc = subprocess.Popen(
         ["arch", "-arm64", str(REAL_CHROME)]
-        + [f"--user-data-dir={profile}", f"--remote-debugging-port={CDP_PORT}"]
+        + [f"--user-data-dir={profile}", f"--remote-debugging-port={port}"]
         + _HEADLESS_CHROME_ARGS
         + [f"--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}", "about:blank"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     (profile / PID_FILE).write_text(str(proc.pid))
+    (profile / PORT_FILE).write_text(str(port))
     return proc
 
 
@@ -194,20 +299,22 @@ def connect(session: str):
         status = asyncio.run(_check_session_status(profile))
         if status == "restored":
             pid = s._load_pid()
-            click.echo(f"Sesión '{session}' ya activa y autenticada (PID {pid}, CDP :{CDP_PORT}).")
-            click.echo(f"Usá 'wavi full-sync {session} <contacto>' para capturar mensajes.")
+            port = _session_port(profile)
+            click.echo(f"Sesión '{session}' ya activa y autenticada (PID {pid}, CDP :{port}).")
+            click.echo(f"Usá 'wavi get {session} <contacto>' para capturar mensajes.")
             click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
             return
         click.echo(f"Daemon vivo pero sesión={status}. Relanzando...")
 
-    # ── Kill any existing process on CDP port ─────────────────────────────────
-    _kill_port_processes()
+    # ── Claim a port from the society registry (or local fallback) ──────────
+    port = _claim_port(str(profile))
+    _kill_port_processes(port)
     time.sleep(1)
 
     # ── Optimistic: try headless first ────────────────────────────────────────
     _set_chrome_prefs(profile)
     click.echo("Intentando restaurar sesión en modo headless...")
-    headless_proc = _launch_headless_daemon(profile)
+    headless_proc = _launch_headless_daemon(profile, port)
     time.sleep(3)  # Give Chrome time to start before CDP connect attempt
 
     status = asyncio.run(_check_session_status(profile))
@@ -216,8 +323,8 @@ def connect(session: str):
         # Keep default alias pointing to this session
         if session != "default":
             _set_default_alias(session)
-        click.echo(f"Sesión restaurada — daemon headless activo (PID {headless_proc.pid}, CDP :{CDP_PORT}).")
-        click.echo(f"Usá 'wavi full-sync {session} <contacto>' para capturar mensajes.")
+        click.echo(f"Sesión restaurada — daemon headless activo (PID {headless_proc.pid}, CDP :{port}).")
+        click.echo(f"Usá 'wavi get {session} <contacto>' para capturar mensajes.")
         click.echo(f"Usá 'wavi stop {session}' para cerrar Chrome de manera segura.")
         return
 
@@ -233,13 +340,14 @@ def connect(session: str):
     click.echo("Abriendo Chrome visible para escanear QR...")
     proc = subprocess.Popen(
         ["arch", "-arm64", str(REAL_CHROME)]
-        + [f"--user-data-dir={profile}", f"--remote-debugging-port={CDP_PORT}"]
+        + [f"--user-data-dir={profile}", f"--remote-debugging-port={port}"]
         + _VISIBLE_CHROME_ARGS
         + [f"--window-size={WINDOW_W},{WINDOW_H}", "https://web.whatsapp.com"],
     )
     (profile / PID_FILE).write_text(str(proc.pid))
+    (profile / PORT_FILE).write_text(str(port))
 
-    click.echo(f"Chrome abierto (PID {proc.pid}, CDP :{CDP_PORT}).")
+    click.echo(f"Chrome abierto (PID {proc.pid}, CDP :{port}).")
     click.echo()
     click.echo("1. Escaneá el QR en WhatsApp Web")
     click.echo("2. Esperá que carguen tus chats")
@@ -290,7 +398,7 @@ def connect(session: str):
         try:
             pw = await async_playwright().start()
             browser = await pw.chromium.connect_over_cdp(
-                f"http://localhost:{CDP_PORT}", timeout=5_000
+                f"http://localhost:{port}", timeout=5_000
             )
             if browser.contexts and browser.contexts[0].pages:
                 page = browser.contexts[0].pages[0]
@@ -328,7 +436,7 @@ def connect(session: str):
         _set_default_alias(session)
 
     click.echo("Iniciando daemon headless...")
-    headless_proc = _launch_headless_daemon(profile)
+    headless_proc = _launch_headless_daemon(profile, port)
 
     click.echo("Verificando sesión...")
     time.sleep(5)
@@ -336,12 +444,12 @@ def connect(session: str):
     status = asyncio.run(_check_session_status(profile))
     final_name = detected_phone or session
     if status == "restored":
-        click.echo(f"Daemon headless activo (PID {headless_proc.pid}, CDP :{CDP_PORT}).")
+        click.echo(f"Daemon headless activo (PID {headless_proc.pid}, CDP :{port}).")
         click.echo(f"Sesión: '{final_name}'")
     else:
         click.echo(f"Advertencia: sesión={status}. Puede requerir re-autenticación.", err=True)
 
-    click.echo(f"Usá 'wavi full-sync {final_name} <contacto>' para capturar mensajes.")
+    click.echo(f"Usá 'wavi get {final_name} <contacto>' para capturar mensajes.")
     click.echo(f"Usá 'wavi stop {final_name}' para cerrar Chrome de manera segura.")
 
 
@@ -365,11 +473,13 @@ def stop(session: str):
 
     async def _run():
         s = WASession(profile)
+        port = s._load_port()
         try:
             await s.connect()
         except Exception as e:
             click.echo(f"Could not connect to daemon: {e}", err=True)
         await s.stop_daemon()
+        _release_port(port)
         click.echo("Daemon stopped cleanly.")
 
     asyncio.run(_run())
@@ -406,76 +516,9 @@ def status(session: str):
     asyncio.run(_run())
 
 
-# ── full-sync ─────────────────────────────────────────────────────────────────
+# ── get ───────────────────────────────────────────────────────────────────────
 
-@main.command("full-sync")
-@click.argument("session", default="default")
-@click.argument("contact")
-@click.option("--assets", default=None, help="Directory to save screenshots and audio.")
-@click.option("--headless/--no-headless", default=True, show_default=True,
-              help="Headless fallback (ignored when daemon is running headful).")
-@click.option("--json-out", is_flag=True, help="Output results as JSON.")
-def full_sync(session: str, contact: str, assets: str | None, headless: bool, json_out: bool):
-    """Capture messages + audio from CONTACT's chat (full pipeline)."""
-    from wavi.runner import run_once
-
-    assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_")
-
-    if assets_dir.exists():
-        shutil.rmtree(assets_dir)
-
-    async def _go():
-        return await run_once(
-            profile_dir=_profile(session),
-            contact=contact,
-            assets_dir=assets_dir,
-            headless=headless,
-        )
-
-    try:
-        result = asyncio.run(_go())
-    except RuntimeError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-
-    bubbles = result["bubbles"]
-    audios  = result["audios"]
-
-    if json_out:
-        output = {
-            "bubbles": [b.as_dict() for b in bubbles],
-            "audios": [
-                {
-                    "bubble_id": a["bubble"].id,
-                    "blob_url": a["blob_url"],
-                    "path": str(a["path"]) if a.get("path") else None,
-                    "error": a.get("error"),
-                }
-                for a in audios
-            ],
-        }
-        click.echo(json.dumps(output, indent=2, ensure_ascii=False))
-        return
-
-    click.echo(f"\n{len(bubbles)} mensaje(s) detectados:")
-    for b in bubbles:
-        ts = f" [{b.timestamp}]" if b.timestamp else ""
-        click.echo(f"  #{b.id:02d} {b.sender:5s} {b.msg_type:6s}{ts}  {b.text[:80]}")
-
-    if audios:
-        click.echo(f"\n{len(audios)} audio(s) procesados:")
-        for a in audios:
-            if a.get("error"):
-                click.echo(f"  bubble #{a['bubble'].id}: {a['error']}")
-            else:
-                size = len(a["data"]) if a.get("data") else 0
-                path = a.get("path") or "(no guardado)"
-                click.echo(f"  bubble #{a['bubble'].id}: {size} bytes → {path}")
-
-
-# ── full-sync-enhanced ───────────────────────────────────────────────────────
-
-@main.command("full-sync-enhanced")
+@main.command("get")
 @click.argument("session", default="default")
 @click.argument("contact")
 @click.option("--assets", default=None, help="Directory to save screenshots and history.")
@@ -486,19 +529,19 @@ def full_sync(session: str, contact: str, assets: str | None, headless: bool, js
               help="Max scroll iterations (use 3 for quick debug).")
 @click.option("--from", "from_date", default=None,
               help="Stop scrolling at this date (YYYY-MM-DD). Captures messages on or after this date.")
-def full_sync_enhanced(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None):
-    """Like full-sync but scrolls up to capture the full message history.
+def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None):
+    """Capture the full message history from CONTACT's chat.
 
-    iter_000/ holds the same initial capture that full-sync produces.
-    Subsequent iterations scroll toward the past, each with its own debug image.
-    history_bubbles.json aggregates all deduplicated messages.
+    Scrolls up from the most recent message, capturing all visible bubbles per
+    iteration. iter_000/ holds the initial capture; subsequent iterations go
+    toward the past. history_bubbles.json aggregates all deduplicated messages.
 
     NOTE: photos and videos are not detected by the vision pipeline.
     """
     from wavi.runner import run_enhanced
     from datetime import date as _Date
 
-    assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_") / "history"
+    assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_")
 
     from_date_obj: _Date | None = None
     if from_date:
@@ -521,11 +564,17 @@ def full_sync_enhanced(session: str, contact: str, assets: str | None, headless:
             from_date=from_date_obj,
         )
 
-    try:
-        result = asyncio.run(_go())
-    except RuntimeError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
+    from wavi.queue import session_lock, is_locked
+    prof = _profile(session)
+    if is_locked(prof):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
+
+    with session_lock(prof, "get", contact=contact):
+        try:
+            result = asyncio.run(_go())
+        except RuntimeError as e:
+            click.echo(str(e), err=True)
+            sys.exit(1)
 
     bubbles = result["bubbles"]
 
@@ -533,19 +582,111 @@ def full_sync_enhanced(session: str, contact: str, assets: str | None, headless:
         click.echo(json.dumps([b.as_dict() for b in bubbles], indent=2, ensure_ascii=False))
         return
 
-    click.echo(f"\n{len(bubbles)} mensaje(s) en el historial completo:")
+    click.echo(f"\n{len(bubbles)} mensaje(s) en el historial:")
     for b in bubbles:
         ts = f" [{b.timestamp}]" if b.timestamp else ""
         click.echo(f"  #{b.id:04d} {b.sender:5s} {b.msg_type:6s}{ts}  {b.text[:80]}")
 
-    # Contar archivos .ogg descargados en todas las iteraciones
     import glob
     ogg_files = glob.glob(str(assets_dir / "iter_*" / "audio_*.ogg"))
     if ogg_files:
-        click.echo(f"\n{len(ogg_files)} audio(s) descargados en iteraciones:")
+        click.echo(f"\n{len(ogg_files)} audio(s) descargados:")
         for f in sorted(ogg_files):
             size = Path(f).stat().st_size
             click.echo(f"  {Path(f).relative_to(assets_dir)}: {size} bytes")
+
+
+# ── send ──────────────────────────────────────────────────────────────────────
+
+@main.command("send")
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.argument("message")
+@click.option("--screenshot-out", default=None, help="Save a screenshot of the chat after sending.")
+def send(session: str, contact: str, message: str, screenshot_out: str | None):
+    """Send MESSAGE to CONTACT via WhatsApp.
+
+    Opens the chat with CONTACT, types MESSAGE, and presses Enter.
+    Use your own phone number as CONTACT to send a self-message for testing.
+
+    Example:
+      wavi send default "+54 9 11 5561 2767" "hola mundo"
+    """
+    profile = _profile(session)
+
+    async def _go():
+        from wavi.session import WASession
+        s = WASession(profile)
+        try:
+            status = await s.connect()
+            if status != "restored":
+                raise RuntimeError(f"Sesión no autenticada (estado={status}). Ejecutá 'wavi connect' primero.")
+
+            await s.navigate_to_contact(contact)
+            meta = await s.send_message(message)
+            click.echo(f"Mensaje enviado a '{contact}' (input @ {meta['x']},{meta['y']})")
+
+            if screenshot_out:
+                shot_path = Path(screenshot_out)
+                await s.screenshot_to_file(shot_path)
+                click.echo(f"Screenshot guardado: {shot_path}")
+        finally:
+            await s.close()
+
+    from wavi.queue import session_lock, is_locked
+    if is_locked(profile):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
+
+    with session_lock(profile, "send", contact=contact):
+        try:
+            asyncio.run(_go())
+        except RuntimeError as e:
+            click.echo(str(e), err=True)
+            sys.exit(1)
+
+
+# ── queue ─────────────────────────────────────────────────────────────────────
+
+@main.command("queue")
+@click.argument("session", default="default")
+@click.option("--json-out", is_flag=True, help="Output status as JSON.")
+def queue_status(session: str, json_out: bool):
+    """Show the current operation queue status for SESSION.
+
+    Prints 'idle' when no operation is running, or details of the in-progress
+    operation (type, contact, PID, elapsed time).
+    """
+    from wavi.queue import get_status
+
+    profile = _profile(session)
+    status = get_status(profile)
+
+    if json_out:
+        click.echo(json.dumps(status or {}, indent=2, ensure_ascii=False))
+        return
+
+    if not status:
+        click.echo(f"session={session} idle")
+        return
+
+    op      = status.get("operation", "?")
+    pid     = status.get("pid", "?")
+    started = status.get("started_at", "")
+    contact = status.get("contact", "")
+
+    elapsed = ""
+    if started:
+        try:
+            from datetime import datetime, timezone
+            delta = datetime.now(timezone.utc) - datetime.fromisoformat(started)
+            mins, secs = divmod(int(delta.total_seconds()), 60)
+            elapsed = f" (running {mins}m{secs:02d}s)"
+        except Exception:
+            pass
+
+    contact_str = f" contact={contact!r}" if contact else ""
+    click.echo(f"session={session}")
+    click.echo(f"operation={op}{contact_str} pid={pid} started={started}{elapsed}")
 
 
 # ── bubbles ───────────────────────────────────────────────────────────────────
