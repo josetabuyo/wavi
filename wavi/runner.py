@@ -290,6 +290,7 @@ class WARunner:
         backoff_css_px: int = 200,
         max_iterations: int = 300,
         from_date: "_Date | None" = None,
+        newest: bool = False,
     ) -> list[Bubble]:
         """
         Scroll from bottom to top capturing all unique messages.
@@ -301,14 +302,41 @@ class WARunner:
         Stops when: (a) scrollTop reaches 0, (b) scroll stalls 3× in a row, or
         (c) max_iterations is reached.
 
+        When newest=True, loads existing history_bubbles.json and stops when the
+        first already-known message is found, then prepends new messages to the
+        existing list and re-numbers IDs.
+
         Limitation: media bubbles (photos, videos) are not detected by the vision
         pipeline and will be absent from the result. Text, audio, and file messages
         are captured fully.
         """
-        def bubble_key(b: Bubble) -> tuple:
+        def bubble_key(b) -> tuple:
+            # Works with both Bubble objects and dicts (from JSON)
+            if isinstance(b, dict):
+                if b.get("dom_id"):
+                    return ("dom", b["dom_id"])
+                return (b.get("sender"), b.get("msg_type"), b.get("text", "")[:80].strip(), b.get("timestamp"))
+            # Bubble object
             if b.dom_id:
                 return ("dom", b.dom_id)
             return (b.sender, b.msg_type, b.text[:80].strip(), b.timestamp)
+
+        existing_bubbles: list[dict] = []
+        known_keys: set = set()
+        should_stop_newest = False
+
+        if newest and assets_dir:
+            json_path = Path(assets_dir) / "history_bubbles.json"
+            if json_path.exists():
+                import json
+                try:
+                    existing_bubbles = json.loads(json_path.read_text())
+                    for bubble_dict in existing_bubbles:
+                        k = bubble_key(bubble_dict)
+                        known_keys.add(k)
+                    print(f"[wavi] newest: loaded {len(existing_bubbles)} existing bubbles", file=sys.stderr)
+                except Exception as e:
+                    print(f"[wavi] newest: failed to load history_bubbles.json: {e}", file=sys.stderr)
 
         all_bubbles: list[Bubble] = []
         seen_keys: set = set()
@@ -338,6 +366,19 @@ class WARunner:
         dom_msgs_0 = await self.session.get_visible_message_ids()
         bubbles = await self.get_bubbles(assets_dir=_iter_dir(0), save_debug=True)
         self._assign_dom_ids(bubbles, dom_msgs_0, dpr)
+
+        # Check for duplicates in initial capture (newest mode)
+        if newest and known_keys:
+            filtered_bubbles = []
+            for b in bubbles:
+                k = bubble_key(b)
+                if k in known_keys:
+                    print(f"[wavi] iter_000: found duplicate (newest mode) — stopping", file=sys.stderr)
+                    should_stop_newest = True
+                    break
+                filtered_bubbles.append(b)
+            bubbles = filtered_bubbles
+
         for b in bubbles:
             k = bubble_key(b)
             if k not in seen_keys:
@@ -465,6 +506,19 @@ class WARunner:
                     new_items.append(b)
                     new_count += 1
 
+            # Check for duplicates with existing history (--newest mode)
+            if newest and known_keys:
+                filtered_new_items = []
+                for b in new_items:
+                    k = bubble_key(b)
+                    if k in known_keys:
+                        print(f"[wavi] iter={iteration+1}: found duplicate (newest mode) — stopping", file=sys.stderr)
+                        should_stop_newest = True
+                        break
+                    filtered_new_items.append(b)
+                new_items = filtered_new_items
+                new_count = len(new_items)
+
             # ── Detect day pills: assign dates + optional from_date stop ─────
             # Runs always (dates are useful metadata regardless of from_date).
             should_stop_from_date = False
@@ -514,6 +568,9 @@ class WARunner:
                 file=sys.stderr,
             )
 
+            if should_stop_newest:
+                break
+
             if should_stop_from_date:
                 break
 
@@ -524,9 +581,20 @@ class WARunner:
             bubbles = new_bubbles
 
         # Re-assign globally sequential IDs: id=1=newest, id=N=oldest
-        n = len(all_bubbles)
-        for i, b in enumerate(all_bubbles):
-            b.id = n - i
+        if newest and existing_bubbles:
+            # Merge: new bubbles (all_bubbles) + old bubbles (existing_bubbles)
+            final_bubbles = [b.as_dict() for b in all_bubbles] + existing_bubbles
+            n = len(final_bubbles)
+            for i, item in enumerate(final_bubbles):
+                item["id"] = i + 1
+            print(f"[wavi] newest: merged {len(all_bubbles)} new + {len(existing_bubbles)} existing = {len(final_bubbles)} total", file=sys.stderr)
+        else:
+            final_bubbles = [b.as_dict() for b in all_bubbles]
+            n = len(all_bubbles)
+            for i, b in enumerate(all_bubbles):
+                b.id = n - i
+            for i, item in enumerate(final_bubbles):
+                item["id"] = i + 1
 
         # Save aggregated result to assets_dir
         if assets_dir:
@@ -535,9 +603,9 @@ class WARunner:
             assets_dir.mkdir(parents=True, exist_ok=True)
             out = assets_dir / "history_bubbles.json"
             out.write_text(
-                json.dumps([b.as_dict() for b in all_bubbles], indent=2, ensure_ascii=False)
+                json.dumps(final_bubbles, indent=2, ensure_ascii=False)
             )
-            print(f"[wavi] Saved {len(all_bubbles)} bubbles → {out}", file=sys.stderr)
+            print(f"[wavi] Saved {len(final_bubbles)} bubbles → {out}", file=sys.stderr)
 
         return all_bubbles
 
@@ -640,6 +708,7 @@ async def run_enhanced(
     headless: bool = True,
     max_iterations: int = 300,
     from_date: "_Date | None" = None,
+    newest: bool = False,
 ) -> dict:
     """
     Extrapolation of run_once: same connect → open chat flow, then scrolls up
@@ -664,7 +733,7 @@ async def run_enhanced(
 
     await runner.open_chat(contact)
     bubbles = await runner.capture_full_history(
-        assets_dir=assets_dir, max_iterations=max_iterations, from_date=from_date,
+        assets_dir=assets_dir, max_iterations=max_iterations, from_date=from_date, newest=newest,
     )
     await runner.close()
 

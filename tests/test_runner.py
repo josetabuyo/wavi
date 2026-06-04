@@ -170,6 +170,7 @@ def _mock_runner_for_history(iter0_bubbles, iter1_bubbles):
     runner.session.drain_blobs = AsyncMock(return_value=[])
     runner.session.get_dpr = AsyncMock(return_value=1.0)
     runner.session.scroll_chat_up = AsyncMock()
+    runner.session.scroll_chat_down = AsyncMock()
     runner.session.get_visible_message_ids = AsyncMock(return_value=[])
     runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
         # 1. init_state (outside loop) → computes scroll_css_px
@@ -563,3 +564,197 @@ class TestDownloadAudioForBubbles:
 
         # Debe estar vacío porque el audio fue skipeado
         assert len(result) == 0
+
+
+# ── TestCaptureFullHistoryNewest ──────────────────────────────────────────
+
+class TestCaptureFullHistoryNewest:
+    """Test --newest flag: incremental history update with duplicate detection."""
+
+    @pytest.mark.asyncio
+    async def test_newest_stops_at_first_duplicate(self, tmp_path):
+        """Given existing JSON with some bubbles, newest=True stops at first duplicate."""
+        import json
+
+        # Setup: existing history with 2 bubbles (A, B) — A is oldest
+        existing = [
+            _hist_bubble(screen_id=1, sender="me", text="A", y=100, timestamp="1:00 p.m."),
+            _hist_bubble(screen_id=2, sender="me", text="B", y=200, timestamp="1:01 p.m."),
+        ]
+
+        # iter_0: newest screen with C and D (both new, not in existing)
+        # B is at the bottom as anchor/potential duplicate
+        iter0 = [
+            _hist_bubble(screen_id=4, sender="other", text="D", y=100, timestamp="1:03 p.m."),
+            _hist_bubble(screen_id=3, sender="other", text="C", y=200, timestamp="1:02 p.m."),
+            _hist_bubble(screen_id=2, sender="me", text="B", y=300, timestamp="1:01 p.m."),  # bottom/anchor
+        ]
+
+        # iter_1: after scroll up — E is new, B is anchor/duplicate
+        iter1 = [
+            _hist_bubble(screen_id=5, sender="other", text="E", y=100, timestamp="1:04 p.m."),
+            _hist_bubble(screen_id=2, sender="me", text="B", y=300, timestamp="1:01 p.m."),  # anchor
+        ]
+
+        # Setup: save existing JSON
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        json_path = assets_dir / "history_bubbles.json"
+        json_path.write_text(json.dumps([b.as_dict() for b in existing], indent=2, ensure_ascii=False))
+
+        # Mock runner
+        runner = _runner()
+
+        call_idx = 0
+        async def fake_get_bubbles(*args, **kwargs):
+            nonlocal call_idx
+            if call_idx == 0:
+                result = iter0
+            elif call_idx == 1:
+                result = iter1
+            else:
+                # During backoff or additional calls, keep returning iter1 or empty
+                result = iter1 if call_idx == 2 else iter1  # For backoff attempts
+            call_idx += 1
+            return result
+
+        runner.get_bubbles = fake_get_bubbles
+        runner.find_play_buttons = AsyncMock(return_value=[])
+
+        page_mock = MagicMock()
+        page_mock.wait_for_timeout = AsyncMock()
+        runner.session._page = page_mock
+        runner.session.install_blob_monitor = AsyncMock()
+        runner.session.reset_blobs = AsyncMock()
+        runner.session.drain_blobs = AsyncMock(return_value=[])
+        runner.session.get_dpr = AsyncMock(return_value=1.0)
+        runner.session.scroll_chat_up = AsyncMock()
+        runner.session.scroll_chat_down = AsyncMock()
+        runner.session.get_visible_message_ids = AsyncMock(return_value=[])
+        runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
+            # init_state
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},
+            # state before iter 0 → continue
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},
+            # new_state after scroll iter 0 → continue (moved 300+, so no backoff)
+            {"scrollTop": 100, "scrollHeight": 1000, "clientHeight": 500},
+            # state before iter 1 → continue (now at 100)
+            {"scrollTop": 100, "scrollHeight": 1000, "clientHeight": 500},
+            # new_state after scroll iter 1 → at top, stop
+            {"scrollTop": 0, "scrollHeight": 1000, "clientHeight": 500},
+        ])
+
+        result = await runner.capture_full_history(assets_dir=assets_dir, newest=True)
+
+        # After iter_0: D, C (new)
+        # At iter_1: E (new), but then B appears as duplicate → should_stop_newest=True
+        # So result should be: E, D, C (no B)
+        texts = [b.text for b in result]
+        assert "D" in texts and "C" in texts and "E" in texts, f"Should capture D, C, E, got: {texts}"
+        assert "B" not in texts, f"B is the duplicate anchor in iter_1, should not appear in new result"
+        assert "A" not in texts, f"A is from existing, should not appear in new result"
+
+        # Check merged result in JSON
+        json_result = json.loads(json_path.read_text())
+        json_texts = [b["text"] for b in json_result]
+        # Final order should be: E, D, C (new, newest first) + A, B (existing, in original order)
+        assert json_texts == ["E", "D", "C", "A", "B"], f"Merged order incorrect: {json_texts}"
+
+    @pytest.mark.asyncio
+    async def test_newest_falls_back_when_no_json(self, tmp_path):
+        """If no history_bubbles.json exists, newest=True falls back to normal full capture."""
+        # iter_0 and iter_1 like normal tests
+        iter0 = [
+            _hist_bubble(screen_id=3, sender="me", text="A", y=100, timestamp="1:00 p.m."),
+            _hist_bubble(screen_id=2, sender="me", text="B", y=200, timestamp="1:01 p.m."),
+            _hist_bubble(screen_id=1, sender="me", text="C", y=300, timestamp="1:02 p.m."),
+        ]
+        iter1 = [
+            _hist_bubble(screen_id=3, sender="other", text="D", y=100, timestamp="1:03 p.m."),
+            _hist_bubble(screen_id=2, sender="other", text="E", y=200, timestamp="1:04 p.m."),
+            _hist_bubble(screen_id=1, sender="me", text="A", y=300, timestamp="1:00 p.m."),  # anchor
+        ]
+
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        # No history_bubbles.json exists!
+
+        runner = _mock_runner_for_history(iter0, iter1)
+
+        result = await runner.capture_full_history(assets_dir=assets_dir, newest=True)
+
+        # Should have all 5 bubbles (normal behavior)
+        texts = [b.text for b in result]
+        assert len(result) == 5, f"Should capture all 5 bubbles, got {len(result)}"
+        assert set(texts) == {"A", "B", "C", "D", "E"}
+
+    @pytest.mark.asyncio
+    async def test_newest_merges_and_renumbers(self, tmp_path):
+        """After merge, id=1 should be newest; ids should be sequential 1..N."""
+        import json
+
+        # Existing: B, A (B is newer in list, id=2; A older, id=1)
+        existing = [
+            _hist_bubble(screen_id=1, sender="me", text="A", y=100, timestamp="1:00 p.m."),
+            _hist_bubble(screen_id=2, sender="me", text="B", y=200, timestamp="1:01 p.m."),
+        ]
+
+        # New capture: D, C (D is newest, will be first after merge)
+        iter0 = [
+            _hist_bubble(screen_id=3, sender="other", text="D", y=100, timestamp="1:03 p.m."),
+            _hist_bubble(screen_id=4, sender="other", text="C", y=200, timestamp="1:02 p.m."),
+        ]
+
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        json_path = assets_dir / "history_bubbles.json"
+        # Save existing with id=1 for A (oldest), id=2 for B (newest)
+        existing_with_ids = [{"id": 1, **b.as_dict()} for b in existing]
+        # Reorder: oldest first
+        existing_with_ids = [existing_with_ids[1], existing_with_ids[0]]  # B, A
+        existing_with_ids[0]["id"] = 1  # B = id 1
+        existing_with_ids[1]["id"] = 2  # A = id 2
+        json_path.write_text(json.dumps(existing_with_ids, indent=2, ensure_ascii=False))
+
+        runner = _runner()
+
+        call_idx = 0
+        async def fake_get_bubbles(*args, **kwargs):
+            nonlocal call_idx
+            result = iter0 if call_idx == 0 else []
+            call_idx += 1
+            return result
+
+        runner.get_bubbles = fake_get_bubbles
+        runner.find_play_buttons = AsyncMock(return_value=[])
+
+        page_mock = MagicMock()
+        page_mock.wait_for_timeout = AsyncMock()
+        runner.session._page = page_mock
+        runner.session.install_blob_monitor = AsyncMock()
+        runner.session.reset_blobs = AsyncMock()
+        runner.session.drain_blobs = AsyncMock(return_value=[])
+        runner.session.get_dpr = AsyncMock(return_value=1.0)
+        runner.session.scroll_chat_up = AsyncMock()
+        runner.session.scroll_chat_down = AsyncMock()
+        runner.session.get_visible_message_ids = AsyncMock(return_value=[])
+        runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},
+            {"scrollTop": 0, "scrollHeight": 1000, "clientHeight": 500},
+        ])
+
+        await runner.capture_full_history(assets_dir=assets_dir, newest=True)
+
+        # Check final JSON
+        json_result = json.loads(json_path.read_text())
+        ids = [b["id"] for b in json_result]
+        texts = [b["text"] for b in json_result]
+
+        # IDs must be sequential 1..4
+        assert ids == [1, 2, 3, 4], f"IDs should be [1,2,3,4], got {ids}"
+        # D is newest (id=1), A is oldest (id=4)
+        assert texts[0] == "D", f"First (id=1) should be D (newest), got {texts[0]}"
+        assert texts[-1] == "A", f"Last (id=4) should be A (oldest), got {texts[-1]}"
+        # Order: D (new), C (new), B (existing), A (existing)
+        assert texts == ["D", "C", "B", "A"], f"Order should be [D,C,B,A], got {texts}"

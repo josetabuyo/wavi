@@ -296,7 +296,7 @@ def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -
 
 def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: bool = False) -> list[Bubble]:
     """
-    Full pipeline: screenshot → crop → OCR → classify bubbles.
+    Full pipeline: screenshot → detect elements visually → per-element OCR + action.
 
     Returns list of Bubble objects sorted by id (1=newest, N=oldest).
     If assets_dir is given, saves bubbles.json there (and cropped.png/debug.png if save_debug=True).
@@ -317,12 +317,16 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
     img = Image.open(cropped_path)
     img_w, img_h = img.size
 
-    blocks = ocr_tiled(cropped_path)
+    # Auxiliary structural scan — one OCR pass over the full panel, used only to:
+    #   (a) locate date-separator pills, and
+    #   (b) decide whether a color-detected region spans multiple messages.
+    # The canonical text for each element comes from the per-bubble OCR below.
+    _structural_scan = ocr_tiled(cropped_path)
 
     # Build date map from day-separator pills BEFORE processing bubbles.
     # Each pill marks the date of everything below it; a bubble at y gets the
     # date of the pill with the largest pill_y that is still <= bubble_y.
-    _pills = extract_day_pills(cropped_path)
+    _pills = extract_day_pills(cropped_path, blocks=_structural_scan)
     _pill_map: list[tuple[int, str]] = []  # [(y_px, "YYYY-MM-DD"), ...]
     if _pills:
         from datetime import date as _Date
@@ -348,7 +352,7 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
 
     split: list[dict] = []
     for b in raw_bubbles:
-        split.extend(_split_bubbles_by_timestamps(b, blocks, img_h))
+        split.extend(_split_bubbles_by_timestamps(b, _structural_scan, img_h))
 
     results: list[Bubble] = []
     for i, bubble in enumerate(split):
@@ -464,17 +468,20 @@ _RE_PILL = re.compile(
 )
 
 
-def extract_day_pills(cropped_path: Path) -> list[dict]:
+def extract_day_pills(cropped_path: Path, blocks: list[dict] | None = None) -> list[dict]:
     """
     Detect WA date-separator pills by OCR on the cropped chat panel.
 
+    blocks: pre-computed structural scan (ocr_tiled output). If None, runs OCR
+            internally — used when called standalone, e.g. from runner.py.
+
     Returns [{"text": str, "y": int}] sorted by y (crop-panel pixels).
-    OCR-based: immune to pill-color variation and blob-merging with adjacent bubbles.
     """
     img = Image.open(cropped_path)
     img_h = img.size[1]
 
-    blocks = ocr_tiled(cropped_path)
+    if blocks is None:
+        blocks = ocr_tiled(cropped_path)
 
     results = []
     for b in blocks:
