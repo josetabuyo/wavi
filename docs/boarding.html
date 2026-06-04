@@ -154,6 +154,10 @@
       color: var(--text-dim);
     }
     .badge.green { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .badge.required { border-color: #f59e0b; color: #f59e0b; background: rgba(245,158,11,.12); font-size: 11px; padding: 2px 9px; vertical-align: middle; }
+    .pipe-note { margin-top: 12px; padding: 12px 16px; background: var(--surface2); border-left: 2px solid #f59e0b; border-radius: 0 var(--radius) var(--radius) 0; font-size: 13px; color: var(--text-dim); line-height: 1.8; }
+    .pipe-note a { color: #f59e0b; text-decoration: none; }
+    .pipe-note a:hover { text-decoration: underline; }
     .hero-demo {
       background: var(--code-bg);
       border: 1px solid var(--border);
@@ -595,9 +599,15 @@ wavi status          <span class="cm"># verify: daemon=running, session=restored
       <div class="pipe-step">
         <div class="pipe-num">3</div>
         <div class="pipe-content">
-          <div class="pipe-title">Set GROQ_API_KEY (optional)</div>
-          <div class="pipe-desc">Required for voice message transcription via Whisper. Free tier available at console.groq.com.</div>
+          <div class="pipe-title">Set GROQ_API_KEY &nbsp;<span class="badge required">required</span></div>
+          <div class="pipe-desc"><strong>Mandatory.</strong> Wavi cannot transcribe voice messages without this key — transcription is a core feature, not optional. Without <code>GROQ_API_KEY</code>, audio messages are captured but never converted to text.</div>
           <pre><code><span class="kw">echo</span> <span class="st">"GROQ_API_KEY=gsk_..."</span> >> .env</code></pre>
+          <div class="pipe-note">
+            <strong>How to get your key:</strong><br>
+            1. Go to <a href="https://console.groq.com/keys" target="_blank" rel="noopener">console.groq.com/keys</a> — free account, no credit card required<br>
+            2. Sign up or log in → click <em>Create API Key</em><br>
+            3. Copy the key (starts with <code>gsk_</code>) and paste it into your <code>.env</code>
+          </div>
         </div>
       </div>
 
