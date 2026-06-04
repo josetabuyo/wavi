@@ -13,22 +13,39 @@ def pytest_sessionstart(session):
     _start = time.time()
 
 
+def pytest_runtest_protocol(item, nextitem):
+    """Capture docstring from test function and its class (if any)."""
+    doc = getattr(item.function, "__doc__", None) or ""
+    if not doc:
+        # Fall back to class docstring
+        cls = getattr(item, "cls", None)
+        doc = getattr(cls, "__doc__", None) or ""
+    _results.setdefault(item.nodeid, {})["doc"] = " ".join(doc.split()) or None
+
+
 def pytest_runtest_logreport(report):
     if report.when not in ("setup", "call", "teardown"):
         return
     nodeid = report.nodeid
     if nodeid not in _results:
-        _results[nodeid] = {"nodeid": nodeid, "outcome": "passed", "duration": 0.0, "longrepr": None}
+        _results[nodeid] = {}
+    entry = _results[nodeid]
+    entry.setdefault("nodeid", nodeid)
+    entry.setdefault("outcome", "passed")
+    entry.setdefault("duration", 0.0)
+    entry.setdefault("longrepr", None)
+    entry.setdefault("doc", None)
+
     if report.failed:
-        _results[nodeid]["outcome"] = "failed"
-        _results[nodeid]["longrepr"] = str(report.longrepr)[:3000]
-    elif report.skipped and _results[nodeid]["outcome"] != "failed":
-        _results[nodeid]["outcome"] = "skipped"
+        entry["outcome"] = "failed"
+        entry["longrepr"] = str(report.longrepr)[:3000]
+    elif report.skipped and entry["outcome"] != "failed":
+        entry["outcome"] = "skipped"
         if report.longrepr:
-            _results[nodeid]["longrepr"] = str(report.longrepr)
-    # Accumulate duration across setup + call + teardown phases
-    _results[nodeid]["duration"] = round(
-        (_results[nodeid].get("duration") or 0.0) + (report.duration or 0.0), 6
+            entry["longrepr"] = str(report.longrepr)
+
+    entry["duration"] = round(
+        (entry.get("duration") or 0.0) + (report.duration or 0.0), 6
     )
 
 
@@ -38,9 +55,9 @@ def pytest_sessionfinish(session, exitstatus):
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "duration": round(time.time() - _start, 2),
         "total": len(tests),
-        "passed": sum(1 for t in tests if t["outcome"] == "passed"),
-        "failed": sum(1 for t in tests if t["outcome"] == "failed"),
-        "skipped": sum(1 for t in tests if t["outcome"] == "skipped"),
+        "passed": sum(1 for t in tests if t.get("outcome") == "passed"),
+        "failed": sum(1 for t in tests if t.get("outcome") == "failed"),
+        "skipped": sum(1 for t in tests if t.get("outcome") == "skipped"),
         "exit_code": int(exitstatus),
         "tests": tests,
     }
