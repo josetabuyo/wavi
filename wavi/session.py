@@ -375,8 +375,11 @@ _EXTRACT_SIDEBAR_UPDATES_JS = """
             }
             if (!cell) return;
 
-            const titleEl = cell.querySelector('[data-testid="cell-frame-title"]')
+            // Prefer span[title] — it holds the clean contact name without
+            // badge text that may be nested inside cell-frame-title's textContent.
+            const titleEl = cell.querySelector('[data-testid="cell-frame-title"] span[title]')
                          || cell.querySelector('span[title]')
+                         || cell.querySelector('[data-testid="cell-frame-title"]')
                          || cell.querySelector('span[dir="auto"]');
             const name = titleEl
                 ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim()
@@ -866,22 +869,27 @@ class WASession:
         return await self._page.evaluate(_EXTRACT_SIDEBAR_UPDATES_JS)
 
     async def ensure_chat_list(self) -> None:
-        """Close any overlay panel (New Chat, search, etc.) so the main chat list is visible."""
-        # Try clicking the back button first — more reliable than Escape for the new-chat panel
-        # left open by a previous list-contacts run.
+        """Navigate browser to the clean main chat list.
+
+        Handles three leftover states from previous commands:
+        - "Nuevo chat" panel open (list-contacts)  → JS back-button click
+        - Sidebar search bar filled (navigate_to_contact/get/send) → Escape x3
+        - Any other overlay/drawer → Escape
+        """
+        # Close "Nuevo chat" panel via back button if present.
         await self._page.evaluate(_CLOSE_NEW_CHAT_JS)
         await self._page.wait_for_timeout(300)
-        # Escape as catch-all for search bars, drawers, or any other overlay.
-        await self._page.keyboard.press("Escape")
-        await self._page.wait_for_timeout(400)
+        # Three Escapes: first clears/unfocuses sidebar search bar,
+        # second dismisses any remaining overlay, third is a safety net.
+        for _ in range(3):
+            await self._page.keyboard.press("Escape")
+            await self._page.wait_for_timeout(250)
         try:
             await self._page.wait_for_selector(
                 '[data-testid="chat-list"], #pane-side', timeout=3_000
             )
         except Exception:
-            # One more Escape in case a nested overlay was present.
-            await self._page.keyboard.press("Escape")
-            await self._page.wait_for_timeout(400)
+            pass
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
