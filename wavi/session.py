@@ -73,6 +73,37 @@ _BLOB_INIT_SCRIPT = """
 })();
 """
 
+# ── DOM scraping inventory ────────────────────────────────────────────────────
+#
+# All JS constants below query the WhatsApp Web DOM directly.  They are fast
+# and reliable as long as WA's internal selectors stay stable.  When any of
+# them starts returning wrong/empty results after a WA update, the selector
+# listed in the table is the first thing to check.  Each entry also notes
+# the vision-based fallback to implement if the DOM approach breaks for good.
+#
+# Constant                    | Key selector / signal            | Vision fallback
+# ----------------------------|----------------------------------|----------------------------------
+# _FETCH_BLOB_JS              | browser Fetch API (stable)       | N/A — pure browser API
+# _DRAIN_JS                   | window.__wavi_blobs (injected)   | N/A — wavi-owned global
+# _CLICK_SCROLL_BOTTOM_BTN_JS | position heuristic in #main      | find round button near bottom-right of chat panel
+# _CHAT_SCROLL_JS             | conversation-panel-messages      | N/A — scroll state only
+# _SCROLL_UP/DOWN_JS          | conversation-panel-messages      | N/A — scroll control only
+# _GET_VISIBLE_MSG_IDS_JS     | [data-id] on message rows        | OCR fallback already used in runner.get()
+# _FIND_COMPOSE_INPUT_JS      | footer [contenteditable="true"]  | locate text box by position (bottom of #main)
+# _CHECK_COMPOSE_EMPTY_JS     | same as above                    | screenshot → check if compose area is blank
+# _CLICK_SEND_BTN_JS          | span[data-icon="send"]           | locate arrow icon via vision near bottom-right
+# _OPEN_NEW_CHAT_JS           | span[data-icon="new-chat-outline"]| locate pencil/compose icon in left sidebar
+# _EXTRACT_CONTACTS_JS        | [role="listitem"] > [role="gridcell"] | OCR the "Nuevo chat" panel contact list
+# _CLOSE_NEW_CHAT_JS          | span[data-icon="back-refreshed"] | locate back-arrow icon via vision in panel header
+# _CONTACTS_SCROLL_STATE_JS   | computed overflow on listitem parent | N/A — scroll state only
+# _SCROLL_CONTACTS_DOWN_JS    | same as above                    | N/A — scroll control only
+# _EXTRACT_VISIBLE_CONTACTS_JS| [role="listitem"] > [role="gridcell"] | OCR visible contact names
+# _EXTRACT_SIDEBAR_UPDATES_JS | cell-frame-container cells;      | OCR sidebar: parse name + last-message +
+#                             |   name via span[title],          |   timestamp per row; detect tick icon
+#                             |   direction via msg-* tick icons |   via vision for inbound/outbound
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
 _FETCH_BLOB_JS = """
 async (blobUrl) => {
     try {
@@ -230,6 +261,8 @@ _CHECK_COMPOSE_EMPTY_JS = """
 }
 """
 
+# DOM signal: span[data-icon="send"] — the send arrow button in the compose footer.
+# Vision fallback: locate the send-arrow icon near the bottom-right of #main via screenshot.
 _CLICK_SEND_BTN_JS = """
 () => {
     // Prefer the icon-based selector (locale-agnostic).
@@ -248,6 +281,8 @@ _CLICK_SEND_BTN_JS = """
 }
 """
 
+# DOM signal: span[data-icon="new-chat-outline"] (left sidebar compose button).
+# Vision fallback: locate the pencil/compose icon in the left icon bar via screenshot.
 _OPEN_NEW_CHAT_JS = """
 () => {
     const icon = document.querySelector('span[data-icon="new-chat-outline"]') ||
@@ -260,6 +295,9 @@ _OPEN_NEW_CHAT_JS = """
 }
 """
 
+# DOM signal: [role="listitem"] > [role="gridcell"] inside the "Nuevo chat" panel.
+# Vision fallback: OCR the panel — contact names appear as a vertical list of
+#   strings in a fixed-width column on the left side of the screen.
 _EXTRACT_CONTACTS_JS = """
 () => {
     const items = document.querySelectorAll('[role="listitem"]');
@@ -282,6 +320,8 @@ _EXTRACT_CONTACTS_JS = """
 }
 """
 
+# DOM signal: span[data-icon="back-refreshed"] — the back arrow in the "Nuevo chat" header.
+# Vision fallback: locate a left-pointing arrow icon in the top-left of the left panel.
 _CLOSE_NEW_CHAT_JS = """
 () => {
     const icon = document.querySelector('span[data-icon="back-refreshed"]');
@@ -354,56 +394,66 @@ _EXTRACT_VISIBLE_CONTACTS_JS = """
 }
 """
 
+# DOM signals used by this function:
+#   - Root:      [data-testid="chat-list"] or #pane-side
+#   - Cells:     [data-testid="cell-frame-container"] or li[role="listitem"]
+#   - Name:      [data-testid="cell-frame-title"] > span[title]  ← title attr = clean name
+#   - Preview:   various subtitle selectors (see inline comments)
+#   - Timestamp: [data-testid="cell-frame-timestamp"]
+#   - Direction: span[data-icon="msg-check|msg-dbl-check|msg-dbl-check-ack|msg-time"]
+#                present → outbound; absent → inbound
+#
+# Vision fallback: screenshot the sidebar, OCR each visible row.
+#   - Name: first bold/large text per row (left-aligned)
+#   - Preview: smaller text below the name
+#   - Timestamp: right-aligned text in the row header
+#   - Direction: presence of a tick icon (✓ or ✓✓) to the left of the preview text
 _EXTRACT_SIDEBAR_UPDATES_JS = """
 () => {
-    const results = [];
-
-    // Strategy 1: find unread badges via data-testid (most stable across WA versions)
-    const badges = document.querySelectorAll('[data-testid="icon-unread-count"]');
-    if (badges.length > 0) {
-        badges.forEach(badge => {
-            const countText = (badge.textContent || '').trim();
-            if (!countText || countText === '0') return;
-
-            // Walk up to the conversation cell
-            let cell = badge.parentElement;
-            for (let i = 0; i < 12 && cell; i++) {
-                const dt = cell.getAttribute('data-testid') || '';
-                if (dt === 'cell-frame-container' || cell.tagName === 'LI' ||
-                        cell.getAttribute('role') === 'listitem') break;
-                cell = cell.parentElement;
-            }
-            if (!cell) return;
-
-            // Prefer span[title] — it holds the clean contact name without
-            // badge text that may be nested inside cell-frame-title's textContent.
-            const titleEl = cell.querySelector('[data-testid="cell-frame-title"] span[title]')
-                         || cell.querySelector('span[title]')
-                         || cell.querySelector('[data-testid="cell-frame-title"]')
-                         || cell.querySelector('span[dir="auto"]');
-            const name = titleEl
-                ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim()
-                : '';
-            if (!name) return;
-
-            const count = parseInt(countText, 10) || countText;
-            results.push({ name, unread_count: count });
-        });
-        return results;
-    }
-
-    // Strategy 2: aria-label fallback (some WA locales/versions)
     const chatList = document.querySelector('[data-testid="chat-list"]')
                   || document.querySelector('#pane-side');
-    if (!chatList) return results;
+    if (!chatList) return [];
 
-    chatList.querySelectorAll('[aria-label]').forEach(el => {
-        const lbl = el.getAttribute('aria-label') || '';
-        if (!/unread|no le[ií]d/i.test(lbl)) return;
-        const nameEl = el.querySelector('span[dir="auto"]');
-        const name = nameEl ? (nameEl.textContent || '').trim() : '';
-        if (name && !results.some(r => r.name === name))
-            results.push({ name, unread_count: null });
+    const results = [];
+    const cells = chatList.querySelectorAll(
+        '[data-testid="cell-frame-container"], li[role="listitem"], [role="listitem"]'
+    );
+
+    cells.forEach(cell => {
+        // Contact name: prefer span with title attribute (clean, no badge text)
+        const titleEl = cell.querySelector('[data-testid="cell-frame-title"] span[title]')
+                     || cell.querySelector('span[title]')
+                     || cell.querySelector('[data-testid="cell-frame-title"]');
+        const name = titleEl
+            ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim()
+            : '';
+        if (!name) return;
+
+        // Last message preview
+        const subtitleEl = cell.querySelector('[data-testid="last-msg-status"] ~ span')
+                        || cell.querySelector('[data-testid="cell-frame-secondary-detail"] span[dir]')
+                        || cell.querySelector('span[data-testid="last-msg"]')
+                        || cell.querySelector('span[dir="ltr"] ~ span[dir="auto"]')
+                        || cell.querySelector('span[dir="ltr"]');
+        const last_message = subtitleEl
+            ? (subtitleEl.textContent || '').trim()
+            : '';
+
+        // Timestamp
+        const tsEl = cell.querySelector('[data-testid="cell-frame-timestamp"]')
+                  || cell.querySelector('div[class*="last-msg-time"] span')
+                  || cell.querySelector('span[dir="auto"] ~ div span');
+        const timestamp = tsEl ? (tsEl.textContent || '').trim() : '';
+
+        // Direction: outbound messages have a delivery-status tick icon;
+        // inbound messages never show those icons in the sidebar.
+        const tickIcon = cell.querySelector(
+            'span[data-icon="msg-check"], span[data-icon="msg-dbl-check"], ' +
+            'span[data-icon="msg-dbl-check-ack"], span[data-icon="msg-time"]'
+        );
+        const direction = tickIcon ? 'outbound' : 'inbound';
+
+        results.push({ name, last_message, timestamp, direction });
     });
 
     return results;

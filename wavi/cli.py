@@ -1063,19 +1063,21 @@ def check_updates(session: str, assets_dir: str | None, reset: bool):
     result = asyncio.run(runner.check_updates(assets_dir=assets_path, reset=reset))
 
     status = result["status"]
-    contacts = result.get("contacts", [])
+    new_inbound = result.get("new_inbound", [])
     checked_at = result.get("checked_at", "")
 
     if status == "no_updates":
         click.echo(f"no_updates  [{checked_at}]")
-    elif not contacts:
-        click.echo(f"{status}  no unread messages  [{checked_at}]")
+    elif status == "first_run":
+        click.echo(f"first_run  baseline saved  [{checked_at}]")
+    elif not new_inbound:
+        click.echo(f"{status}  no new inbound messages  [{checked_at}]")
     else:
-        click.echo(f"{status}  {len(contacts)} chat(s) with unread messages  [{checked_at}]:")
-        for c in contacts:
-            count = c.get("unread_count")
-            count_str = f"  ({count} unread)" if count else ""
-            click.echo(f"  {c['name']}{count_str}")
+        click.echo(f"updates  {len(new_inbound)} new inbound message(s)  [{checked_at}]:")
+        for c in new_inbound:
+            msg = c.get("last_message", "")
+            ts = c.get("timestamp", "")
+            click.echo(f"  {c['name']}  {ts}  \"{msg}\"")
 
     if result.get("assets_dir"):
         click.echo(f"\n→ {result['assets_dir']}/")

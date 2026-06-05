@@ -719,12 +719,12 @@ class WARunner:
 
             now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            # ── Always extract unread contacts from DOM ───────────────────────
-            # DOM detection is the source of truth; image comparison was too
-            # coarse to catch small badge changes (a single new-message dot).
+            # ── Extract sidebar state from DOM ────────────────────────────────
+            # Each entry: {name, last_message, timestamp, direction}.
+            # "direction" is "inbound" or "outbound" based on tick-icon presence.
             contacts = await self.session.extract_sidebar_updates()
 
-            # Determine status by comparing to the previous saved result.
+            # Load previous sidebar snapshot.
             prev_contacts: list = []
             is_first = reset
             if state_file and state_file.exists() and not reset:
@@ -735,17 +735,32 @@ class WARunner:
             elif not state_file or not state_file.exists():
                 is_first = True
 
+            # Build lookup: name → previous entry
+            prev_by_name = {c["name"]: c for c in prev_contacts}
+
+            # Find chats with a new INBOUND last message.
+            new_inbound: list[dict] = []
+            if not is_first:
+                for c in contacts:
+                    if c["direction"] != "inbound":
+                        continue
+                    prev = prev_by_name.get(c["name"])
+                    if prev is None or prev.get("last_message") != c["last_message"] \
+                            or prev.get("timestamp") != c["timestamp"]:
+                        new_inbound.append(c)
+
             if is_first:
                 run_status = "first_run"
-            elif contacts == prev_contacts:
-                run_status = "no_updates"
-            else:
+            elif new_inbound:
                 run_status = "updates"
+            else:
+                run_status = "no_updates"
 
             state = {
                 "status": run_status,
                 "checked_at": now_iso,
                 "contacts": contacts,
+                "new_inbound": new_inbound,
             }
 
             if assets_path:
