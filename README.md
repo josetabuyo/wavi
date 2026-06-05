@@ -1,129 +1,95 @@
 # wavi — WhatsApp Web Automation via Vision
 
-**Vision-first browser automation for WhatsApp Web.** A CLI tool that extracts messages from WhatsApp Web with minimal DOM interaction.
+CLI tool for WhatsApp Web automation. Extracts message history using a vision pipeline (screenshot → OCR → bubbles), and handles navigation and sidebar state via DOM scraping.
 
-## Philosophy
+## Commands
 
-- **Vision-first**: Detect and extract messages using image analysis, not DOM parsing
-- **Minimal DOM interaction**: Only interact with the browser when necessary (navigation, audio playback)
-- **Robust extraction**: Handle complex message layouts, embedded images, and multimedia without brittle selectors
-- **Headless-capable**: Run fully automated with screenshot analysis, no manual intervention needed
+| Command | What it does | Approach |
+|---|---|---|
+| `wavi connect [session]` | Start Chrome daemon, authenticate via QR | — |
+| `wavi status [session]` | Check if daemon is alive and authenticated | DOM |
+| `wavi get <contact>` | Extract full message history from a chat | **Vision** |
+| `wavi send <contact> <message>` | Send a message | DOM + keyboard |
+| `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
+| `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |
+| `wavi queue [session]` | Show operation queue status | — |
+| `wavi stop [session]` | Gracefully shut down the Chrome daemon | — |
 
 ## Architecture
 
-### Vision Pipeline
+### Vision pipeline (`wavi get`)
 
 ```
-Screenshot → Crop sidebar → Color-mask detection → Connected components → Bbox extraction
+Screenshot → Crop chat panel → Color-mask detection → Bbox extraction
     ↓
-    OCR (tiled) → Timestamp extraction → Message classification → Bubble detection
+    OCR (tiled) → Timestamp extraction → Message classification → Bubble list
 ```
 
-**Key components:**
-- `element_detector.py`: Detect message bubbles by color (green="me", white="other")
-- `vision.py`: Full pipeline—OCR, classification, timestamp extraction, media detection
-- `runner.py`: Orchestrate browser + vision pipeline together
+Used for message content because WhatsApp Web obfuscates the message DOM in ways that make direct scraping unreliable.
 
-### Browser Interaction (Minimal)
+Key files: `element_detector.py`, `vision.py`, `runner.py`
 
-| Task | Method | Why |
-|------|--------|-----|
-| Navigate to chat | DOM click (unavoidable) | No vision-based way to find sidebar contact |
-| Scroll to load history | Keyboard events | Triggers virtual scrolling without brittle selectors |
-| Take screenshot | CDP screenshot | Only way to get page image |
-| Play audio | DOM click on play button | Necessary for audio extraction |
+### DOM scraping
 
-**What we avoid:**
-- Parsing message text from DOM
-- Relying on class names or data-attributes
-- Waiting for dynamic content (vision handles async loading)
+Navigation and sidebar state use JavaScript evaluated directly on the page. Each JS constant in `session.py` has a comment documenting its key selector and the vision-based fallback to implement if the selector breaks after a WA update. When a DOM-scraped feature stops working, check `session.py` → "DOM scraping inventory" block at the top.
 
-## Installation & Usage
+### Chrome daemon
 
-### Setup
+Chrome runs as a long-lived background process (started by `wavi connect`). Playwright connects and disconnects for each operation without ever killing Chrome. Killing Chrome mid-session corrupts WA's IndexedDB and invalidates the session. Shutdown is done only via `wavi stop`, which navigates to `about:blank` first so WA can flush state.
+
+## Setup
 
 ```bash
-git clone <repo>
-cd wavi
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# Install uv if needed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+git clone <repo> && cd wavi
+uv sync
 ```
 
-### Launch daemon
+## Quick start
 
 ```bash
-wavi connect default
-# Scan QR in WhatsApp Web, leave Chrome open
+# 1. Start daemon and scan QR
+wavi connect
+
+# 2. Extract message history
+wavi get "Contact Name"
+
+# 3. Poll for new messages
+wavi check-updates           # first run: saves baseline
+wavi check-updates           # subsequent: no_updates or updates + contact list
 ```
 
-### Extract messages
+## check-updates behavior
 
-```bash
-wavi full-sync default "Contact Name" --assets ./output/contact
-```
+Compares the sidebar snapshot (last message + timestamp per chat) against the previous saved state. Reports a contact as updated only when:
+- its `last_message` changed, **and**
+- `direction == "inbound"` (outbound messages and re-reads are ignored)
 
-**Output:**
-- `screenshot.png` — Full page screenshot
-- `screenshot_cropped.png` — Chat panel only
-- `screenshot_debug.png` — Annotated boxes + click targets
-- `screenshot_bubbles.json` — Extracted messages, audio metadata, timestamps
+Direction is inferred from tick icons (`msg-check`, `msg-dbl-check`, etc.) — present → outbound; absent → inbound.
 
-### Analyze a single screenshot
-
-```bash
-wavi bubbles /path/to/screenshot.png
-```
-
-## Known Limitations
-
-- **Media thumbnails**: Embedded images (links with preview) are detected but not extracted
-- **Very long conversations**: Virtual scrolling only loads visible messages; historical data requires scroll-based loading
-- **Non-Latin scripts**: OCR may struggle with some character sets
-- **Concurrent messages**: Rapid message flood may cause detection drift
+**Limitation**: only the last visible message per chat is tracked. If multiple messages arrive between two checks, only the most recent is reported per contact. Use `wavi get <contact>` to retrieve the full history after detection.
 
 ## Development
 
-### Testing
-
 ```bash
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
-### Key files to understand
-
-- `session.py` — Browser connection via Chrome DevTools Protocol (CDP)
+Key files:
+- `session.py` — Chrome CDP connection + all DOM scraping JS (see inventory block)
+- `runner.py` — Orchestration: vision pipeline, `check_updates`, `list_contacts`
 - `element_detector.py` — Color-mask morphology for bubble detection
-- `vision.py` — OCR, classification, message split logic
-- `runner.py` — Orchestration and audio extraction
-
-### Architecture Decisions
-
-1. **Vision over DOM**: Robust to UI changes; doesn't break if WhatsApp updates selectors
-2. **Keyboard events for scroll**: Triggers WhatsApp's lazy loading without worrying about scroll container implementation
-3. **Tiled OCR**: Upscaling small text regions improves accuracy before OCR
-4. **Color-mask closing**: Morphological closing bridges small gaps within bubbles (text lines) without merging separate messages (gap_px=7)
+- `vision.py` — OCR, classification, timestamp extraction
 
 ## Debugging
-
-Enable debug images to see detected boxes and click targets:
 
 ```bash
 wavi bubbles /path/to/screenshot.png --debug
 ```
 
-Check `screenshot_debug.png`:
-- **Green boxes**: Sent messages ("me")
-- **Blue boxes**: Received messages ("other")
-- **Red crosses**: Audio play button click targets
-- **Labels**: Message ID, sender, type, timestamp
-
-## Contributing
-
-- **Bug reports**: Include screenshot and `screenshot_bubbles.json` output
-- **Message format changes**: Add test cases to `test_vision.py`
-- **Performance**: Profile with real chats; synthetic test data is minimal
-
----
-
-**Last updated**: May 2026 | **Status**: Early development (32 messages extracted, 10 audios detected in test data)
+Produces `screenshot_debug.png` with annotated boxes:
+- Green: sent messages
+- Blue: received messages
+- Red crosses: audio play button targets
