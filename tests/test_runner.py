@@ -484,23 +484,147 @@ class TestBubbleKeyWithDomId:
         assert key[0] != "dom"
 
 
+# ── _scroll_all_contacts ──────────────────────────────────────────────────────
+
+def _mock_page():
+    page = MagicMock()
+    page.wait_for_timeout = AsyncMock()
+    return page
+
+
+def _contacts_runner():
+    runner = _runner()
+    runner.session._page = _mock_page()
+    runner.session.get_contacts_scroll_state = AsyncMock()
+    runner.session.extract_visible_contacts = AsyncMock()
+    runner.session.scroll_contacts_down = AsyncMock()
+    return runner
+
+
+class TestScrollAllContacts:
+    """Tests for _scroll_all_contacts() scroll logic."""
+
+    @pytest.mark.asyncio
+    async def test_reaches_bottom(self):
+        """Normal path: two iterations then scrollTop reaches bottom."""
+        runner = _contacts_runner()
+        runner.session.get_contacts_scroll_state.side_effect = [
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # initial
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # iter 0 state
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},   # after scroll 0
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},   # iter 1 state → bottom
+        ]
+        runner.session.extract_visible_contacts.side_effect = [
+            [{"name": "Alice", "subtitle": "", "vy": 100}],
+            [{"name": "Alice", "subtitle": "", "vy": 100}, {"name": "Bob", "subtitle": "", "vy": 200}],
+        ]
+
+        contacts = await runner._scroll_all_contacts()
+
+        assert [c["name"] for c in contacts] == ["Alice", "Bob"]
+
+    @pytest.mark.asyncio
+    async def test_empty_visible_retried(self):
+        """Empty extract_visible_contacts is retried; loop continues after non-empty retry."""
+        runner = _contacts_runner()
+        runner.session.get_contacts_scroll_state.side_effect = [
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # initial
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # iter 0 state
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},   # after scroll 0
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},   # iter 1 state → bottom
+        ]
+        # iter 0: first two calls return [] (re-render), third returns items
+        runner.session.extract_visible_contacts.side_effect = [
+            [],
+            [],
+            [{"name": "Alice", "subtitle": "", "vy": 100}],
+            [{"name": "Alice", "subtitle": "", "vy": 100}, {"name": "Bob", "subtitle": "", "vy": 200}],
+        ]
+
+        contacts = await runner._scroll_all_contacts()
+
+        assert [c["name"] for c in contacts] == ["Alice", "Bob"]
+        # wait_for_timeout called at least twice for the two empty retries
+        assert runner.session._page.wait_for_timeout.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_empty_visible_all_retries_exhausted_breaks(self):
+        """If all retries return empty, loop breaks and returns whatever was collected."""
+        runner = _contacts_runner()
+        runner.session.get_contacts_scroll_state.return_value = (
+            {"scrollTop": 0, "scrollHeight": 1000, "clientHeight": 500}
+        )
+        runner.session.extract_visible_contacts.return_value = []
+
+        contacts = await runner._scroll_all_contacts()
+
+        assert contacts == []
+
+    @pytest.mark.asyncio
+    async def test_stall_waits_then_continues(self):
+        """A single stall does not stop the loop; extra wait is added and scroll continues."""
+        runner = _contacts_runner()
+        runner.session.get_contacts_scroll_state.side_effect = [
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # initial
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # iter 0 state
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # after scroll 0 → stall
+            {"scrollTop": 0,   "scrollHeight": 1000, "clientHeight": 500},   # iter 1 state
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},   # after scroll 1 → moved
+            {"scrollTop": 500, "scrollHeight": 1000, "clientHeight": 500},   # iter 2 state → bottom
+        ]
+        runner.session.extract_visible_contacts.side_effect = [
+            [{"name": "Alice", "subtitle": "", "vy": 100}],
+            [{"name": "Alice", "subtitle": "", "vy": 100}],
+            [{"name": "Alice", "subtitle": "", "vy": 100}, {"name": "Bob", "subtitle": "", "vy": 200}],
+        ]
+
+        contacts = await runner._scroll_all_contacts()
+
+        assert [c["name"] for c in contacts] == ["Alice", "Bob"]
+        # Extra 1000ms wait on stall + normal 500ms waits
+        wait_args = [c.args[0] for c in runner.session._page.wait_for_timeout.call_args_list]
+        assert 1000 in wait_args
+
+    @pytest.mark.asyncio
+    async def test_three_consecutive_stalls_stops(self):
+        """Three consecutive stalls stop the scroll even if not at bottom."""
+        runner = _contacts_runner()
+        runner.session.get_contacts_scroll_state.return_value = (
+            {"scrollTop": 0, "scrollHeight": 1000, "clientHeight": 500}
+        )
+        runner.session.extract_visible_contacts.return_value = [
+            {"name": "Alice", "subtitle": "", "vy": 100}
+        ]
+
+        contacts = await runner._scroll_all_contacts()
+
+        assert contacts == [{"name": "Alice", "subtitle": ""}]
+        assert runner.session.scroll_contacts_down.call_count == 3
+
+
 # ── list_contacts ────────────────────────────────────────────────────────────
 
 class TestListContacts:
-    """Tests for list_contacts() orchestration method."""
+    """Tests for list_contacts() orchestration (auth, assets, error handling)."""
+
+    def _setup_runner(self, contacts=None):
+        """Runner with _scroll_all_contacts mocked so orchestration tests stay focused."""
+        runner = _runner()
+        runner.session.connect = AsyncMock(return_value="restored")
+        runner.session.navigate_to_new_chat = AsyncMock()
+        runner._scroll_all_contacts = AsyncMock(return_value=contacts or [])
+        runner.session.screenshot_to_file = AsyncMock()
+        runner.session.close_new_chat = AsyncMock()
+        runner.session.close = AsyncMock()
+        return runner
 
     @pytest.mark.asyncio
     async def test_list_contacts_returns_contacts(self):
         """list_contacts() with no assets_dir returns contacts, screenshot=None."""
-        runner = _runner()
-        runner.session.connect = AsyncMock(return_value="restored")
-        runner.session.navigate_to_new_chat = AsyncMock()
-        runner.session.extract_contacts = AsyncMock(return_value=[
+        runner = self._setup_runner([
             {"name": "Alice", "subtitle": "Online"},
             {"name": "Bob", "subtitle": "Last seen 2 hours ago"},
         ])
-        runner.session.close_new_chat = AsyncMock()
-        runner.session.close = AsyncMock()
 
         result = await runner.list_contacts()
 
@@ -514,15 +638,7 @@ class TestListContacts:
     @pytest.mark.asyncio
     async def test_list_contacts_with_assets_dir(self, tmp_path):
         """list_contacts() saves screenshot.png + contacts_list.json to assets_dir."""
-        runner = _runner()
-        runner.session.connect = AsyncMock(return_value="restored")
-        runner.session.navigate_to_new_chat = AsyncMock()
-        runner.session.extract_contacts = AsyncMock(return_value=[
-            {"name": "Alice", "subtitle": ""},
-        ])
-        runner.session.screenshot_to_file = AsyncMock()
-        runner.session.close_new_chat = AsyncMock()
-        runner.session.close = AsyncMock()
+        runner = self._setup_runner([{"name": "Alice", "subtitle": ""}])
 
         result = await runner.list_contacts(assets_dir=str(tmp_path))
 
@@ -534,13 +650,9 @@ class TestListContacts:
 
     @pytest.mark.asyncio
     async def test_list_contacts_closes_on_error(self):
-        """list_contacts() calls session.close() even if extract_contacts fails."""
-        runner = _runner()
-        runner.session.connect = AsyncMock(return_value="restored")
-        runner.session.navigate_to_new_chat = AsyncMock()
-        runner.session.extract_contacts = AsyncMock(side_effect=Exception("DOM changed"))
-        runner.session.close_new_chat = AsyncMock()
-        runner.session.close = AsyncMock()
+        """list_contacts() calls session.close() even if _scroll_all_contacts fails."""
+        runner = self._setup_runner()
+        runner._scroll_all_contacts = AsyncMock(side_effect=Exception("DOM changed"))
 
         with pytest.raises(Exception, match="DOM changed"):
             await runner.list_contacts()
