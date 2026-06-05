@@ -8,9 +8,8 @@ build/
 *.egg-info/
 .DS_Store
 
-# Chrome profiles (contain WA session — never commit)
-data/sessions/*/
-data/sessions/
+# Chrome profiles and generated data (contain WA session — never commit)
+data/
 
 # Generated assets
 assets/*.png
@@ -18,3 +17,16 @@ assets/*.json
 assets/*.ogg
 assets/current.png
 output/
+
+# Secrets
+.env
+
+# Local agent config
+.agent.json
+
+# Playwright CLI logs
+.playwright-cli/
+docs/.playwright-cli/
+
+# Session files (local state)
+session/
