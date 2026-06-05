@@ -668,6 +668,120 @@ class WARunner:
 
         return results
 
+    async def check_updates(
+        self,
+        assets_dir: "Path | str | None" = None,
+        reset: bool = False,
+    ) -> dict:
+        """Check the WA sidebar for new inbound messages.
+
+        Algorithm
+        ---------
+        1. Ensure the main chat list is visible (close any overlay).
+        2. Take a screenshot of the full WA view.
+        3. If no previous snapshot exists (or reset=True): extract unread contacts
+           via DOM, save snapshot + state, return status="first_run".
+        4. If previous snapshot exists: compare sidebar regions.
+           - Same (below threshold) → return status="no_updates" immediately.
+           - Different → extract unread contacts, save new snapshot + state,
+             return status="updates".
+
+        Returns
+        -------
+        {
+            "status": "first_run" | "no_updates" | "updates",
+            "contacts": [{"name": str, "unread_count": int|str}, ...],
+            "checked_at": str,          # ISO-8601 UTC
+            "snapshot": str | None,     # absolute path to saved snapshot
+            "assets_dir": str | None,
+        }
+        """
+        import json as _json
+        import shutil as _shutil
+        from datetime import datetime, timezone
+
+        status_result = await self.session.connect()
+        if status_result in ("qr_needed", "timeout"):
+            raise RuntimeError(
+                f"Session not authenticated (status={status_result!r}). "
+                "Run 'wavi connect' first."
+            )
+
+        try:
+            await self.session.ensure_chat_list()
+
+            shot_data = await self.session.screenshot()
+
+            assets_path: Path | None = Path(assets_dir) if assets_dir else None
+            if assets_path:
+                assets_path.mkdir(parents=True, exist_ok=True)
+
+            # File layout inside assets_dir:
+            #   snapshot_prev.png    — screenshot from the previous run (reference)
+            #   snapshot_current.png — screenshot from this run
+            #   updates.json         — result of the last processed run
+            snap_prev    = assets_path / "snapshot_prev.png"    if assets_path else None
+            snap_current = assets_path / "snapshot_current.png" if assets_path else None
+            state_file   = assets_path / "updates.json"         if assets_path else None
+
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # ── Fast path: compare sidebar region against previous snapshot ───
+            if snap_prev and snap_prev.exists() and not reset:
+                if not _sidebar_images_differ(shot_data, snap_prev.read_bytes()):
+                    if snap_current:
+                        snap_current.write_bytes(shot_data)
+                    prev_contacts: list = []
+                    if state_file and state_file.exists():
+                        try:
+                            prev_contacts = _json.loads(state_file.read_text()).get("contacts", [])
+                        except Exception:
+                            pass
+                    result = {
+                        "status": "no_updates",
+                        "contacts": prev_contacts,
+                        "checked_at": now_iso,
+                        "assets_dir": str(assets_path.resolve()) if assets_path else None,
+                    }
+                    if state_file:
+                        state_file.write_text(
+                            _json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
+                        )
+                    return result
+
+            # ── Extract unread contacts from DOM ──────────────────────────────
+            contacts = await self.session.extract_sidebar_updates()
+
+            is_first = not snap_prev or not snap_prev.exists()
+            run_status = "first_run" if is_first else "updates"
+
+            state = {
+                "status": run_status,
+                "checked_at": now_iso,
+                "contacts": contacts,
+            }
+
+            if assets_path:
+                # Rotate: current → prev, then write new current
+                if snap_current and snap_current.exists():
+                    _shutil.copy2(snap_current, snap_prev)
+                elif snap_prev:
+                    # First run: prev = current snapshot so next comparison works
+                    snap_prev.write_bytes(shot_data)
+                if snap_current:
+                    snap_current.write_bytes(shot_data)
+                if state_file:
+                    state_file.write_text(
+                        _json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+                    )
+
+            return {
+                **state,
+                "assets_dir": str(assets_path.resolve()) if assets_path else None,
+            }
+        finally:
+            await self.session.close()
+
     async def _scroll_all_contacts(self) -> list[dict]:
         """Scroll the New Chat panel from top to bottom, collecting all contacts.
 
@@ -793,6 +907,44 @@ class WARunner:
             await self.session.close()
 
         return {"contacts": contacts, "screenshot": shot_path, "assets_dir": assets_path}
+
+
+# ── Sidebar update detection ──────────────────────────────────────────────────
+
+def _sidebar_images_differ(
+    img_a: bytes,
+    img_b: bytes,
+    sidebar_px: int = 580,
+    threshold: float = 3.0,
+) -> bool:
+    """Return True if the sidebar region of two screenshots differs significantly.
+
+    Crops both images to [0, 0, sidebar_px, height] before comparing so that
+    activity inside the chat panel (typing indicators, timestamps) does not
+    trigger false positives.
+    threshold is in mean pixel intensity units (0–255); 3.0 ≈ 1.2% difference.
+    """
+    try:
+        from PIL import Image, ImageChops, ImageStat
+        import io
+
+        ia = Image.open(io.BytesIO(img_a)).convert("RGB")
+        ib = Image.open(io.BytesIO(img_b)).convert("RGB")
+
+        w = ia.width
+        cx = int(w * sidebar_px / 1280)
+        crop_a = ia.crop((0, 0, cx, ia.height))
+        crop_b = ib.crop((0, 0, min(cx, ib.width), min(ia.height, ib.height)))
+
+        if crop_a.size != crop_b.size:
+            return True
+
+        diff = ImageChops.difference(crop_a, crop_b)
+        stat = ImageStat.Stat(diff)
+        mean_diff = sum(stat.mean) / len(stat.mean)
+        return mean_diff > threshold
+    except Exception:
+        return True
 
 
 # ── Convenience coroutines ────────────────────────────────────────────────────

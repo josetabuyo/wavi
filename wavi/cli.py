@@ -1027,6 +1027,60 @@ def boarding(open_browser: bool):
         subprocess.run(["open", f"file://{html_path}"])
 
 
+# ── check-updates ────────────────────────────────────────────────────────────
+
+@main.command("check-updates")
+@click.argument("session", default="default")
+@click.option("--assets", "assets_dir", default=None,
+              help="Directory to store snapshots and state. "
+                   "Defaults to output/<session>/last-updates/.")
+@click.option("--reset", is_flag=True,
+              help="Ignore previous snapshot and treat this run as the first one.")
+def check_updates(session: str, assets_dir: str | None, reset: bool):
+    """Check WhatsApp sidebar for new inbound messages.
+
+    Compares the sidebar against the last saved snapshot.  Always saves
+    updates.json, snapshot_prev.png, and snapshot_current.png to the output
+    directory.  On the first run (or with --reset) returns the current list of
+    unread chats.  On subsequent runs returns 'no_updates' when nothing changed,
+    or 'updates' with the contacts that now have unread messages.
+
+    \b
+    Examples:
+      wavi check-updates
+      wavi check-updates myphone
+      wavi check-updates --reset
+    """
+    from wavi.runner import WARunner
+
+    profile_dir = _profile(session)
+    assets_path = (
+        Path(assets_dir)
+        if assets_dir
+        else Path("output") / profile_dir.name / "last-updates"
+    )
+    runner = WARunner(profile_dir)
+    result = asyncio.run(runner.check_updates(assets_dir=assets_path, reset=reset))
+
+    status = result["status"]
+    contacts = result.get("contacts", [])
+    checked_at = result.get("checked_at", "")
+
+    if status == "no_updates":
+        click.echo(f"no_updates  [{checked_at}]")
+    elif not contacts:
+        click.echo(f"{status}  no unread messages  [{checked_at}]")
+    else:
+        click.echo(f"{status}  {len(contacts)} chat(s) with unread messages  [{checked_at}]:")
+        for c in contacts:
+            count = c.get("unread_count")
+            count_str = f"  ({count} unread)" if count else ""
+            click.echo(f"  {c['name']}{count_str}")
+
+    if result.get("assets_dir"):
+        click.echo(f"\n→ {result['assets_dir']}/")
+
+
 # ── list-contacts ────────────────────────────────────────────────────────────
 
 @main.command("list-contacts")

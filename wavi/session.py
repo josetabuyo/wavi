@@ -354,6 +354,59 @@ _EXTRACT_VISIBLE_CONTACTS_JS = """
 }
 """
 
+_EXTRACT_SIDEBAR_UPDATES_JS = """
+() => {
+    const results = [];
+
+    // Strategy 1: find unread badges via data-testid (most stable across WA versions)
+    const badges = document.querySelectorAll('[data-testid="icon-unread-count"]');
+    if (badges.length > 0) {
+        badges.forEach(badge => {
+            const countText = (badge.textContent || '').trim();
+            if (!countText || countText === '0') return;
+
+            // Walk up to the conversation cell
+            let cell = badge.parentElement;
+            for (let i = 0; i < 12 && cell; i++) {
+                const dt = cell.getAttribute('data-testid') || '';
+                if (dt === 'cell-frame-container' || cell.tagName === 'LI' ||
+                        cell.getAttribute('role') === 'listitem') break;
+                cell = cell.parentElement;
+            }
+            if (!cell) return;
+
+            const titleEl = cell.querySelector('[data-testid="cell-frame-title"]')
+                         || cell.querySelector('span[title]')
+                         || cell.querySelector('span[dir="auto"]');
+            const name = titleEl
+                ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim()
+                : '';
+            if (!name) return;
+
+            const count = parseInt(countText, 10) || countText;
+            results.push({ name, unread_count: count });
+        });
+        return results;
+    }
+
+    // Strategy 2: aria-label fallback (some WA locales/versions)
+    const chatList = document.querySelector('[data-testid="chat-list"]')
+                  || document.querySelector('#pane-side');
+    if (!chatList) return results;
+
+    chatList.querySelectorAll('[aria-label]').forEach(el => {
+        const lbl = el.getAttribute('aria-label') || '';
+        if (!/unread|no le[ií]d/i.test(lbl)) return;
+        const nameEl = el.querySelector('span[dir="auto"]');
+        const name = nameEl ? (nameEl.textContent || '').trim() : '';
+        if (name && !results.some(r => r.name === name))
+            results.push({ name, unread_count: null });
+    });
+
+    return results;
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -802,6 +855,26 @@ class WASession:
         Must be called after navigate_to_new_chat().
         """
         return await self._page.evaluate(_EXTRACT_VISIBLE_CONTACTS_JS)
+
+    async def extract_sidebar_updates(self) -> list[dict]:
+        """Extract conversations with unread inbound messages from the main sidebar.
+
+        Returns list of {name, unread_count} for each chat that has a visible
+        unread-message badge.  unread_count may be an int or the raw string (e.g.
+        '99+') depending on WA Web's rendering.
+        """
+        return await self._page.evaluate(_EXTRACT_SIDEBAR_UPDATES_JS)
+
+    async def ensure_chat_list(self) -> None:
+        """Close any overlay panel (New Chat, search, etc.) so the main chat list is visible."""
+        await self._page.keyboard.press("Escape")
+        await self._page.wait_for_timeout(400)
+        try:
+            await self._page.wait_for_selector(
+                '[data-testid="chat-list"], #pane-side', timeout=3_000
+            )
+        except Exception:
+            pass
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
