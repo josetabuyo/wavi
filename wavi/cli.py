@@ -1033,17 +1033,18 @@ def boarding(open_browser: bool):
 @click.option("--json-out", is_flag=True, help="Output results as JSON.")
 @click.option("--headless/--no-headless", default=True, show_default=True,
               help="Run Chrome headless (default) or visible.")
-@click.option("--assets", "assets_dir", default="output/contacts",
-              show_default=True,
-              help="Directory to save contacts_list.json + screenshot.png (overwritten each run).")
+@click.option("--assets", "assets_dir", default=None,
+              help="Directory to save contacts_list.json + screenshot.png. "
+                   "Defaults to output/<session>/contacts/.")
 def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str):
     """List all contacts available in the 'New chat' panel."""
     import json as _json
     from wavi.runner import WARunner
 
+    assets_path = Path(assets_dir) if assets_dir else Path("output") / session / "contacts"
     profile_dir = _profile(session)
     runner = WARunner(profile_dir, headless=headless)
-    result = asyncio.run(runner.list_contacts(assets_dir=assets_dir))
+    result = asyncio.run(runner.list_contacts(assets_dir=assets_path))
 
     contacts = result.get("contacts", [])
     shot = result.get("screenshot")
