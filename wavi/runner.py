@@ -752,7 +752,7 @@ class WARunner:
             # ── Extract unread contacts from DOM ──────────────────────────────
             contacts = await self.session.extract_sidebar_updates()
 
-            is_first = not snap_prev or not snap_prev.exists()
+            is_first = reset or not snap_prev or not snap_prev.exists()
             run_status = "first_run" if is_first else "updates"
 
             state = {

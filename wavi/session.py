@@ -867,6 +867,11 @@ class WASession:
 
     async def ensure_chat_list(self) -> None:
         """Close any overlay panel (New Chat, search, etc.) so the main chat list is visible."""
+        # Try clicking the back button first — more reliable than Escape for the new-chat panel
+        # left open by a previous list-contacts run.
+        await self._page.evaluate(_CLOSE_NEW_CHAT_JS)
+        await self._page.wait_for_timeout(300)
+        # Escape as catch-all for search bars, drawers, or any other overlay.
         await self._page.keyboard.press("Escape")
         await self._page.wait_for_timeout(400)
         try:
@@ -874,7 +879,9 @@ class WASession:
                 '[data-testid="chat-list"], #pane-side', timeout=3_000
             )
         except Exception:
-            pass
+            # One more Escape in case a nested overlay was present.
+            await self._page.keyboard.press("Escape")
+            await self._page.wait_for_timeout(400)
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
