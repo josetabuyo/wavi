@@ -945,3 +945,129 @@ class TestCaptureFullHistoryNewest:
         assert texts[-1] == "A", f"Last (id=4) should be A (oldest), got {texts[-1]}"
         # Order: D (new), C (new), B (existing), A (existing)
         assert texts == ["D", "C", "B", "A"], f"Order should be [D,C,B,A], got {texts}"
+
+
+# ── check_updates ─────────────────────────────────────────────────────────────
+
+def _check_updates_runner(sidebar_rows: list[dict]):
+    """Return a WARunner whose session is mocked for check_updates tests."""
+    runner = _runner()
+    runner.session.connect = AsyncMock(return_value="authenticated")
+    runner.session.ensure_chat_list = AsyncMock()
+    runner.session.extract_sidebar_updates = AsyncMock(return_value=sidebar_rows)
+    runner.session.screenshot = AsyncMock(return_value=b"fake-png")
+    runner.session.close = AsyncMock()
+    return runner
+
+
+def _row(name, last_message, timestamp="12:00", direction="inbound"):
+    return {"name": name, "last_message": last_message,
+            "timestamp": timestamp, "direction": direction}
+
+
+class TestCheckUpdates:
+    """check_updates comparison logic — no browser required."""
+
+    @pytest.mark.asyncio
+    async def test_first_run_no_previous_state(self, tmp_path):
+        """No updates.json → status first_run regardless of sidebar content."""
+        runner = _check_updates_runner([_row("Papá", "hola")])
+        result = await runner.check_updates(assets_dir=tmp_path)
+        assert result["status"] == "first_run"
+        assert result["new_inbound"] == []
+
+    @pytest.mark.asyncio
+    async def test_reset_forces_first_run(self, tmp_path):
+        """reset=True → first_run even when updates.json exists."""
+        runner = _check_updates_runner([_row("Papá", "hola")])
+        await runner.check_updates(assets_dir=tmp_path)  # create baseline
+        runner.session.extract_sidebar_updates.return_value = [_row("Papá", "nuevo")]
+        result = await runner.check_updates(assets_dir=tmp_path, reset=True)
+        assert result["status"] == "first_run"
+        assert result["new_inbound"] == []
+
+    @pytest.mark.asyncio
+    async def test_no_updates_when_sidebar_unchanged(self, tmp_path):
+        """Same last_message on every row → no_updates."""
+        rows = [_row("Papá", "será"), _row("Juan", "dale")]
+        runner = _check_updates_runner(rows)
+        await runner.check_updates(assets_dir=tmp_path)
+        runner.session.extract_sidebar_updates.return_value = rows
+        result = await runner.check_updates(assets_dir=tmp_path)
+        assert result["status"] == "no_updates"
+        assert result["new_inbound"] == []
+
+    @pytest.mark.asyncio
+    async def test_detects_single_new_inbound(self, tmp_path):
+        """One inbound last_message change → updates with that contact."""
+        runner = _check_updates_runner([_row("Papá", "será")])
+        await runner.check_updates(assets_dir=tmp_path)
+        runner.session.extract_sidebar_updates.return_value = [_row("Papá", "play")]
+        result = await runner.check_updates(assets_dir=tmp_path)
+        assert result["status"] == "updates"
+        assert len(result["new_inbound"]) == 1
+        assert result["new_inbound"][0]["name"] == "Papá"
+        assert result["new_inbound"][0]["last_message"] == "play"
+
+    @pytest.mark.asyncio
+    async def test_detects_multiple_new_inbound(self, tmp_path):
+        """Multiple chats with new inbound messages → all reported."""
+        runner = _check_updates_runner([
+            _row("Papá", "msg1"),
+            _row("Juan", "msg2"),
+            _row("María", "msg3"),
+        ])
+        await runner.check_updates(assets_dir=tmp_path)
+        runner.session.extract_sidebar_updates.return_value = [
+            _row("Papá", "nuevo1"),
+            _row("Juan", "nuevo2"),
+            _row("María", "nuevo3"),
+        ]
+        result = await runner.check_updates(assets_dir=tmp_path)
+        assert result["status"] == "updates"
+        assert len(result["new_inbound"]) == 3
+        names = {c["name"] for c in result["new_inbound"]}
+        assert names == {"Papá", "Juan", "María"}
+
+    @pytest.mark.asyncio
+    async def test_outbound_change_not_reported(self, tmp_path):
+        """A changed last_message with direction=outbound is NOT an update."""
+        runner = _check_updates_runner([_row("Papá", "te escribo", direction="outbound")])
+        await runner.check_updates(assets_dir=tmp_path)
+        runner.session.extract_sidebar_updates.return_value = [
+            _row("Papá", "otro mensaje", direction="outbound"),
+        ]
+        result = await runner.check_updates(assets_dir=tmp_path)
+        assert result["status"] == "no_updates"
+        assert result["new_inbound"] == []
+
+    @pytest.mark.asyncio
+    async def test_only_inbound_reported_among_mixed(self, tmp_path):
+        """Mixed sidebar: only inbound changes reported, outbound silently ignored."""
+        runner = _check_updates_runner([
+            _row("Papá", "hola",     direction="inbound"),
+            _row("Juan", "te mando", direction="outbound"),
+        ])
+        await runner.check_updates(assets_dir=tmp_path)
+        runner.session.extract_sidebar_updates.return_value = [
+            _row("Papá", "nueva",        direction="inbound"),
+            _row("Juan", "otro mensaje", direction="outbound"),
+        ]
+        result = await runner.check_updates(assets_dir=tmp_path)
+        assert result["status"] == "updates"
+        assert len(result["new_inbound"]) == 1
+        assert result["new_inbound"][0]["name"] == "Papá"
+
+    @pytest.mark.asyncio
+    async def test_new_contact_inbound_reported(self, tmp_path):
+        """A contact not in previous state with inbound direction → reported."""
+        runner = _check_updates_runner([_row("Papá", "hola")])
+        await runner.check_updates(assets_dir=tmp_path)
+        runner.session.extract_sidebar_updates.return_value = [
+            _row("Papá",  "hola"),
+            _row("Nuevo", "primer mensaje"),
+        ]
+        result = await runner.check_updates(assets_dir=tmp_path)
+        assert result["status"] == "updates"
+        assert len(result["new_inbound"]) == 1
+        assert result["new_inbound"][0]["name"] == "Nuevo"

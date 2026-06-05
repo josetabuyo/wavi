@@ -675,25 +675,35 @@ class WARunner:
     ) -> dict:
         """Check the WA sidebar for new inbound messages.
 
+        Detection is DOM-based: every visible chat row is captured as
+        {name, last_message, timestamp, direction} and compared against the
+        previous saved state (updates.json).  A chat is reported as updated
+        only when its last_message changed AND direction == "inbound".
+        Outgoing messages and re-reads never trigger an update.
+
+        Limitation: only the last message per chat is visible in the sidebar
+        preview.  If multiple messages arrive between two checks, only the
+        most-recent one is reported per contact.  Use `wavi get <contact>`
+        after detection to retrieve the full history.
+
         Algorithm
         ---------
-        1. Ensure the main chat list is visible (close any overlay).
-        2. Take a screenshot of the full WA view.
-        3. If no previous snapshot exists (or reset=True): extract unread contacts
-           via DOM, save snapshot + state, return status="first_run".
-        4. If previous snapshot exists: compare sidebar regions.
-           - Same (below threshold) → return status="no_updates" immediately.
-           - Different → extract unread contacts, save new snapshot + state,
-             return status="updates".
+        1. ensure_chat_list() — close overlays, clear sidebar search bar.
+        2. extract_sidebar_updates() — snapshot all visible chat rows via DOM.
+        3. No previous state (or reset=True) → status="first_run", save state.
+        4. Previous state exists → compare row-by-row:
+           - Any inbound row whose last_message/timestamp changed → status="updates",
+             new_inbound = list of changed rows.
+           - No changes → status="no_updates".
 
         Returns
         -------
         {
-            "status": "first_run" | "no_updates" | "updates",
-            "contacts": [{"name": str, "unread_count": int|str}, ...],
-            "checked_at": str,          # ISO-8601 UTC
-            "snapshot": str | None,     # absolute path to saved snapshot
-            "assets_dir": str | None,
+            "status":      "first_run" | "no_updates" | "updates",
+            "contacts":    [{name, last_message, timestamp, direction}, ...],
+            "new_inbound": [{name, last_message, timestamp, direction}, ...],
+            "checked_at":  str,   # ISO-8601 UTC
+            "assets_dir":  str | None,
         }
         """
         import json as _json
