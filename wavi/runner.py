@@ -668,11 +668,83 @@ class WARunner:
 
         return results
 
+    async def _scroll_all_contacts(self) -> list[dict]:
+        """Scroll the New Chat panel from top to bottom, collecting all contacts.
+
+        Uses an anchor-based overlap strategy (85 % scroll step → 15 % guaranteed
+        overlap) to ensure no contact is missed even in a virtualised list.
+        Deduplicates by name; stops when scroll stalls 3× or reaches the bottom.
+        """
+        seen_names: set[str] = set()
+        all_contacts: list[dict] = []
+        stall_count = 0
+        last_anchor_name: str | None = None
+
+        state = await self.session.get_contacts_scroll_state()
+        client_height = state["clientHeight"] if state else 600
+        scroll_step = max(200, int(client_height * 0.85))
+        print(f"[wavi] contacts clientHeight={client_height} → scroll_step={scroll_step}px", file=sys.stderr)
+
+        for iteration in range(200):
+            visible = await self.session.extract_visible_contacts()
+            if not visible:
+                break
+
+            # Anchor: last contact from previous iteration — guarantees overlap.
+            # Take only contacts that appear after the anchor in DOM/viewport order.
+            if last_anchor_name:
+                anchor_idx = next(
+                    (i for i, c in enumerate(visible) if c["name"] == last_anchor_name),
+                    None,
+                )
+                new_slice = visible[anchor_idx + 1 :] if anchor_idx is not None else visible
+            else:
+                new_slice = visible
+
+            added = 0
+            for c in new_slice:
+                if c["name"] not in seen_names:
+                    seen_names.add(c["name"])
+                    all_contacts.append({"name": c["name"], "subtitle": c["subtitle"]})
+                    added += 1
+
+            last_anchor_name = visible[-1]["name"]
+            print(
+                f"[wavi] contacts iter={iteration}: +{added} new, total={len(all_contacts)}, anchor={last_anchor_name!r}",
+                file=sys.stderr,
+            )
+
+            state = await self.session.get_contacts_scroll_state()
+            if state is None:
+                break
+
+            if state["scrollTop"] + state["clientHeight"] >= state["scrollHeight"] - 5:
+                print("[wavi] contacts: reached bottom", file=sys.stderr)
+                break
+
+            scroll_top_before = state["scrollTop"]
+            await self.session.scroll_contacts_down(scroll_step)
+            await self.session._page.wait_for_timeout(500)
+
+            state_after = await self.session.get_contacts_scroll_state()
+            scroll_top_after = state_after["scrollTop"] if state_after else scroll_top_before
+
+            if abs(scroll_top_after - scroll_top_before) < 10:
+                stall_count += 1
+                print(f"[wavi] contacts scroll stall #{stall_count}", file=sys.stderr)
+                if stall_count >= 3:
+                    print("[wavi] 3 consecutive stalls — stopping contacts scroll", file=sys.stderr)
+                    break
+            else:
+                stall_count = 0
+
+        return all_contacts
+
     async def list_contacts(
         self,
         assets_dir: "Path | str | None" = None,
     ) -> dict:
-        """Open the 'New chat' panel and return all visible contacts.
+        """Open the 'New chat' panel, scroll to the bottom, and return all contacts.
 
         Saves contacts_list.json and screenshot.png to assets_dir (overwriting).
 
@@ -694,7 +766,7 @@ class WARunner:
             )
         try:
             await self.session.navigate_to_new_chat()
-            contacts = await self.session.extract_contacts()
+            contacts = await self._scroll_all_contacts()
             shot_path: str | None = None
             assets_path: str | None = None
             if assets_dir is not None:

@@ -293,6 +293,67 @@ _CLOSE_NEW_CHAT_JS = """
 }
 """
 
+_CONTACTS_SCROLL_STATE_JS = """
+() => {
+    const firstItem = document.querySelector('[role="listitem"]');
+    if (!firstItem) return null;
+    let el = firstItem.parentElement;
+    while (el && el !== document.body) {
+        const style = window.getComputedStyle(el);
+        const ov = style.overflow + ' ' + style.overflowY;
+        if ((ov.includes('auto') || ov.includes('scroll')) && el.scrollHeight > el.clientHeight) {
+            return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+        }
+        el = el.parentElement;
+    }
+    return null;
+}
+"""
+
+_SCROLL_CONTACTS_DOWN_JS = """
+(pixels) => {
+    const firstItem = document.querySelector('[role="listitem"]');
+    if (!firstItem) return null;
+    let el = firstItem.parentElement;
+    while (el && el !== document.body) {
+        const style = window.getComputedStyle(el);
+        const ov = style.overflow + ' ' + style.overflowY;
+        if ((ov.includes('auto') || ov.includes('scroll')) && el.scrollHeight > el.clientHeight) {
+            const before = el.scrollTop;
+            el.scrollTop += pixels;
+            return { before, after: el.scrollTop };
+        }
+        el = el.parentElement;
+    }
+    return null;
+}
+"""
+
+_EXTRACT_VISIBLE_CONTACTS_JS = """
+() => {
+    const items = document.querySelectorAll('[role="listitem"]');
+    const contacts = [];
+    const vh = window.innerHeight;
+    items.forEach(item => {
+        const btn = item.querySelector('[role="button"]');
+        if (!btn) return;
+        const gridcell = item.querySelector('[role="gridcell"]');
+        if (!gridcell) return;
+        const name = gridcell.textContent.trim();
+        if (!name) return;
+        const rect = item.getBoundingClientRect();
+        if (rect.bottom < 0 || rect.top > vh) return;
+        const contentDiv = gridcell.parentElement;
+        const subtitleEl = contentDiv
+            ? [...contentDiv.children].find(c => c !== gridcell)
+            : null;
+        const subtitle = subtitleEl ? subtitleEl.textContent.trim() : '';
+        contacts.push({ name, subtitle, vy: rect.top + rect.height / 2 });
+    });
+    return contacts;
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -725,6 +786,22 @@ class WASession:
         if not closed:
             await self._page.keyboard.press("Escape")
         await self._page.wait_for_timeout(400)
+
+    async def get_contacts_scroll_state(self) -> dict | None:
+        """Return {scrollTop, scrollHeight, clientHeight} of the contacts list container, or None."""
+        return await self._page.evaluate(_CONTACTS_SCROLL_STATE_JS)
+
+    async def scroll_contacts_down(self, css_pixels: int = 500) -> dict | None:
+        """Scroll the contacts list down by css_pixels. Returns {before, after} scrollTop values."""
+        return await self._page.evaluate(_SCROLL_CONTACTS_DOWN_JS, css_pixels)
+
+    async def extract_visible_contacts(self) -> list[dict]:
+        """Extract contacts currently visible in the viewport with their y-position.
+
+        Returns list of {name, subtitle, vy} — only items within the viewport bounds.
+        Must be called after navigate_to_new_chat().
+        """
+        return await self._page.evaluate(_EXTRACT_VISIBLE_CONTACTS_JS)
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
