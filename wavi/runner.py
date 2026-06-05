@@ -686,7 +686,12 @@ class WARunner:
         print(f"[wavi] contacts clientHeight={client_height} → scroll_step={scroll_step}px", file=sys.stderr)
 
         for iteration in range(200):
-            visible = await self.session.extract_visible_contacts()
+            # Virtualized list briefly empties during re-render; retry before giving up.
+            for _retry in range(5):
+                visible = await self.session.extract_visible_contacts()
+                if visible:
+                    break
+                await self.session._page.wait_for_timeout(400)
             if not visible:
                 break
 
@@ -735,6 +740,8 @@ class WARunner:
                 if stall_count >= 3:
                     print("[wavi] 3 consecutive stalls — stopping contacts scroll", file=sys.stderr)
                     break
+                # Wait for virtualized list to load next batch before continuing.
+                await self.session._page.wait_for_timeout(1000)
             else:
                 stall_count = 0
 
