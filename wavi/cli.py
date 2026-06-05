@@ -825,7 +825,8 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
     from wavi.runner import run_enhanced
     from datetime import date as _Date
 
-    assets_dir = Path(assets) if assets else Path("output") / session / contact.lower().replace(" ", "_")
+    profile_dir = _profile(session)
+    assets_dir = Path(assets) if assets else Path("output") / profile_dir.name / contact.lower().replace(" ", "_")
 
     from_date_obj: _Date | None = None
     if from_date:
@@ -840,7 +841,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
 
     async def _go():
         return await run_enhanced(
-            profile_dir=_profile(session),
+            profile_dir=profile_dir,
             contact=contact,
             assets_dir=assets_dir,
             headless=headless,
@@ -1041,8 +1042,8 @@ def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str)
     import json as _json
     from wavi.runner import WARunner
 
-    assets_path = Path(assets_dir) if assets_dir else Path("output") / session / "contacts"
     profile_dir = _profile(session)
+    assets_path = Path(assets_dir) if assets_dir else Path("output") / profile_dir.name / "contacts"
     runner = WARunner(profile_dir, headless=headless)
     result = asyncio.run(runner.list_contacts(assets_dir=assets_path))
 
