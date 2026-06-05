@@ -360,3 +360,94 @@ class TestWindowConstants:
         screenshot_w = WINDOW_W * 2
         sidebar_x = int(screenshot_w * (SIDEBAR_PX / WINDOW_W))
         assert sidebar_x == SIDEBAR_PX * 2
+
+
+# ── NewChatPanel: navigate, extract, close ───────────────────────────────────
+
+class TestNewChatPanel:
+    """Tests for new-chat panel navigation, contact extraction, and closing."""
+
+    @pytest.mark.asyncio
+    async def test_navigate_to_new_chat_success(self):
+        """navigate_to_new_chat() clicks button, waits for list, no error."""
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        s._page.evaluate = AsyncMock(return_value=True)  # button clicked
+        s._page.wait_for_selector = AsyncMock()
+        s._page.wait_for_timeout = AsyncMock()
+
+        await s.navigate_to_new_chat()
+
+        s._page.evaluate.assert_called_once()
+        s._page.wait_for_selector.assert_called_once()
+        s._page.wait_for_timeout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_navigate_to_new_chat_not_found(self):
+        """navigate_to_new_chat() raises RuntimeError if button not found."""
+        s = _make_session()
+        s._page = _make_page(selector_found=False)
+        s._page.evaluate = AsyncMock(return_value=False)  # button not clicked
+
+        with pytest.raises(RuntimeError, match="Could not find.*new-chat-outline"):
+            await s.navigate_to_new_chat()
+
+    @pytest.mark.asyncio
+    async def test_extract_contacts_returns_list(self):
+        """extract_contacts() evaluates JS and returns list of contact dicts."""
+        s = _make_session()
+        s._page = _make_page()
+        contacts = [
+            {"name": "Alice", "subtitle": ""},
+            {"name": "Bob", "subtitle": "Hey there"},
+        ]
+        s._page.evaluate = AsyncMock(return_value=contacts)
+
+        result = await s.extract_contacts()
+
+        assert result == contacts
+        assert len(result) == 2
+        assert result[0]["name"] == "Alice"
+        assert result[1]["subtitle"] == "Hey there"
+
+    @pytest.mark.asyncio
+    async def test_close_new_chat_via_back_button(self):
+        """close_new_chat() uses back button when available."""
+        s = _make_session()
+        s._page = _make_page()
+        s._page.evaluate = AsyncMock(return_value=True)  # back button found
+        s._page.keyboard.press = AsyncMock()
+        s._page.wait_for_timeout = AsyncMock()
+
+        await s.close_new_chat()
+
+        s._page.evaluate.assert_called_once()
+        s._page.keyboard.press.assert_not_called()  # should NOT use Escape
+        s._page.wait_for_timeout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_new_chat_fallback_escape(self):
+        """close_new_chat() falls back to Escape if back button not found."""
+        s = _make_session()
+        s._page = _make_page()
+        s._page.evaluate = AsyncMock(return_value=False)  # back button not found
+        s._page.keyboard.press = AsyncMock()
+        s._page.wait_for_timeout = AsyncMock()
+
+        await s.close_new_chat()
+
+        s._page.evaluate.assert_called_once()
+        s._page.keyboard.press.assert_called_once_with("Escape")
+        s._page.wait_for_timeout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_navigate_to_new_chat_selector_timeout_propagates(self):
+        """navigate_to_new_chat() propagates wait_for_selector timeout (no swallowing)."""
+        s = _make_session()
+        s._page = _make_page()
+        s._page.evaluate = AsyncMock(return_value=True)
+        s._page.wait_for_selector = AsyncMock(side_effect=Exception("Timeout waiting for selector"))
+        s._page.wait_for_timeout = AsyncMock()
+
+        with pytest.raises(Exception, match="Timeout"):
+            await s.navigate_to_new_chat()

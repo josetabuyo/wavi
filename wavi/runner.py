@@ -668,6 +668,53 @@ class WARunner:
 
         return results
 
+    async def list_contacts(
+        self,
+        assets_dir: "Path | str | None" = None,
+    ) -> dict:
+        """Open the 'New chat' panel and return all visible contacts.
+
+        Saves contacts_list.json and screenshot.png to assets_dir (overwriting).
+
+        Returns::
+
+            {
+                "contacts": [{"name": str, "subtitle": str}, ...],
+                "screenshot": str | None,   # absolute path inside assets_dir
+                "assets_dir": str | None,
+            }
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        status = await self.session.connect()
+        if status in ("qr_needed", "timeout"):
+            raise RuntimeError(
+                f"Session not authenticated (status={status!r}). Run 'wavi connect' first."
+            )
+        try:
+            await self.session.navigate_to_new_chat()
+            contacts = await self.session.extract_contacts()
+            shot_path: str | None = None
+            assets_path: str | None = None
+            if assets_dir is not None:
+                d = _Path(assets_dir)
+                d.mkdir(parents=True, exist_ok=True)
+                shot_p = d / "screenshot.png"
+                await self.session.screenshot_to_file(shot_p)
+                shot_path = str(shot_p.resolve())
+                json_p = d / "contacts_list.json"
+                json_p.write_text(
+                    _json.dumps({"contacts": contacts}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                assets_path = str(d.resolve())
+            await self.session.close_new_chat()
+        finally:
+            await self.session.close()
+
+        return {"contacts": contacts, "screenshot": shot_path, "assets_dir": assets_path}
+
 
 # ── Convenience coroutines ────────────────────────────────────────────────────
 

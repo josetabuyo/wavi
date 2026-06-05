@@ -214,6 +214,7 @@ def _set_chrome_prefs(profile: Path) -> None:
         "media_stream_camera": 2,
         "notifications": 2,
     })
+    prefs_path.parent.mkdir(parents=True, exist_ok=True)
     prefs_path.write_text(_json.dumps(prefs))
 
 
@@ -271,53 +272,55 @@ def _write_qr_html(path: Path, qr_b64: str) -> None:
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="20">
   <title>wavi — Vincular WhatsApp</title>
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: "Segoe UI", "Helvetica Neue", Helvetica, Lucida Grande, Arial, Ubuntu, Cantarell, "Fira Sans", sans-serif;
       background: #f0f2f5; display: flex; flex-direction: column;
       align-items: center; justify-content: center;
-      min-height: 100vh; padding: 24px; color: #1d1d1d; text-align: center;
+      min-height: 100vh; padding: 24px; color: #111; text-align: center;
     }}
     .card {{
-      background: white; border-radius: 16px; padding: 32px 40px;
-      box-shadow: 0 2px 16px rgba(0,0,0,.1); max-width: 380px; width: 100%;
+      background: #fff; border-radius: 16px; padding: 40px 48px;
+      box-shadow: 0 2px 15px rgba(11,20,26,.15); max-width: 480px; width: 100%;
     }}
-    .badge {{
-      display: inline-block; background: #25d366; color: white;
-      border-radius: 20px; padding: 4px 14px;
-      font-size: .8rem; font-weight: 600; margin-bottom: 16px;
-    }}
-    h1 {{ font-size: 1.25rem; font-weight: 600; margin-bottom: 6px; }}
-    .sub {{ color: #667; font-size: .85rem; margin-bottom: 20px; line-height: 1.5; }}
+    .logo {{ color: #00a884; font-size: 1.1rem; font-weight: 700;
+             letter-spacing: .04em; margin-bottom: 20px; }}
+    h1 {{ font-size: 1.5rem; font-weight: 400; margin-bottom: 8px; }}
+    .sub {{ color: #667; font-size: 1rem; margin-bottom: 28px; line-height: 1.6; }}
     img.qr {{
-      width: 300px; height: 300px; border: 1px solid #e9edef;
-      border-radius: 8px; display: block; margin: 0 auto 20px;
+      width: 320px; height: 320px; border: 1px solid #e9edef;
+      border-radius: 4px; display: block; margin: 0 auto 28px;
     }}
-    #status {{ font-size: .9rem; color: #667; }}
-    #status b {{ color: #222; }}
-    .expired {{ color: #e53935 !important; font-weight: 600; }}
+    #status {{ font-size: 1rem; color: #667; margin-top: 4px; }}
+    #status b {{ color: #111; font-size: 1.6rem; font-weight: 700; }}
+    #status.expired {{ color: #e53935; font-weight: 600; font-size: 1.1rem; }}
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="badge">wavi</div>
-    <h1>Escaneá el QR en WhatsApp</h1>
-    <p class="sub">WhatsApp → <strong>Dispositivos vinculados</strong> → Vincular dispositivo</p>
+    <div class="logo">wavi</div>
+    <h1>Escaneá el código QR</h1>
+    <p class="sub">
+      Abrí WhatsApp en tu teléfono<br>
+      <strong>Dispositivos vinculados → Vincular dispositivo</strong>
+    </p>
     <img class="qr" src="data:image/png;base64,{qr_b64}" alt="WhatsApp QR">
-    <p id="status">Este QR expira en <b id="sec">20</b>s</p>
+    <p id="status">Este QR expira en <b id="sec">60</b> segundos</p>
   </div>
   <script>
-    var sec = 20, el = document.getElementById('sec'), st = document.getElementById('status');
+    var sec = 60, el = document.getElementById('sec'), st = document.getElementById('status');
     var t = setInterval(function() {{
       sec--;
       if (sec <= 0) {{
         clearInterval(t);
         st.className = 'expired';
-        st.textContent = 'QR expirado. Actualizando...';
-      }} else {{ el.textContent = sec; }}
+        st.textContent = 'QR expirado. Ejecutá wavi connect de nuevo.';
+        setTimeout(function() {{ window.close(); }}, 1500);
+      }} else {{
+        el.textContent = sec;
+      }}
     }}, 1000);
   </script>
 </body>
@@ -398,19 +401,23 @@ def _write_expired_html(path: Path) -> None:
     path.write_text(html, encoding="utf-8")
 
 
-async def _qr_to_html_loop(
-    profile: Path,
-    open_browser: bool,
-    load_timeout_s: int = 60,
-) -> str:
+_QR_HTML_PATH = (Path(__file__).parent.parent / "data" / "qr.html").resolve()
+
+_QR_SEL  = "[data-testid='qrcode'], div[data-ref]"
+_AUTH_SEL = "[data-testid='chat-list'], #side, input[role='textbox']"
+_DATA_REF_JS = (
+    "() => { const el = document.querySelector('div[data-ref]'); "
+    "return el ? el.getAttribute('data-ref') : null; }"
+)
+
+
+async def _capture_qr(profile: Path, load_timeout_s: int = 60) -> str | None:
     """
-    Connects to the running headless Chrome (WA Web at QR screen),
-    captures the QR as a local HTML file, optionally opens it in the browser.
-    Polls until the user authenticates or the QR expires (data-ref changes).
-    Returns 'authenticated', 'expired', or 'timeout'.
+    Connect to headless Chrome, wait for WA Web QR, screenshot it, write HTML.
+    Returns the initial data-ref string (used by _poll_qr_auth to detect expiry),
+    or None on failure.  Disconnects Playwright but leaves Chrome running.
     """
     import base64
-    import tempfile
     from playwright.async_api import async_playwright
 
     port = _session_port(profile)
@@ -422,34 +429,31 @@ async def _qr_to_html_loop(
         ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-        QR_SEL = "[data-testid='qrcode']"
-        AUTH_SEL = "[data-testid='chat-list'], #side, input[role='textbox']"
-        _DATA_REF_JS = (
-            "() => { const el = document.querySelector('div[data-ref]'); "
-            "return el ? el.getAttribute('data-ref') : null; }"
-        )
-
-        html_path = Path(tempfile.gettempdir()) / "wavi_qr.html"
-
+        click.echo(f"Esperando QR en WA Web (URL: {page.url!r})...")
         try:
             await page.wait_for_selector(
-                f"{AUTH_SEL}, {QR_SEL}", timeout=load_timeout_s * 1000
+                f"{_AUTH_SEL}, {_QR_SEL}", timeout=load_timeout_s * 1000
             )
         except Exception:
+            click.echo(f"Timeout esperando QR/auth en {page.url!r}", err=True)
             await browser.close()
             await pw.stop()
-            return "timeout"
+            return None
 
-        if await page.query_selector(AUTH_SEL):
+        if await page.query_selector(_AUTH_SEL):
             await browser.close()
             await pw.stop()
-            return "authenticated"
+            return "ALREADY_AUTHENTICATED"
 
-        qr_el = await page.query_selector(QR_SEL)
+        qr_el = (
+            await page.query_selector("[data-testid='qrcode']")
+            or await page.query_selector("div[data-ref]")
+        )
         if not qr_el:
+            click.echo("QR no encontrado para screenshot.", err=True)
             await browser.close()
             await pw.stop()
-            return "timeout"
+            return None
 
         initial_ref = await page.evaluate(_DATA_REF_JS)
         if not initial_ref:
@@ -458,24 +462,61 @@ async def _qr_to_html_loop(
 
         qr_bytes = await qr_el.screenshot()
         qr_b64 = base64.b64encode(qr_bytes).decode()
-        _write_qr_html(html_path, qr_b64)
-        click.echo(f"QR → {html_path}")
-        if open_browser:
-            subprocess.run(["open", f"file://{html_path}"])
+        _QR_HTML_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _write_qr_html(_QR_HTML_PATH, qr_b64)
+
+        await browser.close()
+        await pw.stop()
+        return initial_ref or ""
+
+    except Exception as e:
+        click.echo(f"Error capturando QR: {e}", err=True)
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+        return None
+
+
+async def _poll_qr_auth(profile: Path, initial_ref: str) -> str:
+    """
+    Reconnect to headless Chrome and poll every 2s until auth or QR expiry.
+    Returns 'authenticated', 'expired', or 'timeout'.
+    """
+    from playwright.async_api import async_playwright
+
+    port = _session_port(profile)
+    pw = await async_playwright().start()
+    try:
+        browser = await pw.chromium.connect_over_cdp(
+            f"http://localhost:{port}", timeout=10_000
+        )
+        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+
+        # Fallback timer when data-ref is unavailable (WA didn't expose it)
+        qr_deadline = time.time() + 65  # ~60s WA QR lifetime + margin
 
         while True:
             await asyncio.sleep(2)
 
-            if await page.query_selector(AUTH_SEL):
-                _write_connected_html(html_path)
+            if await page.query_selector(_AUTH_SEL):
+                _write_connected_html(_QR_HTML_PATH)
                 click.echo("Autenticado correctamente.")
                 await browser.close()
                 await pw.stop()
                 return "authenticated"
 
-            curr_ref = await page.evaluate(_DATA_REF_JS)
-            if curr_ref != initial_ref:
-                _write_expired_html(html_path)
+            curr_ref = (await page.evaluate(_DATA_REF_JS)) or ""
+            # Detect expiry via data-ref change (when available) or timer fallback
+            if initial_ref and curr_ref and curr_ref != initial_ref:
+                _write_expired_html(_QR_HTML_PATH)
+                click.echo("QR expirado — ejecutá 'wavi connect' de nuevo para un QR fresco.")
+                await browser.close()
+                await pw.stop()
+                return "expired"
+            if not initial_ref and time.time() > qr_deadline:
+                _write_expired_html(_QR_HTML_PATH)
                 click.echo("QR expirado — ejecutá 'wavi connect' de nuevo para un QR fresco.")
                 await browser.close()
                 await pw.stop()
@@ -522,9 +563,9 @@ def connect(session: str, open_browser: bool, force_new: bool):
         sys.exit(1)
 
     if force_new:
-        profile = DEFAULT_SESSIONS_DIR / f"_new_{int(time.time())}"
+        profile = DEFAULT_SESSIONS_DIR / f"_tmp_{int(time.time())}"
         profile.mkdir(parents=True, exist_ok=True)
-        click.echo(f"Perfil temporal → {profile}")
+        click.echo(f"Perfil temporal (se renombrará al número detectado) → {profile}")
     else:
         profile = _profile(session)
         profile.mkdir(parents=True, exist_ok=True)
@@ -572,7 +613,20 @@ def connect(session: str, open_browser: bool, force_new: bool):
         click.echo(f"Sesión no encontrada (estado={status}) — QR requerido.")
     click.echo("Capturando QR en modo headless...")
 
-    auth_result = asyncio.run(_qr_to_html_loop(profile, open_browser))
+    initial_ref = asyncio.run(_capture_qr(profile))
+    if initial_ref is None:
+        _terminate_proc(headless_proc)
+        sys.exit(1)
+
+    click.echo(f"QR → {_QR_HTML_PATH}")
+    if open_browser:
+        subprocess.run(["open", "-n", f"file://{_QR_HTML_PATH}"])
+
+    if initial_ref == "ALREADY_AUTHENTICATED":
+        auth_result = "authenticated"
+    else:
+        auth_result = asyncio.run(_poll_qr_auth(profile, initial_ref))
+
     if auth_result != "authenticated":
         _terminate_proc(headless_proc)
         sys.exit(1)
@@ -632,11 +686,15 @@ def connect(session: str, open_browser: bool, force_new: bool):
             pass
 
     asyncio.run(_flush_and_read_phone())
+    if detected_phone:
+        click.echo(f"Teléfono detectado: {detected_phone}")
+    else:
+        click.echo("No se pudo detectar el número de teléfono.", err=True)
     _terminate_proc(headless_proc)
     (profile / "SingletonLock").unlink(missing_ok=True)
     time.sleep(1)
 
-    # Rename session folder to phone number (or replace stale one with --new)
+    # Rename session folder to phone number
     if detected_phone and detected_phone != (profile.name if force_new else session):
         phone_profile = DEFAULT_SESSIONS_DIR / detected_phone
         if not phone_profile.exists():
@@ -647,14 +705,14 @@ def connect(session: str, open_browser: bool, force_new: bool):
             shutil.rmtree(phone_profile, ignore_errors=True)
             profile.rename(phone_profile)
             profile = phone_profile
-            click.echo(f"Sesión '{detected_phone}' actualizada.")
+            click.echo(f"Sesión '{detected_phone}' actualizada con nueva autenticación.")
         else:
             click.echo(f"Sesión '{detected_phone}' ya existe.")
-        _set_default_alias(detected_phone)
-        click.echo(f"'default' ahora apunta a '{detected_phone}'")
+        if not force_new:
+            _set_default_alias(detected_phone)
+            click.echo(f"'default' ahora apunta a '{detected_phone}'")
     elif not detected_phone and force_new:
         click.echo(f"No se detectó el número. Sesión guardada como '{profile.name}'.")
-        _set_default_alias(profile.name)
     elif session == "default" and not detected_phone:
         pass  # keep as-is, alias not updated
     else:
@@ -767,7 +825,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
     from wavi.runner import run_enhanced
     from datetime import date as _Date
 
-    assets_dir = Path(assets) if assets else Path("output") / contact.lower().replace(" ", "_")
+    assets_dir = Path(assets) if assets else Path("output") / session / contact.lower().replace(" ", "_")
 
     from_date_obj: _Date | None = None
     if from_date:
@@ -966,5 +1024,43 @@ def boarding(open_browser: bool):
     if open_browser:
         import subprocess
         subprocess.run(["open", f"file://{html_path}"])
+
+
+# ── list-contacts ────────────────────────────────────────────────────────────
+
+@main.command("list-contacts")
+@click.argument("session", default="default")
+@click.option("--json-out", is_flag=True, help="Output results as JSON.")
+@click.option("--headless/--no-headless", default=True, show_default=True,
+              help="Run Chrome headless (default) or visible.")
+@click.option("--assets", "assets_dir", default="output/contacts",
+              show_default=True,
+              help="Directory to save contacts_list.json + screenshot.png (overwritten each run).")
+def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str):
+    """List all contacts available in the 'New chat' panel."""
+    import json as _json
+    from wavi.runner import WARunner
+
+    profile_dir = _profile(session)
+    runner = WARunner(profile_dir, headless=headless)
+    result = asyncio.run(runner.list_contacts(assets_dir=assets_dir))
+
+    contacts = result.get("contacts", [])
+    shot = result.get("screenshot")
+    adir = result.get("assets_dir")
+
+    if json_out:
+        click.echo(_json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        click.echo(f"Found {len(contacts)} contacts:")
+        for c in contacts:
+            line = c["name"]
+            if c.get("subtitle"):
+                line += f"  ({c['subtitle']})"
+            click.echo(f"  {line}")
+        if adir:
+            click.echo(f"\nOutput: {adir}/")
+            if shot:
+                click.echo(f"  screenshot.png  ← browser viewport at {shot}")
 
 

@@ -484,6 +484,81 @@ class TestBubbleKeyWithDomId:
         assert key[0] != "dom"
 
 
+# ── list_contacts ────────────────────────────────────────────────────────────
+
+class TestListContacts:
+    """Tests for list_contacts() orchestration method."""
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_returns_contacts(self):
+        """list_contacts() with no assets_dir returns contacts, screenshot=None."""
+        runner = _runner()
+        runner.session.connect = AsyncMock(return_value="restored")
+        runner.session.navigate_to_new_chat = AsyncMock()
+        runner.session.extract_contacts = AsyncMock(return_value=[
+            {"name": "Alice", "subtitle": "Online"},
+            {"name": "Bob", "subtitle": "Last seen 2 hours ago"},
+        ])
+        runner.session.close_new_chat = AsyncMock()
+        runner.session.close = AsyncMock()
+
+        result = await runner.list_contacts()
+
+        assert result["screenshot"] is None
+        assert result["assets_dir"] is None
+        assert len(result["contacts"]) == 2
+        assert result["contacts"][0]["name"] == "Alice"
+        assert result["contacts"][1]["name"] == "Bob"
+        runner.session.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_with_assets_dir(self, tmp_path):
+        """list_contacts() saves screenshot.png + contacts_list.json to assets_dir."""
+        runner = _runner()
+        runner.session.connect = AsyncMock(return_value="restored")
+        runner.session.navigate_to_new_chat = AsyncMock()
+        runner.session.extract_contacts = AsyncMock(return_value=[
+            {"name": "Alice", "subtitle": ""},
+        ])
+        runner.session.screenshot_to_file = AsyncMock()
+        runner.session.close_new_chat = AsyncMock()
+        runner.session.close = AsyncMock()
+
+        result = await runner.list_contacts(assets_dir=str(tmp_path))
+
+        runner.session.screenshot_to_file.assert_called_once()
+        assert result["screenshot"] is not None
+        assert result["assets_dir"] is not None
+        assert (tmp_path / "contacts_list.json").exists()
+        assert len(result["contacts"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_closes_on_error(self):
+        """list_contacts() calls session.close() even if extract_contacts fails."""
+        runner = _runner()
+        runner.session.connect = AsyncMock(return_value="restored")
+        runner.session.navigate_to_new_chat = AsyncMock()
+        runner.session.extract_contacts = AsyncMock(side_effect=Exception("DOM changed"))
+        runner.session.close_new_chat = AsyncMock()
+        runner.session.close = AsyncMock()
+
+        with pytest.raises(Exception, match="DOM changed"):
+            await runner.list_contacts()
+
+        runner.session.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_list_contacts_raises_if_not_authenticated(self):
+        """list_contacts() raises RuntimeError when session is not authenticated."""
+        for status in ("qr_needed", "timeout"):
+            runner = _runner()
+            runner.session.connect = AsyncMock(return_value=status)
+            runner.session.close = AsyncMock()
+
+            with pytest.raises(RuntimeError, match="not authenticated"):
+                await runner.list_contacts()
+
+
 # ── _download_audio_for_bubbles ───────────────────────────────────────────────
 
 class TestDownloadAudioForBubbles:

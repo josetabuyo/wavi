@@ -248,6 +248,51 @@ _CLICK_SEND_BTN_JS = """
 }
 """
 
+_OPEN_NEW_CHAT_JS = """
+() => {
+    const icon = document.querySelector('span[data-icon="new-chat-outline"]') ||
+                 document.querySelector('span[data-icon="new-chat-alt"]');
+    if (!icon) return false;
+    const btn = icon.closest('button');
+    if (!btn) return false;
+    btn.click();
+    return true;
+}
+"""
+
+_EXTRACT_CONTACTS_JS = """
+() => {
+    const items = document.querySelectorAll('[role="listitem"]');
+    const contacts = [];
+    items.forEach(item => {
+        const btn = item.querySelector('[role="button"]');
+        if (!btn) return;
+        const gridcell = item.querySelector('[role="gridcell"]');
+        if (!gridcell) return;
+        const name = gridcell.textContent.trim();
+        if (!name) return;
+        const contentDiv = gridcell.parentElement;
+        const subtitleEl = contentDiv
+            ? [...contentDiv.children].find(c => c !== gridcell)
+            : null;
+        const subtitle = subtitleEl ? subtitleEl.textContent.trim() : '';
+        contacts.push({ name, subtitle });
+    });
+    return contacts;
+}
+"""
+
+_CLOSE_NEW_CHAT_JS = """
+() => {
+    const icon = document.querySelector('span[data-icon="back-refreshed"]');
+    if (!icon) return false;
+    const btn = icon.closest('button');
+    if (!btn) return false;
+    btn.click();
+    return true;
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -656,6 +701,30 @@ class WASession:
                 raise RuntimeError("Mensaje sigue en el compose box después de intentar Send — no fue enviado")
 
         return {"selector": info.get("selector"), "x": info["x"], "y": info["y"]}
+
+    async def navigate_to_new_chat(self) -> None:
+        """Open the WhatsApp 'New chat' panel and wait for the contact list to appear."""
+        clicked = await self._page.evaluate(_OPEN_NEW_CHAT_JS)
+        if not clicked:
+            raise RuntimeError("Could not find 'new-chat-outline' button in WA Web")
+        # Wait for the contact list items to render
+        await self._page.wait_for_selector('[role="listitem"]', timeout=8_000)
+        await self._page.wait_for_timeout(500)
+
+    async def extract_contacts(self) -> list[dict]:
+        """Extract all visible contacts from the new-chat panel.
+
+        Returns a list of dicts with keys 'name' (str) and 'subtitle' (str).
+        Must be called after navigate_to_new_chat().
+        """
+        return await self._page.evaluate(_EXTRACT_CONTACTS_JS)
+
+    async def close_new_chat(self) -> None:
+        """Close the new-chat panel by clicking the back button (or pressing Escape)."""
+        closed = await self._page.evaluate(_CLOSE_NEW_CHAT_JS)
+        if not closed:
+            await self._page.keyboard.press("Escape")
+        await self._page.wait_for_timeout(400)
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
