@@ -20,6 +20,7 @@ headless.  All subsequent commands connect to the headless daemon via CDP.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import shutil
 import socket
@@ -263,6 +264,48 @@ async def _check_session_status(profile: Path) -> str:
         return status
     except Exception:
         return "error"
+
+
+async def _stop_daemon_for_profile(profile: Path) -> None:
+    """Stop the Chrome daemon for a profile without printing messages."""
+    from wavi.session import WASession
+    s = WASession(profile)
+    port = s._load_port()
+    try:
+        await s.connect()
+    except Exception:
+        pass
+    await s.stop_daemon()
+    _release_port(port)
+
+
+@contextlib.contextmanager
+def _lazy_session(profile: Path):
+    """Auto-stop Chrome after a command if it wasn't running beforehand.
+
+    The commands' internal WASession.connect() already handles auto-start via
+    its fallback Chrome path.  This context manager's only job is to track
+    whether a daemon was alive *before* the command ran, and if not, stop
+    whatever daemon the command may have started on exit.
+
+    Contextualized invocation (daemon was already running): no-op on both
+    enter and exit — the daemon outlives the command.
+
+    Lazy invocation (no daemon before): command starts its own Chrome via the
+    fallback path, runs, and on exit this manager stops it cleanly.
+    """
+    from wavi.session import WASession
+    was_running = WASession(profile).daemon_alive()
+    try:
+        yield
+    finally:
+        if not was_running:
+            try:
+                if (profile / PID_FILE).exists():
+                    asyncio.run(_stop_daemon_for_profile(profile))
+            except Exception as e:
+                import sys as _sys
+                print(f"⚠️  Auto-stop failed: {e}", file=_sys.stderr)
 
 
 # ── QR HTML helpers ───────────────────────────────────────────────────────────
@@ -746,26 +789,14 @@ def stop(session: str):
     Navigates to about:blank first so WhatsApp can flush its state,
     then sends SIGTERM.  Never use kill -9 on a WA session directly.
     """
-    from wavi.session import WASession
-
     profile = _profile(session)
     pid_file = profile / PID_FILE
     if not pid_file.exists():
         click.echo(f"No daemon PID file found for session '{session}'.", err=True)
         sys.exit(1)
 
-    async def _run():
-        s = WASession(profile)
-        port = s._load_port()
-        try:
-            await s.connect()
-        except Exception as e:
-            click.echo(f"Could not connect to daemon: {e}", err=True)
-        await s.stop_daemon()
-        _release_port(port)
-        click.echo("Daemon stopped cleanly.")
-
-    asyncio.run(_run())
+    asyncio.run(_stop_daemon_for_profile(profile))
+    click.echo("Daemon stopped cleanly.")
 
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -856,11 +887,12 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
         click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
 
     with session_lock(prof, "get", contact=contact):
-        try:
-            result = asyncio.run(_go())
-        except RuntimeError as e:
-            click.echo(str(e), err=True)
-            sys.exit(1)
+        with _lazy_session(prof):
+            try:
+                result = asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
 
     bubbles = result["bubbles"]
 
@@ -924,11 +956,12 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None):
         click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
 
     with session_lock(profile, "send", contact=contact):
-        try:
-            asyncio.run(_go())
-        except RuntimeError as e:
-            click.echo(str(e), err=True)
-            sys.exit(1)
+        with _lazy_session(profile):
+            try:
+                asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
 
 
 # ── queue ─────────────────────────────────────────────────────────────────────
@@ -1060,7 +1093,8 @@ def check_updates(session: str, assets_dir: str | None, reset: bool):
         else Path("output") / profile_dir.name / "last-updates"
     )
     runner = WARunner(profile_dir)
-    result = asyncio.run(runner.check_updates(assets_dir=assets_path, reset=reset))
+    with _lazy_session(profile_dir):
+        result = asyncio.run(runner.check_updates(assets_dir=assets_path, reset=reset))
 
     status = result["status"]
     new_inbound = result.get("new_inbound", [])
@@ -1101,7 +1135,8 @@ def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str)
     profile_dir = _profile(session)
     assets_path = Path(assets_dir) if assets_dir else Path("output") / profile_dir.name / "contacts"
     runner = WARunner(profile_dir, headless=headless)
-    result = asyncio.run(runner.list_contacts(assets_dir=assets_path))
+    with _lazy_session(profile_dir):
+        result = asyncio.run(runner.list_contacts(assets_dir=assets_path))
 
     contacts = result.get("contacts", [])
     shot = result.get("screenshot")
