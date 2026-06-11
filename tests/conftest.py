@@ -50,6 +50,12 @@ def pytest_runtest_logreport(report):
 
 
 def pytest_sessionfinish(session, exitstatus):
+    # Git hooks (pre-push) run the suite with WAVI_NO_REPORT=1 so the report
+    # files don't dirty the working tree on every push.
+    import os
+    if os.environ.get("WAVI_NO_REPORT"):
+        return
+
     tests = list(_results.values())
     data = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

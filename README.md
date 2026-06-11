@@ -75,6 +75,7 @@ Direction is inferred from tick icons (`msg-check`, `msg-dbl-check`, etc.) — p
 
 ```bash
 make ocr                  # compile the OCR helper to bin/ocr_vision (arm64, ~4x faster pipeline)
+make hooks                # git hooks: ruff on commit, ruff+pytest on push (bypass: --no-verify)
 uv run pytest tests/ -v   # unit tests (offline, mocked browser)
 make corpus               # vision eval on golden screenshots (real OCR, see tests/corpus/README.md)
 ```

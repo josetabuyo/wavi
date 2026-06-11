@@ -1,4 +1,11 @@
-.PHONY: install install-dev uninstall test report boarding lint ocr corpus-baseline
+.PHONY: install install-dev uninstall test report boarding lint ocr corpus-baseline hooks
+
+# Enable versioned git hooks: lint on commit, lint+tests on push.
+# Bypass per-invocation with --no-verify.
+hooks:
+	chmod +x .githooks/pre-commit .githooks/pre-push
+	git config core.hooksPath .githooks
+	@echo "OK → pre-commit (ruff) + pre-push (ruff + pytest)"
 
 # Global install — isolated venv via pipx, wavi available everywhere
 install:

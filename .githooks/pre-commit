@@ -1,0 +1,17 @@
+#!/bin/sh
+# Lint before every commit. Bypass with: git commit --no-verify
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+if [ -x .venv/bin/ruff ]; then
+    RUFF=.venv/bin/ruff
+elif command -v ruff >/dev/null 2>&1; then
+    RUFF=ruff
+else
+    echo "[pre-commit] ruff not found — skipping lint (run: make install-dev)" >&2
+    exit 0
+fi
+
+echo "[pre-commit] ruff check..."
+$RUFF check wavi/ tests/ scripts/
