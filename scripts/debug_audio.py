@@ -14,7 +14,7 @@ CONTACT  = sys.argv[2] if len(sys.argv) > 2 else "Gregorio tabuyo"
 
 
 async def main():
-    from wavi.session import WASession, _BLOB_INIT_SCRIPT
+    from wavi.session import _BLOB_INIT_SCRIPT, WASession
 
     s = WASession(PROFILE)
     status = await s.connect()
@@ -62,7 +62,7 @@ async def main():
     print(f"\nDevice pixel ratio: {dpr}")
 
     # Mostrar qué bubbles coinciden con cada botón
-    from wavi.vision import SIDEBAR_PX, HEADER_PX
+    from wavi.vision import HEADER_PX
     print("\nBotones con coordenadas físicas equivalentes:")
     for b in buttons:
         phys_y = int(b['vy'] * dpr)

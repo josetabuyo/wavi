@@ -3,9 +3,9 @@ Tests de WARunner — lógica de coordinadas y matching de botones de play.
 
 No requiere browser real. Los métodos de session se mockean con AsyncMock.
 """
-import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from wavi.runner import WARunner
 from wavi.vision import Bubble
@@ -96,7 +96,7 @@ class TestMatchBubbleToButton:
 class TestInstallBlobMonitor:
     @pytest.mark.asyncio
     async def test_calls_evaluate_with_init_script(self):
-        from wavi.session import WASession, _BLOB_INIT_SCRIPT
+        from wavi.session import _BLOB_INIT_SCRIPT, WASession
         s = WASession("data/sessions/default")
         s._page = MagicMock()
         s._page.evaluate = AsyncMock(return_value=None)
@@ -838,8 +838,8 @@ class TestCaptureFullHistoryNewest:
         # So result should be: E, D, C (no B)
         texts = [b.text for b in result]
         assert "D" in texts and "C" in texts and "E" in texts, f"Should capture D, C, E, got: {texts}"
-        assert "B" not in texts, f"B is the duplicate anchor in iter_1, should not appear in new result"
-        assert "A" not in texts, f"A is from existing, should not appear in new result"
+        assert "B" not in texts, "B is the duplicate anchor in iter_1, should not appear in new result"
+        assert "A" not in texts, "A is from existing, should not appear in new result"
 
         # Check merged result in JSON
         json_result = json.loads(json_path.read_text())

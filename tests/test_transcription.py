@@ -4,13 +4,12 @@ Tests for wavi.transcription and Bubble.transcript integration.
 All tests are offline — no real Groq API calls or audio files needed.
 """
 import os
-import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from wavi.transcription import transcribe, _transcribe_local
-from wavi.vision import Bubble
+import pytest
 
+from wavi.transcription import transcribe
+from wavi.vision import Bubble
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -194,6 +193,7 @@ class TestTranscribeHistoryAudios:
     @pytest.mark.asyncio
     async def test_adds_transcript_to_audio_bubbles(self, tmp_path):
         import json
+
         from wavi.runner import transcribe_history_audios
 
         ogg = tmp_path / "audio_1.ogg"
@@ -217,6 +217,7 @@ class TestTranscribeHistoryAudios:
     @pytest.mark.asyncio
     async def test_skips_already_transcribed_bubbles(self, tmp_path):
         import json
+
         from wavi.runner import transcribe_history_audios
 
         data = [{"id": 1, "msg_type": "audio", "transcript": "ya existe"}]
@@ -240,6 +241,7 @@ class TestTranscribeHistoryAudios:
     async def test_skips_bubble_without_audio_path(self, tmp_path):
         """Bubble without audio_path (never downloaded) stays without transcript."""
         import json
+
         from wavi.runner import transcribe_history_audios
 
         data = [{"id": 99, "msg_type": "audio"}]  # no audio_path key
@@ -257,6 +259,7 @@ class TestTranscribeHistoryAudios:
     async def test_ogg_found_via_audio_path(self, tmp_path):
         """audio_path points directly to the file regardless of screen_id vs global_id."""
         import json
+
         from wavi.runner import transcribe_history_audios
 
         iter_dir = tmp_path / "iter_002"

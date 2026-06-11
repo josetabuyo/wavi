@@ -43,5 +43,5 @@ def _transcribe_local(audio_path: str | Path) -> str:
             _local_model = Model("small", n_threads=4)
         segments = _local_model.transcribe(str(audio_path))
         return " ".join(s.text for s in segments)
-    except ImportError:
-        raise RuntimeError("pywhispercpp not installed and GROQ_API_KEY not set")
+    except ImportError as err:
+        raise RuntimeError("pywhispercpp not installed and GROQ_API_KEY not set") from err

@@ -9,7 +9,7 @@ cada ítem referencia la fase del plan donde se ataca.
 - [ ] `HEADER_PX = 60` fijo — detectar borde del header (`vision.py`)
 - [ ] `footer_px = 70` fijo — detectar compose box (`element_detector.py`)
 - [ ] `SEARCH_X=317, SEARCH_Y=80` clic ciego — detectar search box visualmente (Fase 3) (`session.py`)
-- [ ] `FIRST_RESULT_X/Y` — código muerto, eliminar (Fase 1) (`session.py:497`)
+- [x] `FIRST_RESULT_X/Y` — código muerto, eliminado — 2026-06-11
 - [ ] Cruz de play estimada `x+93/x+38, y+h−37` — reemplazar con template matching (Fase 3) (`vision.py`)
 
 ## Colores (Fase 2)
@@ -41,25 +41,25 @@ cada ítem referencia la fase del plan donde se ataca.
 
 ## Estructura (Fase 1)
 
-- [ ] `cli.py` 1159 líneas → extraer `society.py`, `chrome.py`, `qr_pages.py`
+- [ ] `cli.py` (~1170 líneas) → extraer `society.py`, `chrome.py`, `qr_pages.py`
 - [ ] `capture_full_history` 330 líneas → extraer lógica pura a `history.py`
-- [ ] Código muerto: `_classify_x` productivo, `detect_day_pills` visual, `FIRST_RESULT_*`
+- [x] Código muerto: `_classify_x`, `detect_day_pills` visual, `FIRST_RESULT_*` eliminados — 2026-06-11
 - [ ] Duplicación: `_kill_port` × 2; redraw de debug × 2
-- [ ] `session_lock` faltante en check-updates y list-contacts (carrera posible)
+- [x] `session_lock` agregado en check-updates y list-contacts — 2026-06-11
 - [ ] Ciclo de vida connect/close inconsistente entre comandos del runner
 - [ ] Constantes dispersas → `config.py`
-- [ ] pyproject: dev-deps duplicadas; falta config ruff; falta CI
-- [ ] `debug_audio.py` en raíz → `scripts/` o borrar
+- [x] pyproject: dev-deps unificadas; ruff configurado y limpio (E/F/W/I/B/UP); CI en `.github/workflows/test.yml` — 2026-06-11
+- [x] `debug_audio.py` movido a `scripts/` — 2026-06-11
 
 ## Documentación (Fase 1)
 
-- [ ] boarding.html: check-updates describe pixel-diff + `snapshot_prev.png` inexistentes
-- [ ] boarding.html: list-contacts dice "scroll not yet implemented" (ya implementado, ×2 lugares)
-- [ ] boarding.html: QR dice `/tmp/wavi_qr.html`, real es `data/qr.html`
-- [ ] docstring `cli.py check_updates` promete `snapshot_prev.png` que no se escribe
-- [ ] docstring `extract_sidebar_updates` describe retorno viejo `{name, unread_count}`
-- [ ] Extraer ADR-001…008 de boarding a `docs/adr/`
-- [ ] Crear `docs/capability-matrix.md` (rol de RTM)
+- [x] boarding.html: check-updates reescrito (algoritmo DOM, 2 archivos de salida, diagrama nuevo) — 2026-06-11
+- [x] boarding.html: list-contacts actualizado a scroll completo (×3 lugares) — 2026-06-11
+- [x] boarding.html: QR corregido a `data/qr.html` — 2026-06-11
+- [x] docstring `cli.py check_updates` corregido — 2026-06-11
+- [x] docstring `extract_sidebar_updates` corregido — 2026-06-11
+- [x] ADR-001…008 extraídos a `docs/adr/` — 2026-06-11
+- [x] `docs/capability-matrix.md` creado (rol de RTM) — 2026-06-11
 
 ## Fase 0 — estado
 

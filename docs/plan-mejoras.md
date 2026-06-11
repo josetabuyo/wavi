@@ -261,16 +261,18 @@ elimina otra dependencia del DOM y es indistinguible de un usuario real.
    `docs/audit-checklist.md`.
 4. ~~Checklist de auditoría~~ → `docs/audit-checklist.md`.
 
-### Fase 1 — Higiene y estructura (riesgo bajo, todo verde siempre)
-1. Borrar código muerto (`FIRST_RESULT_*`, `detect_day_pills` visual, `_classify_x`
-   o dejarlo conectado como voto secundario), mover `debug_audio.py` a `scripts/`.
-2. Dividir `cli.py` → `society.py`, `chrome.py`, `qr_pages.py`; unificar `_kill_port`.
-3. Extraer lógica pura de `capture_full_history` → `history.py` + tests directos.
-4. `session_lock` en check-updates y list-contacts; unificar ciclo de vida connect/close.
-5. `config.py` con todas las constantes de geometría/umbral (preparado para Fase 2).
-6. pyproject: unificar dev-deps; config ruff; CI (GitHub Actions: tests sintéticos en
-   ubuntu, corpus+OCR en macos-runner).
-7. Documentación: corregir drift de boarding (§5.1), extraer ADRs, capability matrix.
+### Fase 1 — Higiene y estructura (riesgo bajo, todo verde siempre) — parcial 2026-06-11
+1. ~~Borrar código muerto~~ ✅ (`FIRST_RESULT_*`, `detect_day_pills` visual,
+   `_classify_x` + sus tests; `debug_audio.py` → `scripts/`).
+2. Dividir `cli.py` → `society.py`, `chrome.py`, `qr_pages.py`; unificar `_kill_port`. ⏳
+3. Extraer lógica pura de `capture_full_history` → `history.py` + tests directos. ⏳
+4. ~~`session_lock` en check-updates y list-contacts~~ ✅; unificar ciclo de vida
+   connect/close. ⏳
+5. `config.py` con todas las constantes de geometría/umbral (preparado para Fase 2). ⏳
+6. ~~pyproject + ruff + CI~~ ✅ (dev-deps unificadas, ruff E/F/W/I/B/UP limpio,
+   `.github/workflows/test.yml` con lint+test en ubuntu).
+7. ~~Documentación~~ ✅ (drift de boarding corregido, ADR-001…008 en `docs/adr/`,
+   `docs/capability-matrix.md` creado).
 
 ### Fase 2 — Calibración sobre constantes (núcleo de robustez)
 1. `wavi calibrate` + `calibration.json` por sesión (§4.5).

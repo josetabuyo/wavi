@@ -37,3 +37,6 @@ bin/
 # Vision eval corpus — real WA screenshots, never commit (privacy).
 # The harness (tests/test_corpus.py) and docs stay tracked.
 tests/corpus/cases/
+
+# Claude Code local config + worktrees
+.claude/

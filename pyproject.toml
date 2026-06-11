@@ -20,8 +20,14 @@ dependencies = [
 [project.scripts]
 wavi = "wavi.cli:main"
 
+# Keep in sync with [dependency-groups].dev — pip uses this extra
+# (make install-dev), uv sync uses the dependency group.
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.8",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["wavi"]
@@ -34,5 +40,18 @@ markers = [
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, B bugbear, UP pyupgrade
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length — long JS constants and comments are fine
 ]

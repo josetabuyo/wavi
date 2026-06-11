@@ -7,21 +7,18 @@ Correr:
     source .venv/bin/activate
     pytest tests/ -v
 """
-import pytest
 import numpy as np
-from pathlib import Path
 from PIL import Image
 
-from wavi.vision import (
-    classify_msg_type,
-    _is_waveform_garbage,
-    _extract_timestamp,
-    _classify_x,
-    _is_noise,
-    _save_debug_image,
-    Bubble,
-)
 from wavi.element_detector import detect_bubbles
+from wavi.vision import (
+    Bubble,
+    _extract_timestamp,
+    _is_noise,
+    _is_waveform_garbage,
+    _save_debug_image,
+    classify_msg_type,
+)
 
 
 def _blocks(*texts):
@@ -150,22 +147,6 @@ class TestExtractTimestamp:
         # Comportamiento documentado: ambiguo, acepta '1:30' como resultado
         result = _extract_timestamp(blocks)
         assert result == "1:30"
-
-
-# ── _classify_x ───────────────────────────────────────────────────────────────
-
-class TestClassifyX:
-    def test_right_edge_is_me(self):
-        assert _classify_x(0.6, 0.3) == "me"   # right_edge=0.9 > 0.75
-
-    def test_left_edge_is_other(self):
-        assert _classify_x(0.05, 0.3) == "other"  # x=0.05 < 0.15
-
-    def test_center_right_is_me(self):
-        assert _classify_x(0.4, 0.3) == "me"   # center=0.55 > 0.50
-
-    def test_center_left_is_other(self):
-        assert _classify_x(0.2, 0.3) == "other"  # center=0.35 < 0.50
 
 
 # ── _is_noise ─────────────────────────────────────────────────────────────────

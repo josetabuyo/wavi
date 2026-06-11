@@ -7,11 +7,9 @@ Behavior:
   fallback; _lazy_session stops it afterward.
 - If the command fails or Chrome was never started, cleanup is silent.
 """
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+from unittest.mock import patch
 
-from wavi.cli import _lazy_session, _stop_daemon_for_profile
+from wavi.cli import _lazy_session
 from wavi.session import PID_FILE
 
 
@@ -63,7 +61,7 @@ class TestLazyInvocationStopsDaemon:
             MockSession.return_value.daemon_alive.return_value = False
 
             with patch("wavi.cli._stop_daemon_for_profile") as mock_stop:
-                with patch("wavi.cli.asyncio.run") as mock_run:
+                with patch("wavi.cli.asyncio.run"):
                     with _lazy_session(profile):
                         pass  # No PID file created
 

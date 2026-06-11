@@ -21,7 +21,6 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
-
 # ─── Umbrales de color ───────────────────────────────────────────────────────
 
 MIN_BUBBLE_HEIGHT = 12  # Piso mínimo: evita detectar artefactos, timestamps, emojis sueltos
@@ -58,7 +57,6 @@ def _close_mask(mask: np.ndarray, gap_px: int = 7) -> np.ndarray:
     gap_px controla cuántos pixels de gap se cierran verticalmente.
     Reducido a 7 para evitar puentear gaps inter-mensaje (~8-12px) que fusionan bubbles distintos.
     """
-    struct_v = ndimage.generate_binary_structure(2, 1)
     # Kernel vertical para cerrar gaps entre líneas de texto dentro del bubble (no inter-mensaje)
     kernel = np.ones((gap_px, 1), dtype=np.uint8)
     closed = ndimage.binary_closing(mask, structure=kernel).astype(np.uint8)
@@ -166,52 +164,6 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
     results = _merge_overlapping(results)
 
     return results
-
-
-def detect_day_pills(img: Image.Image, footer_px: int = 70) -> list[dict]:
-    """
-    Detect WA date-separator pills ('Hoy', 'Ayer', 'Lunes', etc.) visually.
-
-    Same near-white mask as 'other' bubbles, but we KEEP the short + centered
-    elements that detect_bubbles() explicitly discards.
-
-    Returns [{"x", "y", "w", "h"}] sorted by y (crop-panel pixels).
-    """
-    img_rgb = img.convert("RGB")
-    arr = np.array(img_rgb)
-    img_h, img_w = arr.shape[:2]
-    work_arr = arr[: img_h - footer_px, :]
-
-    _, mask_raw = _build_masks(work_arr)
-    mask_closed = _close_mask(mask_raw, gap_px=5)
-
-    labeled, n_labels = ndimage.label(mask_closed)
-    if n_labels == 0:
-        return []
-
-    pills = []
-    for sl in ndimage.find_objects(labeled):
-        if sl is None:
-            continue
-        y0, y1 = sl[0].start, sl[0].stop
-        x0, x1 = sl[1].start, sl[1].stop
-        bh, bw = y1 - y0, x1 - x0
-
-        if bh < MIN_BUBBLE_HEIGHT or bh > 45:
-            continue
-        if bw < 30 or bw > 0.80 * img_w:
-            continue
-        center_frac = (x0 + bw / 2) / img_w
-        if not (0.25 < center_frac < 0.75):
-            continue
-        region = mask_raw[y0:y1, x0:x1]
-        if region.sum() / (bh * bw) < 0.15:
-            continue
-
-        pills.append({"x": int(x0), "y": int(y0), "w": int(bw), "h": int(bh)})
-
-    pills.sort(key=lambda d: d["y"])
-    return pills
 
 
 def _merge_overlapping(bubbles: list[dict]) -> list[dict]:

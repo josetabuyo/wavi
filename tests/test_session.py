@@ -14,11 +14,11 @@ TestViewportRegression (ADR-002): garantiza que el viewport 1280×1920 nunca reg
 a "imagen enana". Si alguno de estos tests falla, los screenshots tendrán menos
 mensajes de lo esperado y full-sync-enhanced necesitará más iteraciones.
 """
-import pytest
-from unittest.mock import AsyncMock, MagicMock, call, patch
-from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
-from wavi.session import WASession, WA_URL, WINDOW_W, WINDOW_H
+import pytest
+
+from wavi.session import WA_URL, WINDOW_H, WINDOW_W, WASession
 
 
 def _make_session() -> WASession:
@@ -296,8 +296,7 @@ class TestViewportRegression:
 
     def test_cli_headless_args_include_window_size(self):
         """--window-size=1280,1920 debe estar en los args de wavi connect."""
-        from wavi.cli import _HEADLESS_CHROME_ARGS, WINDOW_W, WINDOW_H
-        window_size_arg = f"--window-size={WINDOW_W},{WINDOW_H}"
+        from wavi.cli import WINDOW_H, WINDOW_W
         # _HEADLESS_CHROME_ARGS doesn't include window-size directly (it's added
         # in _launch_headless_daemon), but we verify the constants are correct.
         assert WINDOW_W == 1280
@@ -308,6 +307,7 @@ class TestViewportRegression:
         Este fallback se usa cuando 'wavi status' inicia Chrome sin un daemon previo.
         Si falta aquí, el daemon iniciado por 'wavi status' produce imágenes enanas."""
         import inspect
+
         from wavi.session import WASession
         source = inspect.getsource(WASession.connect)
         assert "--force-device-scale-factor=1" in source, (
@@ -320,6 +320,7 @@ class TestViewportRegression:
         """El fallback de WASession.connect() debe lanzar Chrome con --window-size usando
         las constantes WINDOW_W y WINDOW_H (verificado por su presencia en el source)."""
         import inspect
+
         from wavi.session import WASession
         source = inspect.getsource(WASession.connect)
         # The source uses an f-string: f"--window-size={WINDOW_W},{WINDOW_H}"

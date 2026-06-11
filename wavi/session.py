@@ -490,12 +490,11 @@ class WASession:
         await session.close()             # disconnects — Chrome stays alive
     """
 
-    from wavi.vision import SIDEBAR_PX as SIDEBAR_X, HEADER_PX as HEADER_Y
+    from wavi.vision import HEADER_PX as HEADER_Y
+    from wavi.vision import SIDEBAR_PX as SIDEBAR_X
 
     SEARCH_X       = 317
     SEARCH_Y       = 80
-    FIRST_RESULT_X = 317
-    FIRST_RESULT_Y = 200  # primer resultado en lista de búsqueda (~120px bajo el search box)
 
     _AUTHED_SEL = "[data-testid='chat-list'], #side, input[role='textbox']"
 
@@ -557,7 +556,7 @@ class WASession:
 
         # No daemon: start headless Chrome (status/run without a prior connect)
         import sys
-        print(f"⚠️  No daemon detectado — abriendo Chrome en fallback headless...", file=sys.stderr)
+        print("⚠️  No daemon detectado — abriendo Chrome en fallback headless...", file=sys.stderr)
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         _kill_port(self._port)
@@ -678,7 +677,8 @@ class WASession:
         # Load PID if we didn't start Chrome ourselves
         pid = self._load_pid()
         if pid and _is_process_alive(pid):
-            import os, signal
+            import os
+            import signal
             os.kill(pid, signal.SIGTERM)
             for _ in range(20):  # wait up to 10s for clean exit
                 await asyncio.sleep(0.5)
@@ -738,7 +738,7 @@ class WASession:
             await self._page.evaluate(_SCROLL_DOWN_JS, 999_999)
         await self._page.wait_for_timeout(800)
 
-        for attempt in range(5):
+        for _attempt in range(5):
             state = await self.get_chat_scroll_state()
             if not state:
                 break  # container not found (e.g. test env) — stop retrying
@@ -910,11 +910,11 @@ class WASession:
         return await self._page.evaluate(_EXTRACT_VISIBLE_CONTACTS_JS)
 
     async def extract_sidebar_updates(self) -> list[dict]:
-        """Extract conversations with unread inbound messages from the main sidebar.
+        """Snapshot every visible chat row in the main sidebar via DOM.
 
-        Returns list of {name, unread_count} for each chat that has a visible
-        unread-message badge.  unread_count may be an int or the raw string (e.g.
-        '99+') depending on WA Web's rendering.
+        Returns list of {name, last_message, timestamp, direction} per chat.
+        direction is "outbound" when a delivery-tick icon is present in the
+        preview row, "inbound" otherwise.
         """
         return await self._page.evaluate(_EXTRACT_SIDEBAR_UPDATES_JS)
 

@@ -7,19 +7,16 @@ classification, then uses DOM queries to locate exact play button positions
 """
 from __future__ import annotations
 
-import asyncio
-import re as _re
 import sys
 import tempfile
-from datetime import date as _Date, timedelta as _td
+from datetime import UTC
+from datetime import date as _Date
 from pathlib import Path
-from typing import Optional
 
+from wavi.session import WASession
 from wavi.transcription import transcribe as _transcribe_audio
-from wavi.vision import extract_day_pills as _extract_day_pills, _date_from_pill_text
-
-from wavi.session import WASession, WINDOW_W, WINDOW_H
-from wavi.vision import Bubble, analyze
+from wavi.vision import Bubble, _date_from_pill_text, analyze
+from wavi.vision import extract_day_pills as _extract_day_pills
 
 # ── JS helpers ────────────────────────────────────────────────────────────────
 
@@ -69,7 +66,7 @@ class WARunner:
 
     def __init__(self, profile_dir: str | Path, headless: bool = True):
         self.session = WASession(profile_dir, headless=headless)
-        self._assets_dir: Optional[Path] = None
+        self._assets_dir: Path | None = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -142,11 +139,12 @@ class WARunner:
     async def _redraw_debug_with_dom_positions(
         self,
         bubbles: list,
-        assets_dir: "Path",
+        assets_dir: Path,
     ) -> None:
         """Redraw the debug image for assets_dir with exact DOM play-button positions."""
         try:
             from PIL import Image as PILImage
+
             from wavi.vision import _save_debug_image
             dpr = await self.session.get_dpr()
             play_btns = await self.find_play_buttons()
@@ -173,7 +171,7 @@ class WARunner:
     async def _download_audio_for_bubbles(
         self,
         bubbles: list,
-        assets_dir: "Path | None" = None,
+        assets_dir: Path | None = None,
         wait_ms: int = 3_000,
         blob_timeout_ms: int = 30_000,
         downloaded_ids: set | None = None,
@@ -289,7 +287,7 @@ class WARunner:
         settle_ms: int = 2500,
         backoff_css_px: int = 200,
         max_iterations: int = 300,
-        from_date: "_Date | None" = None,
+        from_date: _Date | None = None,
         newest: bool = False,
     ) -> list[Bubble]:
         """
@@ -352,7 +350,7 @@ class WARunner:
             scroll_css_px = max(300, int(init_state["clientHeight"] * 0.85))
             print(f"[wavi] clientHeight={init_state['clientHeight']} → scroll_step={scroll_css_px}px", file=sys.stderr)
 
-        def _iter_dir(n: int) -> Optional[Path]:
+        def _iter_dir(n: int) -> Path | None:
             return Path(assets_dir) / f"iter_{n:03d}" if assets_dir else None
 
         # Install blob monitor ONCE before starting captures
@@ -373,7 +371,7 @@ class WARunner:
             for b in bubbles:
                 k = bubble_key(b)
                 if k in known_keys:
-                    print(f"[wavi] iter_000: found duplicate (newest mode) — stopping", file=sys.stderr)
+                    print("[wavi] iter_000: found duplicate (newest mode) — stopping", file=sys.stderr)
                     should_stop_newest = True
                     break
                 filtered_bubbles.append(b)
@@ -645,6 +643,7 @@ class WARunner:
         if assets_dir:
             try:
                 from PIL import Image as PILImage
+
                 from wavi.vision import _save_debug_image
                 dpr = await self.session.get_dpr()
                 play_btns = await self.find_play_buttons()
@@ -670,7 +669,7 @@ class WARunner:
 
     async def check_updates(
         self,
-        assets_dir: "Path | str | None" = None,
+        assets_dir: Path | str | None = None,
         reset: bool = False,
     ) -> dict:
         """Check the WA sidebar for new inbound messages.
@@ -707,8 +706,7 @@ class WARunner:
         }
         """
         import json as _json
-        import shutil as _shutil
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         status_result = await self.session.connect()
         if status_result in ("qr_needed", "timeout"):
@@ -727,7 +725,7 @@ class WARunner:
             state_file    = assets_path / "updates.json"         if assets_path else None
             snap_current  = assets_path / "snapshot_current.png" if assets_path else None
 
-            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             # ── Extract sidebar state from DOM ────────────────────────────────
             # Each entry: {name, last_message, timestamp, direction}.
@@ -871,7 +869,7 @@ class WARunner:
 
     async def list_contacts(
         self,
-        assets_dir: "Path | str | None" = None,
+        assets_dir: Path | str | None = None,
     ) -> dict:
         """Open the 'New chat' panel, scroll to the bottom, and return all contacts.
 
@@ -957,7 +955,7 @@ async def run_enhanced(
     assets_dir: Path | None = None,
     headless: bool = True,
     max_iterations: int = 300,
-    from_date: "_Date | None" = None,
+    from_date: _Date | None = None,
     newest: bool = False,
 ) -> dict:
     """

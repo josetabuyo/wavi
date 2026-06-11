@@ -15,7 +15,7 @@ import fcntl
 import json
 import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 _LOCK_FILE   = "session_queue.lock"
@@ -53,7 +53,7 @@ def session_lock(profile: Path, operation: str, **meta):
             status_path.write_text(json.dumps({
                 "operation":  operation,
                 "pid":        os.getpid(),
-                "started_at": datetime.now(timezone.utc).isoformat(),
+                "started_at": datetime.now(UTC).isoformat(),
                 **meta,
             }))
             yield
@@ -98,5 +98,5 @@ def is_locked(profile: Path) -> bool:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(f, fcntl.LOCK_UN)
             return False
-    except (IOError, OSError):
+    except OSError:
         return True

@@ -31,11 +31,13 @@ from pathlib import Path
 
 import click
 from dotenv import load_dotenv
+
+from wavi.session import CDP_PORT, PID_FILE, PORT_FILE, WINDOW_H, WINDOW_W
+
 load_dotenv()
 
 DEFAULT_SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-from wavi.session import CDP_PORT, PID_FILE, PORT_FILE, WINDOW_W, WINDOW_H
 
 _HEADLESS_CHROME_ARGS = [
     "--no-first-run",
@@ -108,8 +110,8 @@ def _claim_port(session_path: str) -> int:
     Falls back to GET /ports/free + POST /ports if /ports/claim not yet available.
     Final fallback: local socket scan.
     """
-    import urllib.request as _req
     import urllib.error as _err
+    import urllib.request as _req
 
     payload = json.dumps({
         "app": "WhatsApp CDP daemon",
@@ -237,7 +239,7 @@ def _launch_headless_daemon(profile: Path, port: int) -> subprocess.Popen:
         ["arch", "-arm64", str(REAL_CHROME)]
         + [f"--user-data-dir={profile}", f"--remote-debugging-port={port}"]
         + _HEADLESS_CHROME_ARGS
-        + [f"--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}", "about:blank"],
+        + ["--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}", "about:blank"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -461,6 +463,7 @@ async def _capture_qr(profile: Path, load_timeout_s: int = 60) -> str | None:
     or None on failure.  Disconnects Playwright but leaves Chrome running.
     """
     import base64
+
     from playwright.async_api import async_playwright
 
     port = _session_port(profile)
@@ -615,7 +618,7 @@ def connect(session: str, open_browser: bool, force_new: bool):
         click.echo(f"Session '{session}' → {profile}")
 
         # ── Fast path: daemon already alive and authenticated ─────────────────
-        from wavi.session import WASession, _is_process_alive
+        from wavi.session import WASession
         s = WASession(profile)
         if s.daemon_alive():
             click.echo("Daemon detectado, verificando sesión...")
@@ -853,8 +856,9 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
 
     NOTE: photos and videos are not detected by the vision pipeline.
     """
-    from wavi.runner import run_enhanced
     from datetime import date as _Date
+
+    from wavi.runner import run_enhanced
 
     profile_dir = _profile(session)
     assets_dir = Path(assets) if assets else Path("output") / profile_dir.name / contact.lower().replace(" ", "_")
@@ -881,7 +885,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             newest=newest,
         )
 
-    from wavi.queue import session_lock, is_locked
+    from wavi.queue import is_locked, session_lock
     prof = _profile(session)
     if is_locked(prof):
         click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
@@ -951,7 +955,7 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None):
         finally:
             await s.close()
 
-    from wavi.queue import session_lock, is_locked
+    from wavi.queue import is_locked, session_lock
     if is_locked(profile):
         click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
 
@@ -996,8 +1000,8 @@ def queue_status(session: str, json_out: bool):
     elapsed = ""
     if started:
         try:
-            from datetime import datetime, timezone
-            delta = datetime.now(timezone.utc) - datetime.fromisoformat(started)
+            from datetime import UTC, datetime
+            delta = datetime.now(UTC) - datetime.fromisoformat(started)
             mins, secs = divmod(int(delta.total_seconds()), 60)
             elapsed = f" (running {mins}m{secs:02d}s)"
         except Exception:
@@ -1072,11 +1076,12 @@ def boarding(open_browser: bool):
 def check_updates(session: str, assets_dir: str | None, reset: bool):
     """Check WhatsApp sidebar for new inbound messages.
 
-    Compares the sidebar against the last saved snapshot.  Always saves
-    updates.json, snapshot_prev.png, and snapshot_current.png to the output
-    directory.  On the first run (or with --reset) returns the current list of
-    unread chats.  On subsequent runs returns 'no_updates' when nothing changed,
-    or 'updates' with the contacts that now have unread messages.
+    Extracts every visible chat row (name, last message, timestamp, direction)
+    via DOM and compares it against the previous saved state.  Saves
+    updates.json and snapshot_current.png to the output directory.  On the
+    first run (or with --reset) saves the baseline.  On subsequent runs returns
+    'no_updates' when nothing changed, or 'updates' with the chats whose last
+    message is new AND inbound.
 
     \b
     Examples:
@@ -1092,9 +1097,14 @@ def check_updates(session: str, assets_dir: str | None, reset: bool):
         if assets_dir
         else Path("output") / profile_dir.name / "last-updates"
     )
+    from wavi.queue import is_locked, session_lock
+    if is_locked(profile_dir):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
+
     runner = WARunner(profile_dir)
-    with _lazy_session(profile_dir):
-        result = asyncio.run(runner.check_updates(assets_dir=assets_path, reset=reset))
+    with session_lock(profile_dir, "check-updates"):
+        with _lazy_session(profile_dir):
+            result = asyncio.run(runner.check_updates(assets_dir=assets_path, reset=reset))
 
     status = result["status"]
     new_inbound = result.get("new_inbound", [])
@@ -1130,13 +1140,19 @@ def check_updates(session: str, assets_dir: str | None, reset: bool):
 def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str):
     """List all contacts available in the 'New chat' panel."""
     import json as _json
+
     from wavi.runner import WARunner
 
     profile_dir = _profile(session)
     assets_path = Path(assets_dir) if assets_dir else Path("output") / profile_dir.name / "contacts"
+    from wavi.queue import is_locked, session_lock
+    if is_locked(profile_dir):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
+
     runner = WARunner(profile_dir, headless=headless)
-    with _lazy_session(profile_dir):
-        result = asyncio.run(runner.list_contacts(assets_dir=assets_path))
+    with session_lock(profile_dir, "list-contacts"):
+        with _lazy_session(profile_dir):
+            result = asyncio.run(runner.list_contacts(assets_dir=assets_path))
 
     contacts = result.get("contacts", [])
     shot = result.get("screenshot")

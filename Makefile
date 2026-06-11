@@ -37,4 +37,4 @@ boarding:
 	wavi boarding
 
 lint:
-	@command -v ruff >/dev/null 2>&1 && ruff check wavi/ || true
+	ruff check wavi/ tests/ scripts/

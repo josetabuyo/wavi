@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-import numpy as np
 from PIL import Image
 
 SWIFT_OCR = Path(__file__).parent.parent / "swift" / "ocr_vision.swift"
@@ -260,15 +259,6 @@ def _extract_timestamp(raw_blocks: list[dict]) -> str | None:
     return None
 
 
-def _classify_x(x: float, w: float) -> str:
-    right_edge = x + w
-    if right_edge > 0.75:
-        return "me"
-    if x < 0.15:
-        return "other"
-    return "me" if (x + w / 2) > 0.50 else "other"
-
-
 # ── Bubble detection ──────────────────────────────────────────────────────────
 
 def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -> list[dict]:
@@ -450,10 +440,11 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
     return results
 
 
-def _date_from_pill_text(text: str, today) -> "object | None":
+def _date_from_pill_text(text: str, today) -> object | None:
     """Parse a WA day-separator pill text into a datetime.date. Returns None if unrecognised."""
-    from datetime import date as _D, timedelta as _td
     import re as _re
+    from datetime import date as _D
+    from datetime import timedelta as _td
 
     _MONTHS: dict[str, int] = {
         "ene": 1, "enero": 1, "feb": 2, "febrero": 2, "mar": 3, "marzo": 3,
