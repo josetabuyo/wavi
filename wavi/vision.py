@@ -6,11 +6,13 @@ No Playwright, no DOM. Runs on a saved screenshot file.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -19,6 +21,16 @@ import numpy as np
 from PIL import Image
 
 SWIFT_OCR = Path(__file__).parent.parent / "swift" / "ocr_vision.swift"
+# Compiled binary (make ocr) — ~6x less startup overhead than interpreting the
+# script, and runs Vision natively on arm64 instead of under Rosetta.
+OCR_BIN = Path(__file__).parent.parent / "bin" / "ocr_vision"
+
+# ── Timing instrumentation (WAVI_TIMING=1) ────────────────────────────────────
+# Cumulative OCR stats are always collected (cost is negligible); the per-stage
+# breakdown is printed by analyze() only when WAVI_TIMING is set.
+
+_TIMING = bool(os.environ.get("WAVI_TIMING"))
+_ocr_stats = {"calls": 0, "secs": 0.0}
 
 # ── Regexes ───────────────────────────────────────────────────────────────────
 
@@ -83,9 +95,23 @@ class Bubble:
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
 
+def _ocr_cmd() -> list[str]:
+    """Prefer the compiled binary; fall back to interpreting the script.
+
+    The binary is only used when it is at least as new as the .swift source,
+    so editing the source never silently runs a stale binary.
+    """
+    if OCR_BIN.exists() and OCR_BIN.stat().st_mtime >= SWIFT_OCR.stat().st_mtime:
+        return [str(OCR_BIN)]
+    return ["swift", str(SWIFT_OCR)]
+
+
 def _run_ocr(img_path: Path) -> list[dict]:
-    r = subprocess.run(["swift", str(SWIFT_OCR), str(img_path)],
+    t0 = time.perf_counter()
+    r = subprocess.run(_ocr_cmd() + [str(img_path)],
                        capture_output=True, text=True, timeout=60)
+    _ocr_stats["calls"] += 1
+    _ocr_stats["secs"] += time.perf_counter() - t0
     if r.returncode != 0:
         return []
     return json.loads(r.stdout)
@@ -303,10 +329,16 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
     """
     from wavi.element_detector import detect_bubbles
 
+    _t0 = time.perf_counter()
+    _ocr0 = dict(_ocr_stats)
+    _stages: dict[str, float] = {}
+
     assets = assets_dir or screenshot_path.parent
     assets.mkdir(parents=True, exist_ok=True)
 
+    _t = time.perf_counter()
     cropped_path, _ = crop_chat_panel(screenshot_path)
+    _stages["crop"] = time.perf_counter() - _t
 
     # Only save cropped.png to assets_dir if save_debug=True
     if save_debug and assets_dir:
@@ -321,7 +353,9 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
     #   (a) locate date-separator pills, and
     #   (b) decide whether a color-detected region spans multiple messages.
     # The canonical text for each element comes from the per-bubble OCR below.
+    _t = time.perf_counter()
     _structural_scan = ocr_tiled(cropped_path)
+    _stages["structural_scan"] = time.perf_counter() - _t
 
     # Build date map from day-separator pills BEFORE processing bubbles.
     # Each pill marks the date of everything below it; a bubble at y gets the
@@ -348,12 +382,15 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
                 break
         return chosen
 
+    _t = time.perf_counter()
     raw_bubbles = detect_bubbles(img, footer_px=70)
+    _stages["detect_bubbles"] = time.perf_counter() - _t
 
     split: list[dict] = []
     for b in raw_bubbles:
         split.extend(_split_bubbles_by_timestamps(b, _structural_scan, img_h))
 
+    _t = time.perf_counter()
     results: list[Bubble] = []
     for i, bubble in enumerate(split):
         x0 = max(0, bubble["x"])
@@ -389,12 +426,26 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
             raw_blocks  = raw_blocks,
         ))
 
+    _stages["bubble_ocr"] = time.perf_counter() - _t
+
     if assets_dir:
         out = assets / (screenshot_path.stem + "_bubbles.json")
         out.write_text(json.dumps([b.as_dict() for b in results], indent=2, ensure_ascii=False))
 
         if save_debug:
             _save_debug_image(img, results, assets / (screenshot_path.stem + "_debug.png"))
+
+    if _TIMING:
+        ocr_calls = _ocr_stats["calls"] - _ocr0["calls"]
+        ocr_secs = _ocr_stats["secs"] - _ocr0["secs"]
+        total = time.perf_counter() - _t0
+        breakdown = " ".join(f"{k}={v:.2f}s" for k, v in _stages.items())
+        print(
+            f"[wavi-timing] analyze total={total:.2f}s {breakdown} "
+            f"ocr_calls={ocr_calls} ocr_total={ocr_secs:.2f}s "
+            f"bubbles={len(results)} engine={'bin' if _ocr_cmd()[0].endswith('ocr_vision') else 'swift-script'}",
+            file=sys.stderr,
+        )
 
     return results
 

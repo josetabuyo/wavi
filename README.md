@@ -74,8 +74,13 @@ Direction is inferred from tick icons (`msg-check`, `msg-dbl-check`, etc.) — p
 ## Development
 
 ```bash
-uv run pytest tests/ -v
+make ocr                  # compile the OCR helper to bin/ocr_vision (arm64, ~4x faster pipeline)
+uv run pytest tests/ -v   # unit tests (offline, mocked browser)
+make corpus               # vision eval on golden screenshots (real OCR, see tests/corpus/README.md)
 ```
+
+`WAVI_TIMING=1` prints a per-stage timing breakdown of each `analyze()` run.
+Roadmap and audit: `docs/plan-mejoras.md`, `docs/audit-checklist.md`.
 
 Key files:
 - `session.py` — Chrome CDP connection + all DOM scraping JS (see inventory block)

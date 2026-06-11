@@ -30,3 +30,10 @@ docs/.playwright-cli/
 
 # Session files (local state)
 session/
+
+# Compiled OCR binary (make ocr)
+bin/
+
+# Vision eval corpus — real WA screenshots, never commit (privacy).
+# The harness (tests/test_corpus.py) and docs stay tracked.
+tests/corpus/cases/

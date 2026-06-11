@@ -28,6 +28,9 @@ packages = ["wavi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "corpus: golden-screenshot vision eval (slow, real OCR, gated by WAVI_CORPUS=1)",
+]
 
 [dependency-groups]
 dev = [
