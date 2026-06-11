@@ -1,0 +1,24 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Unit tests are fully offline (mocked browser, synthetic images) and
+    # platform-independent. The vision corpus (real Apple Vision OCR) is
+    # gated by WAVI_CORPUS=1 and runs only locally — see tests/corpus/README.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check wavi/ tests/ scripts/
+      - name: Test
+        run: pytest -v
