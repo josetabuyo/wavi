@@ -825,6 +825,37 @@ class WASession:
         state = await self.get_chat_scroll_state()
         return state is not None and state["scrollTop"] < 20
 
+    async def click_load_older_if_present(self) -> str | None:
+        """Click the 'load older messages from phone' pill if visible.
+
+        WA Web shows this pill at the top of a chat when there are messages on
+        the phone that haven't been synced to the web client yet. Clicking it
+        triggers a sync and reveals older messages.
+
+        Returns the pill's text if clicked, None if not found.
+        """
+        return await self._page.evaluate("""
+            () => {
+                const KEYWORDS = [
+                    'anteriores', 'older messages', 'obtener mensajes',
+                    'load older', 'clic aquí', 'click here',
+                ];
+                // Walk all visible elements; prefer smaller containers over body/html.
+                const candidates = document.querySelectorAll(
+                    'div[role="button"], span[role="button"], button, [data-testid]'
+                );
+                for (const el of candidates) {
+                    if (!el.offsetParent) continue;   // hidden
+                    const text = el.textContent?.toLowerCase() || '';
+                    if (KEYWORDS.some(k => text.includes(k)) && text.length < 200) {
+                        el.click();
+                        return el.textContent.trim();
+                    }
+                }
+                return null;
+            }
+        """)
+
     async def send_message(self, text: str) -> dict:
         """Type and send a message in the currently open chat.
 

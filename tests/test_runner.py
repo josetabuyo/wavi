@@ -171,6 +171,7 @@ def _mock_runner_for_history(iter0_bubbles, iter1_bubbles):
     runner.session.get_dpr = AsyncMock(return_value=1.0)
     runner.session.scroll_chat_up = AsyncMock()
     runner.session.scroll_chat_down = AsyncMock()
+    runner.session.click_load_older_if_present = AsyncMock(return_value=None)
     runner.session.get_visible_message_ids = AsyncMock(return_value=[])
     runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
         # 1. init_state (outside loop) → computes scroll_css_px
@@ -1016,6 +1017,7 @@ class TestGrowFastForwardAnchorRecycled:
         runner.session.get_dpr = AsyncMock(return_value=1.0)
         runner.session.scroll_chat_up = AsyncMock()
         runner.session.scroll_chat_down = AsyncMock()
+        runner.session.click_load_older_if_present = AsyncMock(return_value=None)
         # FF never returns the anchor dom_id — it has been recycled
         runner.session.get_visible_message_ids = AsyncMock(return_value=[])
         runner.session.get_chat_scroll_state = AsyncMock(side_effect=[

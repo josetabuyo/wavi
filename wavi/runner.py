@@ -563,6 +563,18 @@ class WARunner:
             if abs(scroll_top_after - scroll_top_before) < 10:
                 stall_count += 1
                 print(f"[wavi] iter={iteration+1}: scroll stall #{stall_count}", file=sys.stderr)
+                if grow:
+                    # Before giving up, check for the WA "load older messages from phone" pill.
+                    # When present, clicking it syncs older messages and resets the stall.
+                    pill_text = await self.session.click_load_older_if_present()
+                    if pill_text:
+                        print(
+                            f"[wavi] iter={iteration+1}: clicked '{pill_text}' — waiting for sync",
+                            file=sys.stderr,
+                        )
+                        await self.session._page.wait_for_timeout(4000)
+                        stall_count = 0
+                        continue
                 if stall_count >= 3:
                     print("[wavi] 3 consecutive stalls — stopping", file=sys.stderr)
                     if grow and scroll_top_after < 20:
