@@ -539,19 +539,11 @@ class WARunner:
 
             if scroll_top_before < 20:
                 if grow:
-                    # WA lazy-loads older messages when scrollTop≈0. Wait and re-check.
-                    await self.session._page.wait_for_timeout(2500)
-                    recheck_pre = await self.session.get_chat_scroll_state()
-                    if recheck_pre and recheck_pre["scrollTop"] > 50:
-                        print(
-                            f"[wavi] iter={iteration+1}: lazy-load detected pre-scroll (scrollTop jumped to {recheck_pre['scrollTop']:.0f}) — continuing",
-                            file=sys.stderr,
-                        )
-                        scroll_top_before = recheck_pre["scrollTop"]
-                    else:
-                        print(f"[wavi] iter={iteration+1}: at top (scrollTop={scroll_top_before:.0f})", file=sys.stderr)
-                        grow_reached_top = True
-                        break
+                    # In grow mode, scrollTop≈0 may be a lazy-load boundary: WA loads older
+                    # messages only when a scroll is actually sent. Don't break here — let the
+                    # scroll attempt below run and rely on stall detection (3× no-movement)
+                    # to confirm the true top.
+                    print(f"[wavi] iter={iteration+1}: scrollTop≈0, scrolling to trigger WA lazy-load", file=sys.stderr)
                 else:
                     print(f"[wavi] iter={iteration+1}: at top (scrollTop={scroll_top_before:.0f})", file=sys.stderr)
                     break
@@ -573,6 +565,8 @@ class WARunner:
                 print(f"[wavi] iter={iteration+1}: scroll stall #{stall_count}", file=sys.stderr)
                 if stall_count >= 3:
                     print("[wavi] 3 consecutive stalls — stopping", file=sys.stderr)
+                    if grow and scroll_top_after < 20:
+                        grow_reached_top = True
                     break
             else:
                 stall_count = 0
@@ -733,21 +727,7 @@ class WARunner:
             if should_stop_grow:
                 break
 
-            if new_count == 0 and scroll_top_after < 20:
-                if grow:
-                    # WA lazy-loads older messages when scrollTop≈0. Wait and re-check
-                    # before declaring done — a jump in scrollTop means more content loaded.
-                    await self.session._page.wait_for_timeout(2500)
-                    recheck = await self.session.get_chat_scroll_state()
-                    if recheck and recheck["scrollTop"] > 50:
-                        print(
-                            f"[wavi] iter={iteration+1}: lazy-load detected (scrollTop jumped to {recheck['scrollTop']:.0f}) — continuing",
-                            file=sys.stderr,
-                        )
-                        scroll_top_after = recheck["scrollTop"]
-                        bubbles = new_bubbles
-                        continue
-                    grow_reached_top = True
+            if new_count == 0 and scroll_top_after < 20 and not grow:
                 print("[wavi] No new bubbles and at top — done.", file=sys.stderr)
                 break
 

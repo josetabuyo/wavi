@@ -1019,16 +1019,24 @@ class TestGrowFastForwardAnchorRecycled:
         # FF never returns the anchor dom_id — it has been recycled
         runner.session.get_visible_message_ids = AsyncMock(return_value=[])
         runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
-            # 1. init_state (line ~416) — compute scroll_css_px
+            # 1. init_state — compute scroll_css_px
             {"scrollTop": 500, "scrollHeight": 2000, "clientHeight": 500},
-            # 2. FF iter 0 — scrollTop still high, keep scrolling
+            # 2. FF iter 0 — still scrolling up
             {"scrollTop": 300, "scrollHeight": 2000, "clientHeight": 500},
-            # 3. FF iter 1 — scrollTop<20: anchor NOT found yet → should break, not return []
+            # 3. FF iter 1 — scrollTop<20: anchor NOT found → break FF, fall through
             {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
-            # 4. Main loop iter 0 pre-scroll — already at top (scrollTop<20)
+            # 4. Main loop iter 0 pre-scroll — scrollTop<20, continue anyway (grow mode)
             {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
-            # 5. Lazy-load recheck — still at top (no new content loaded), truly done
-            {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
+            # 5. new_state after scroll — stall #1 (scrollTop stayed 0)
+            {"scrollTop": 0, "scrollHeight": 2000, "clientHeight": 500},
+            # 6. iter 1 pre-scroll — still 0
+            {"scrollTop": 0, "scrollHeight": 2000, "clientHeight": 500},
+            # 7. new_state after scroll — stall #2
+            {"scrollTop": 0, "scrollHeight": 2000, "clientHeight": 500},
+            # 8. iter 2 pre-scroll — still 0
+            {"scrollTop": 0, "scrollHeight": 2000, "clientHeight": 500},
+            # 9. new_state after scroll — stall #3 → stop
+            {"scrollTop": 0, "scrollHeight": 2000, "clientHeight": 500},
         ])
 
         result = await runner.capture_full_history(
