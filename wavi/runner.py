@@ -433,16 +433,21 @@ class WARunner:
         bubbles = await self.get_bubbles(assets_dir=_iter_dir(0), save_debug=True)
         self._assign_dom_ids(bubbles, dom_msgs_0, dpr)
 
-        # Check for duplicates in initial capture (newest mode)
+        # Check for duplicates in initial capture (newest mode).
+        # New messages may be at the BOTTOM of iter_000 (WA scrolled to newest), so scan
+        # the entire view instead of stopping at the first known bubble from the top.
         if newest and known_keys:
             filtered_bubbles = []
+            found_known_in_iter0 = False
             for b in bubbles:
                 k = bubble_key(b)
                 if k in known_keys:
-                    print("[wavi] iter_000: found duplicate (newest mode) — stopping", file=sys.stderr)
-                    should_stop_newest = True
-                    break
-                filtered_bubbles.append(b)
+                    found_known_in_iter0 = True
+                else:
+                    filtered_bubbles.append(b)
+            if found_known_in_iter0:
+                print("[wavi] iter_000: found duplicate (newest mode) — stopping scroll", file=sys.stderr)
+                should_stop_newest = True
             bubbles = filtered_bubbles
 
         # grow mode: filter known bubbles from iter_000 without stopping
