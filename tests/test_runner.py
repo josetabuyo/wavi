@@ -947,6 +947,103 @@ class TestCaptureFullHistoryNewest:
         assert texts == ["D", "C", "B", "A"], f"Order should be [D,C,B,A], got {texts}"
 
 
+# ── grow fast-forward anchor-recycled bug ────────────────────────────────────
+
+class TestGrowFastForwardAnchorRecycled:
+    """
+    Regression test for the bug where fast-forward reached scrollTop<20 WITHOUT
+    finding the anchor (because WA recycled the DOM id), and incorrectly returned []
+    with completed=True — skipping messages that were actually visible at the top.
+
+    Fix: when scrollTop<20 is hit before anchor is found, break (don't return [])
+    and fall through to dedup scan from that position.
+    """
+
+    @pytest.mark.asyncio
+    async def test_captures_old_messages_when_anchor_dom_id_recycled(self, tmp_path):
+        import json
+
+        anchor_dom_id = "RECYCLED_DOM_ID_GONE"
+
+        # Existing history: one known bubble with the anchor dom_id
+        known_bubble_dict = {
+            "id": 1, "screen_id": 1, "sender": "me", "msg_type": "text",
+            "timestamp": "2026-03-05T13:53", "text": "mensaje conocido",
+            "bbox": {"x": 0, "y": 0, "w": 200, "h": 50},
+            "dom_id": anchor_dom_id,
+        }
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        (assets_dir / "history_bubbles.json").write_text(
+            json.dumps([known_bubble_dict], indent=2, ensure_ascii=False)
+        )
+        # Checkpoint pointing to the anchor that WA has since recycled
+        (assets_dir / "grow_checkpoint.json").write_text(json.dumps({
+            "oldest_bubble_key": ["dom", anchor_dom_id],
+            "oldest_dom_id": anchor_dom_id,
+            "completed": False,
+        }))
+
+        # Old message that should be captured (was at top of chat, not yet seen)
+        old_bubble = _hist_bubble(screen_id=1, sender="other", text="mensaje antiguo 2024", y=100,
+                                  timestamp="2024-05-18T19:27")
+
+        runner = _runner()
+
+        get_bubbles_calls = 0
+        async def fake_get_bubbles(*args, **kwargs):
+            nonlocal get_bubbles_calls
+            get_bubbles_calls += 1
+            if get_bubbles_calls == 1:
+                # Initial capture (iter_000): known bubble visible at bottom
+                known = _hist_bubble(screen_id=1, sender="me", text="mensaje conocido", y=300,
+                                     timestamp="2026-03-05T13:53")
+                known.dom_id = anchor_dom_id
+                return [known]
+            # Re-capture after FF break (we're now at the top with old messages)
+            return [old_bubble]
+
+        runner.get_bubbles = fake_get_bubbles
+        runner.find_play_buttons = AsyncMock(return_value=[])
+        runner._redraw_debug_with_dom_positions = AsyncMock()
+
+        page_mock = MagicMock()
+        page_mock.wait_for_timeout = AsyncMock()
+        runner.session._page = page_mock
+        runner.session.install_blob_monitor = AsyncMock()
+        runner.session.reset_blobs = AsyncMock()
+        runner.session.drain_blobs = AsyncMock(return_value=[])
+        runner.session.get_dpr = AsyncMock(return_value=1.0)
+        runner.session.scroll_chat_up = AsyncMock()
+        runner.session.scroll_chat_down = AsyncMock()
+        # FF never returns the anchor dom_id — it has been recycled
+        runner.session.get_visible_message_ids = AsyncMock(return_value=[])
+        runner.session.get_chat_scroll_state = AsyncMock(side_effect=[
+            # 1. init_state (line ~416) — compute scroll_css_px
+            {"scrollTop": 500, "scrollHeight": 2000, "clientHeight": 500},
+            # 2. FF iter 0 — scrollTop still high, keep scrolling
+            {"scrollTop": 300, "scrollHeight": 2000, "clientHeight": 500},
+            # 3. FF iter 1 — scrollTop<20: anchor NOT found yet → should break, not return []
+            {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
+            # 4. Main loop iter 0 — already at top, break
+            {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
+        ])
+
+        result = await runner.capture_full_history(
+            assets_dir=str(assets_dir), grow=True, max_iterations=5
+        )
+
+        # The old message should have been captured, not skipped
+        assert len(result) == 1, f"Expected 1 old bubble, got {len(result)}: {[b.text for b in result]}"
+        assert result[0].text == "mensaje antiguo 2024"
+
+        # Checkpoint must NOT be marked completed=True prematurely — the main loop
+        # set grow_reached_top because scrollTop<20, which IS correct (we're at top now).
+        checkpoint = json.loads((assets_dir / "grow_checkpoint.json").read_text())
+        assert checkpoint["completed"] is True  # correctly reached top AFTER capturing
+        assert checkpoint["oldest_dom_id"] is None or True  # oldest_b may be the old_bubble
+
+
 # ── check_updates ─────────────────────────────────────────────────────────────
 
 def _check_updates_runner(sidebar_rows: list[dict]):

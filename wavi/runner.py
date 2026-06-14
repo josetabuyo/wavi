@@ -482,9 +482,16 @@ class WARunner:
             for _ff in range(MAX_FF_ITERS):
                 _ff_state = await self.session.get_chat_scroll_state()
                 if _ff_state is None or _ff_state["scrollTop"] < 20:
-                    print("[wavi] grow: reached top during fast-forward — marking complete", file=sys.stderr)
-                    _save_checkpoint(existing_bubbles[0] if existing_bubbles else None, completed=True)
-                    return []
+                    if fast_forwarded:
+                        # Anchor was found earlier and now we've scrolled past it to the top — truly complete.
+                        print("[wavi] grow: reached top during fast-forward — marking complete", file=sys.stderr)
+                        _save_checkpoint(existing_bubbles[0] if existing_bubbles else None, completed=True)
+                        return []
+                    else:
+                        # Reached top WITHOUT finding anchor — anchor DOM id was recycled by WA's
+                        # virtual DOM. Don't mark complete; fall through to dedup scan from here.
+                        print("[wavi] grow: reached top before finding anchor — anchor DOM id recycled, falling back to dedup scan", file=sys.stderr)
+                        break
                 _ff_dom = await self.session.get_visible_message_ids()
                 if grow_anchor_dom_id and any(d["id"] == grow_anchor_dom_id for d in _ff_dom):
                     fast_forwarded = True
@@ -504,6 +511,17 @@ class WARunner:
             self._assign_dom_ids(bubbles, _ff_dom_msgs, dpr)
             if known_keys:
                 bubbles = [b for b in bubbles if bubble_key(b) not in known_keys]
+
+            # When FF reached the top without finding the anchor (recycled DOM id), the
+            # main loop will break immediately on scrollTop<20 before processing bubbles.
+            # Add them to all_bubbles here so they aren't lost.
+            if not fast_forwarded:
+                for b in bubbles:
+                    k = bubble_key(b)
+                    if k not in seen_keys:
+                        seen_keys.add(k)
+                        all_bubbles = [b] + all_bubbles
+                grow_reached_top = True
 
         stall_count = 0
 
