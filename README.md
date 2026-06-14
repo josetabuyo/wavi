@@ -8,7 +8,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 |---|---|---|
 | `wavi connect [session]` | Start Chrome daemon, authenticate via QR | — |
 | `wavi status [session]` | Check if daemon is alive and authenticated | DOM |
-| `wavi get <contact>` | Extract full message history from a chat | **Vision** |
+| `wavi get <contact>` | Extract full message history from a chat (`--grow` to page through in chunks) | **Vision** |
 | `wavi send <contact> <message>` | Send a message | DOM + keyboard |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
 | `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |
@@ -56,10 +56,36 @@ wavi connect
 # 2. Extract message history
 wavi get "Contact Name"
 
+# 2b. Long chat — page through in blocks of 10 iterations
+wavi get "Contact Name" --grow --max-iter 10   # block 1
+wavi get "Contact Name" --grow --max-iter 10   # block 2 (continues where block 1 stopped)
+# repeat until "history is now complete" or no more messages
+
 # 3. Poll for new messages
 wavi check-updates           # first run: saves baseline
 wavi check-updates           # subsequent: no_updates or updates + contact list
 ```
+
+## wavi get flags
+
+| Flag | Behavior |
+|---|---|
+| `--max-iter N` | Stop after N scroll iterations (default 300). In `--grow` mode, N counts only **new-content** iterations per run. |
+| `--from YYYY-MM-DD` | Stop scrolling when the oldest visible day pill is before this date. Drop bubbles older than the date. |
+| `--newest` | Load existing `history_bubbles.json` and stop the moment a known message is found. Prepends new messages. Goes toward the **present**. |
+| `--grow` | Load existing history, fast-forward past known content, then capture N more iterations toward the **past**. Saves a `grow_checkpoint.json` so each run continues where the last one stopped. Incompatible with `--newest`. |
+| `--assets DIR` | Override the output directory (default `output/<session>/<contact>/`). |
+| `--json-out` | Print the bubble list as JSON to stdout instead of the summary table. |
+
+### `--grow` workflow for long chats
+
+```bash
+wavi get "Contact" --grow --max-iter 10   # run 1: captures first 10 new-content iterations
+wavi get "Contact" --grow --max-iter 10   # run 2: fast-forwards to boundary, captures next 10
+# repeat — prints "history is now complete" when scrollTop reaches 0
+```
+
+State is stored in `output/<session>/<contact>/grow_checkpoint.json`. Delete it to restart from scratch (also delete `history_bubbles.json`).
 
 ## check-updates behavior
 

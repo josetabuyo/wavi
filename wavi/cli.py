@@ -847,7 +847,8 @@ def status(session: str):
 @click.option("--from", "from_date", default=None,
               help="Stop scrolling at this date (YYYY-MM-DD). Captures messages on or after this date.")
 @click.option("--newest", is_flag=True, help="Incremental update: stop when the first already-known message is found.")
-def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None, newest: bool):
+@click.option("--grow", is_flag=True, help="Append older messages to existing history, block by block. Use with --max-iter to page through a long chat history in chunks.")
+def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None, newest: bool, grow: bool):
     """Capture the full message history from CONTACT's chat.
 
     Scrolls up from the most recent message, capturing all visible bubbles per
@@ -871,7 +872,11 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             click.echo(f"Error: --from debe ser una fecha en formato YYYY-MM-DD, recibido: {from_date}", err=True)
             sys.exit(1)
 
-    if assets_dir.exists() and not newest:
+    if grow and newest:
+        click.echo("Error: --grow y --newest son incompatibles (direcciones opuestas).", err=True)
+        sys.exit(1)
+
+    if assets_dir.exists() and not newest and not grow:
         shutil.rmtree(assets_dir)
 
     async def _go():
@@ -883,6 +888,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             max_iterations=max_iter,
             from_date=from_date_obj,
             newest=newest,
+            grow=grow,
         )
 
     from wavi.queue import is_locked, session_lock

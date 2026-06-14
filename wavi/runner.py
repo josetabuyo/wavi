@@ -289,6 +289,7 @@ class WARunner:
         max_iterations: int = 300,
         from_date: _Date | None = None,
         newest: bool = False,
+        grow: bool = False,
     ) -> list[Bubble]:
         """
         Scroll from bottom to top capturing all unique messages.
@@ -303,6 +304,11 @@ class WARunner:
         When newest=True, loads existing history_bubbles.json and stops when the
         first already-known message is found, then prepends new messages to the
         existing list and re-numbers IDs.
+
+        When grow=True, loads existing history_bubbles.json and a grow_checkpoint.json
+        anchor, fast-forwards past already-known messages, then captures older content
+        for up to max_iterations new-content iterations and appends it to history.
+        Combined with --max-iter N this lets you fetch a long chat history in blocks.
 
         Limitation: media bubbles (photos, videos) are not detected by the vision
         pipeline and will be absent from the result. Text, audio, and file messages
@@ -319,6 +325,39 @@ class WARunner:
                 return ("dom", b.dom_id)
             return (b.sender, b.msg_type, b.text[:80].strip(), b.timestamp)
 
+        import json as _json
+
+        def _checkpoint_path() -> Path | None:
+            return Path(assets_dir) / "grow_checkpoint.json" if assets_dir else None
+
+        def _load_checkpoint() -> dict | None:
+            p = _checkpoint_path()
+            if p and p.exists():
+                try:
+                    return _json.loads(p.read_text())
+                except Exception:
+                    return None
+            return None
+
+        def _save_checkpoint(oldest_b, completed: bool) -> None:
+            p = _checkpoint_path()
+            if not p:
+                return
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if oldest_b is None:
+                key_list, dom_id = None, None
+            elif isinstance(oldest_b, dict):
+                key_list = list(bubble_key(oldest_b))
+                dom_id = oldest_b.get("dom_id")
+            else:
+                key_list = list(bubble_key(oldest_b))
+                dom_id = oldest_b.dom_id
+            p.write_text(_json.dumps({
+                "oldest_bubble_key": key_list,
+                "oldest_dom_id": dom_id,
+                "completed": completed,
+            }, ensure_ascii=False, indent=2))
+
         existing_bubbles: list[dict] = []
         known_keys: set = set()
         should_stop_newest = False
@@ -326,15 +365,44 @@ class WARunner:
         if newest and assets_dir:
             json_path = Path(assets_dir) / "history_bubbles.json"
             if json_path.exists():
-                import json
                 try:
-                    existing_bubbles = json.loads(json_path.read_text())
+                    existing_bubbles = _json.loads(json_path.read_text())
                     for bubble_dict in existing_bubbles:
-                        k = bubble_key(bubble_dict)
-                        known_keys.add(k)
+                        known_keys.add(bubble_key(bubble_dict))
                     print(f"[wavi] newest: loaded {len(existing_bubbles)} existing bubbles", file=sys.stderr)
                 except Exception as e:
                     print(f"[wavi] newest: failed to load history_bubbles.json: {e}", file=sys.stderr)
+
+        grow_checkpoint: dict | None = None
+        grow_anchor_dom_id: str | None = None
+        grow_anchor_key: tuple | None = None
+        grow_new_iters: int = 0
+        grow_reached_top: bool = False
+        should_stop_grow: bool = False
+
+        if grow and assets_dir:
+            json_path = Path(assets_dir) / "history_bubbles.json"
+            if json_path.exists():
+                try:
+                    existing_bubbles = _json.loads(json_path.read_text())
+                    for bubble_dict in existing_bubbles:
+                        known_keys.add(bubble_key(bubble_dict))
+                    print(f"[wavi] grow: loaded {len(existing_bubbles)} existing bubbles", file=sys.stderr)
+                except Exception as e:
+                    print(f"[wavi] grow: failed to load history_bubbles.json: {e}", file=sys.stderr)
+            grow_checkpoint = _load_checkpoint()
+            if grow_checkpoint:
+                if grow_checkpoint.get("completed"):
+                    print("[wavi] grow: history already complete (reached top of chat) — nothing to do.", file=sys.stderr)
+                    return []
+                grow_anchor_dom_id = grow_checkpoint.get("oldest_dom_id")
+                raw_key = grow_checkpoint.get("oldest_bubble_key")
+                grow_anchor_key = tuple(raw_key) if raw_key else None
+
+        # Offset iter_NNN dirs for grow runs so new screenshots don't overwrite old ones
+        grow_iter_offset = 0
+        if grow and assets_dir:
+            grow_iter_offset = len(sorted(Path(assets_dir).glob("iter_???")))
 
         all_bubbles: list[Bubble] = []
         seen_keys: set = set()
@@ -351,7 +419,7 @@ class WARunner:
             print(f"[wavi] clientHeight={init_state['clientHeight']} → scroll_step={scroll_css_px}px", file=sys.stderr)
 
         def _iter_dir(n: int) -> Path | None:
-            return Path(assets_dir) / f"iter_{n:03d}" if assets_dir else None
+            return Path(assets_dir) / f"iter_{(n + grow_iter_offset):03d}" if assets_dir else None
 
         # Install blob monitor ONCE before starting captures
         await self.session.install_blob_monitor()
@@ -377,6 +445,10 @@ class WARunner:
                 filtered_bubbles.append(b)
             bubbles = filtered_bubbles
 
+        # grow mode: filter known bubbles from iter_000 without stopping
+        if grow and known_keys:
+            bubbles = [b for b in bubbles if bubble_key(b) not in known_keys]
+
         for b in bubbles:
             k = bubble_key(b)
             if k not in seen_keys:
@@ -396,9 +468,49 @@ class WARunner:
             n_ok = sum(1 for a in iter0_audios if a.get("path"))
             print(f"[wavi] iter_000: {n_ok}/{len(iter0_audios)} audios descargados", file=sys.stderr)
 
+        # ── Phase 1: grow fast-forward ────────────────────────────────────────
+        # Scroll past already-known content using cheap DOM polls (no screenshots)
+        # until the oldest-known message's DOM id reappears in the viewport.
+        if grow and (grow_anchor_dom_id or grow_anchor_key):
+            FF_SETTLE_MS = 800
+            MAX_FF_ITERS = 10_000
+            fast_forwarded = False
+            print(
+                f"[wavi] grow: fast-forward seeking anchor dom_id={grow_anchor_dom_id!r}",
+                file=sys.stderr,
+            )
+            for _ff in range(MAX_FF_ITERS):
+                _ff_state = await self.session.get_chat_scroll_state()
+                if _ff_state is None or _ff_state["scrollTop"] < 20:
+                    print("[wavi] grow: reached top during fast-forward — marking complete", file=sys.stderr)
+                    _save_checkpoint(existing_bubbles[0] if existing_bubbles else None, completed=True)
+                    return []
+                _ff_dom = await self.session.get_visible_message_ids()
+                if grow_anchor_dom_id and any(d["id"] == grow_anchor_dom_id for d in _ff_dom):
+                    fast_forwarded = True
+                    print(f"[wavi] grow: anchor found after {_ff} fast-forward steps", file=sys.stderr)
+                    break
+                await self.session.scroll_chat_up(scroll_css_px)
+                await self.session._page.wait_for_timeout(FF_SETTLE_MS)
+            if not fast_forwarded:
+                print(
+                    "[wavi] grow: anchor not found — falling back to dedup scan",
+                    file=sys.stderr,
+                )
+            # Re-capture at current position so main loop anchor tracking starts clean
+            dpr = await self.session.get_dpr()
+            _ff_dom_msgs = await self.session.get_visible_message_ids()
+            bubbles = await self.get_bubbles(assets_dir=None, save_debug=False)
+            self._assign_dom_ids(bubbles, _ff_dom_msgs, dpr)
+            if known_keys:
+                bubbles = [b for b in bubbles if bubble_key(b) not in known_keys]
+
         stall_count = 0
 
-        for iteration in range(max_iterations):
+        # grow: ceiling is a safety net only — real stop is grow_new_iters, stalls, or top.
+        # Must be large enough to scroll through all known content before hitting new content.
+        _loop_ceiling = 10_000 if grow else max_iterations
+        for iteration in range(_loop_ceiling):
             # Read scrollTop BEFORE scrolling
             state = await self.session.get_chat_scroll_state()
             if state is None:
@@ -409,6 +521,8 @@ class WARunner:
 
             if scroll_top_before < 20:
                 print(f"[wavi] iter={iteration+1}: at top (scrollTop={scroll_top_before:.0f})", file=sys.stderr)
+                if grow:
+                    grow_reached_top = True
                 break
 
             # Anchor = topmost visible = oldest = bubble with max id.
@@ -517,6 +631,19 @@ class WARunner:
                 new_items = filtered_new_items
                 new_count = len(new_items)
 
+            # grow mode: skip known bubbles (keep going) and count new-content iterations
+            if grow and known_keys:
+                new_items = [b for b in new_items if bubble_key(b) not in known_keys]
+                new_count = len(new_items)
+            if grow and new_count > 0:
+                grow_new_iters += 1
+                if grow_new_iters >= max_iterations:
+                    print(
+                        f"[wavi] grow: {max_iterations} new-content iteration(s) complete — stopping",
+                        file=sys.stderr,
+                    )
+                    should_stop_grow = True
+
             # ── Detect day pills: assign dates + optional from_date stop ─────
             # Runs always (dates are useful metadata regardless of from_date).
             should_stop_from_date = False
@@ -572,20 +699,30 @@ class WARunner:
             if should_stop_from_date:
                 break
 
+            if should_stop_grow:
+                break
+
             if new_count == 0 and scroll_top_after < 20:
                 print("[wavi] No new bubbles and at top — done.", file=sys.stderr)
+                if grow:
+                    grow_reached_top = True
                 break
 
             bubbles = new_bubbles
 
-        # Re-assign globally sequential IDs: id=1=newest, id=N=oldest
+        # Re-assign globally sequential IDs
         if newest and existing_bubbles:
-            # Merge: new bubbles (all_bubbles) + old bubbles (existing_bubbles)
+            # newest: new (newer) prepended before existing (older)
             final_bubbles = [b.as_dict() for b in all_bubbles] + existing_bubbles
-            n = len(final_bubbles)
             for i, item in enumerate(final_bubbles):
                 item["id"] = i + 1
             print(f"[wavi] newest: merged {len(all_bubbles)} new + {len(existing_bubbles)} existing = {len(final_bubbles)} total", file=sys.stderr)
+        elif grow and existing_bubbles:
+            # grow: existing (newer) first, then new captures (older)
+            final_bubbles = existing_bubbles + [b.as_dict() for b in all_bubbles]
+            for i, item in enumerate(final_bubbles):
+                item["id"] = i + 1
+            print(f"[wavi] grow: merged {len(existing_bubbles)} existing + {len(all_bubbles)} new = {len(final_bubbles)} total", file=sys.stderr)
         else:
             final_bubbles = [b.as_dict() for b in all_bubbles]
             n = len(all_bubbles)
@@ -604,6 +741,13 @@ class WARunner:
                 json.dumps(final_bubbles, indent=2, ensure_ascii=False)
             )
             print(f"[wavi] Saved {len(final_bubbles)} bubbles → {out}", file=sys.stderr)
+
+        # Write grow checkpoint so the next --grow run knows where to continue from.
+        # all_bubbles[0] is the oldest captured bubble (list is oldest-first).
+        if grow and all_bubbles:
+            _save_checkpoint(all_bubbles[0], completed=grow_reached_top)
+            if grow_reached_top:
+                print("[wavi] grow: reached top of chat — history is now complete.", file=sys.stderr)
 
         return all_bubbles
 
@@ -957,6 +1101,7 @@ async def run_enhanced(
     max_iterations: int = 300,
     from_date: _Date | None = None,
     newest: bool = False,
+    grow: bool = False,
 ) -> dict:
     """
     Extrapolation of run_once: same connect → open chat flow, then scrolls up
@@ -981,7 +1126,8 @@ async def run_enhanced(
 
     await runner.open_chat(contact)
     bubbles = await runner.capture_full_history(
-        assets_dir=assets_dir, max_iterations=max_iterations, from_date=from_date, newest=newest,
+        assets_dir=assets_dir, max_iterations=max_iterations, from_date=from_date,
+        newest=newest, grow=grow,
     )
     await runner.close()
 
