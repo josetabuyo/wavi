@@ -538,10 +538,23 @@ class WARunner:
             scroll_top_before = state["scrollTop"]
 
             if scroll_top_before < 20:
-                print(f"[wavi] iter={iteration+1}: at top (scrollTop={scroll_top_before:.0f})", file=sys.stderr)
                 if grow:
-                    grow_reached_top = True
-                break
+                    # WA lazy-loads older messages when scrollTop≈0. Wait and re-check.
+                    await self.session._page.wait_for_timeout(2500)
+                    recheck_pre = await self.session.get_chat_scroll_state()
+                    if recheck_pre and recheck_pre["scrollTop"] > 50:
+                        print(
+                            f"[wavi] iter={iteration+1}: lazy-load detected pre-scroll (scrollTop jumped to {recheck_pre['scrollTop']:.0f}) — continuing",
+                            file=sys.stderr,
+                        )
+                        scroll_top_before = recheck_pre["scrollTop"]
+                    else:
+                        print(f"[wavi] iter={iteration+1}: at top (scrollTop={scroll_top_before:.0f})", file=sys.stderr)
+                        grow_reached_top = True
+                        break
+                else:
+                    print(f"[wavi] iter={iteration+1}: at top (scrollTop={scroll_top_before:.0f})", file=sys.stderr)
+                    break
 
             # Anchor = topmost visible = oldest = bubble with max id.
             # If current view is all-media (bubbles empty), skip anchor — key dedup handles it.
@@ -721,9 +734,21 @@ class WARunner:
                 break
 
             if new_count == 0 and scroll_top_after < 20:
-                print("[wavi] No new bubbles and at top — done.", file=sys.stderr)
                 if grow:
+                    # WA lazy-loads older messages when scrollTop≈0. Wait and re-check
+                    # before declaring done — a jump in scrollTop means more content loaded.
+                    await self.session._page.wait_for_timeout(2500)
+                    recheck = await self.session.get_chat_scroll_state()
+                    if recheck and recheck["scrollTop"] > 50:
+                        print(
+                            f"[wavi] iter={iteration+1}: lazy-load detected (scrollTop jumped to {recheck['scrollTop']:.0f}) — continuing",
+                            file=sys.stderr,
+                        )
+                        scroll_top_after = recheck["scrollTop"]
+                        bubbles = new_bubbles
+                        continue
                     grow_reached_top = True
+                print("[wavi] No new bubbles and at top — done.", file=sys.stderr)
                 break
 
             bubbles = new_bubbles

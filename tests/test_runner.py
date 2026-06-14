@@ -1025,7 +1025,9 @@ class TestGrowFastForwardAnchorRecycled:
             {"scrollTop": 300, "scrollHeight": 2000, "clientHeight": 500},
             # 3. FF iter 1 — scrollTop<20: anchor NOT found yet → should break, not return []
             {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
-            # 4. Main loop iter 0 — already at top, break
+            # 4. Main loop iter 0 pre-scroll — already at top (scrollTop<20)
+            {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
+            # 5. Lazy-load recheck — still at top (no new content loaded), truly done
             {"scrollTop": 5, "scrollHeight": 2000, "clientHeight": 500},
         ])
 
