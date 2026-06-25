@@ -64,8 +64,13 @@ class WARunner:
         await runner.close()
     """
 
-    def __init__(self, profile_dir: str | Path, headless: bool = True):
-        self.session = WASession(profile_dir, headless=headless)
+    def __init__(
+        self,
+        profile_dir: str | Path,
+        headless: bool = True,
+        chrome_path: Path | None = None,
+    ):
+        self.session = WASession(profile_dir, headless=headless, chrome_path=chrome_path)
         self._assets_dir: Path | None = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -1142,6 +1147,7 @@ async def run_enhanced(
     from_date: _Date | None = None,
     newest: bool = False,
     grow: bool = False,
+    chrome_path: Path | None = None,
 ) -> dict:
     """
     Extrapolation of run_once: same connect → open chat flow, then scrolls up
@@ -1153,7 +1159,7 @@ async def run_enhanced(
 
     Returns {"bubbles": [...all unique bubbles...]}.
     """
-    runner = WARunner(profile_dir, headless=headless)
+    runner = WARunner(profile_dir, headless=headless, chrome_path=chrome_path)
     status = await runner.connect()
     if status == "qr_needed":
         await runner.close()

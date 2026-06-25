@@ -481,10 +481,20 @@ async def _capture_qr(profile: Path, load_timeout_s: int = 60) -> str | None:
                 f"{_AUTH_SEL}, {_QR_SEL}", timeout=load_timeout_s * 1000
             )
         except Exception:
-            click.echo(f"Timeout esperando QR/auth en {page.url!r}", err=True)
-            await browser.close()
-            await pw.stop()
-            return None
+            # Profile may have stale state — reload WA Web once before giving up.
+            # This avoids the need for --new (which creates a new linked device).
+            click.echo("WA Web no respondió — recargando e intentando de nuevo...", err=True)
+            try:
+                await page.goto("about:blank", timeout=5_000)
+                await page.goto("https://web.whatsapp.com/", wait_until="domcontentloaded", timeout=30_000)
+                await page.wait_for_selector(
+                    f"{_AUTH_SEL}, {_QR_SEL}", timeout=load_timeout_s * 1000
+                )
+            except Exception:
+                click.echo(f"Timeout esperando QR/auth en {page.url!r}", err=True)
+                await browser.close()
+                await pw.stop()
+                return None
 
         if await page.query_selector(_AUTH_SEL):
             await browser.close()
@@ -1179,3 +1189,42 @@ def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str)
                 click.echo(f"  screenshot.png  ← browser viewport at {shot}")
 
 
+# ── serve ─────────────────────────────────────────────────────────────────────
+
+@main.command("serve")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
+@click.option("--port", default=8900, show_default=True, help="Port to listen on.")
+@click.option("--sessions-dir", default=None,
+              help="Directory containing session profiles. Defaults to data/sessions/ or WAVI_SESSIONS_DIR env var.")
+@click.option("--reload", is_flag=True, hidden=True, help="Enable uvicorn auto-reload (dev only).")
+def serve(host: str, port: int, sessions_dir: str | None, reload: bool):
+    """Start the wavi HTTP JSON API server.
+
+    Exposes all wavi operations (get, send, check-updates, status, …) over HTTP
+    so any language (Node.js, Ruby, Go, …) can integrate without calling the CLI
+    as a subprocess.
+
+    \b
+    Examples:
+      wavi serve                            # 127.0.0.1:8900
+      wavi serve --port 9000
+      wavi serve --host 0.0.0.0 --port 8900
+      WAVI_SESSIONS_DIR=/data/sessions wavi serve
+
+    API docs available at http://<host>:<port>/docs once running.
+    """
+    try:
+        from wavi.server import serve as _serve
+    except ImportError:
+        click.echo(
+            "FastAPI/uvicorn not installed.\n"
+            "Run: pip install 'wavi[server]'  or  uv add 'wavi[server]'",
+            err=True,
+        )
+        sys.exit(1)
+
+    sd = Path(sessions_dir) if sessions_dir else None
+    click.echo(f"wavi HTTP server → http://{host}:{port}")
+    click.echo(f"Docs             → http://{host}:{port}/docs")
+    click.echo(f"Sessions dir     → {sd or DEFAULT_SESSIONS_DIR}")
+    _serve(host=host, port=port, sessions_dir=sd, reload=reload)

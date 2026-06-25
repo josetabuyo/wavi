@@ -498,9 +498,15 @@ class WASession:
 
     _AUTHED_SEL = "[data-testid='chat-list'], #side, input[role='textbox']"
 
-    def __init__(self, profile_dir: str | Path, headless: bool = True):
+    def __init__(
+        self,
+        profile_dir: str | Path,
+        headless: bool = True,
+        chrome_path: Path | None = None,
+    ):
         self.profile_dir   = Path(profile_dir)
         self.headless      = headless
+        self.chrome_path   = Path(chrome_path) if chrome_path else REAL_CHROME
         self._pw           = None
         self._browser      = None
         self._context      = None
@@ -563,7 +569,7 @@ class WASession:
         (self.profile_dir / "SingletonLock").unlink(missing_ok=True)
 
         args = [
-            str(REAL_CHROME),
+            str(self.chrome_path),
             f"--user-data-dir={self.profile_dir}",
             f"--remote-debugging-port={self._port}",
             "--no-first-run",
