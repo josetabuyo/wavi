@@ -7,6 +7,7 @@ Commands:
   wavi get       [session] <contact>  — capture full message history from a chat
   wavi status    [session]            — check if session daemon is alive + authenticated
   wavi bubbles   <screenshot>         — run vision pipeline on a local screenshot
+  wavi alias     set/list/remove      — manage human-readable session aliases
 
 Session model
 ─────────────
@@ -16,6 +17,22 @@ appears.  Only if QR is needed does it kill the headless Chrome and open a
 visible window for scanning.  After QR confirmation, it switches back to
 headless.  All subsequent commands connect to the headless daemon via CDP.
 'wavi stop' performs a graceful shutdown (navigates to about:blank, then SIGTERM).
+
+Alias system
+────────────
+Session names can be human-readable aliases defined in data/sessions/aliases.json.
+All commands accept an alias wherever a session argument is expected.
+  wavi alias set pulpo-bot 5491155612767
+  wavi alias set mateo 5491122608221
+  wavi status pulpo-bot
+  wavi get mateo "Contacto"
+
+LID protection (--new)
+──────────────────────
+WhatsApp Web assigns a LID (Linked Device ID) to each new session registration.
+'wavi connect --new' now validates that the detected phone looks like an E.164
+number (7–15 digits, server==='c.us') and falls back to the SESSION argument if
+the JS returns a WA-internal LID instead of the real phone number.
 """
 from __future__ import annotations
 
@@ -65,25 +82,49 @@ _VISIBLE_CHROME_ARGS = _HEADLESS_CHROME_ARGS  # same flags, no --headless=new
 
 
 _DEFAULT_ALIAS_FILE = DEFAULT_SESSIONS_DIR / ".default"
+_ALIASES_FILE = DEFAULT_SESSIONS_DIR / "aliases.json"
+
+
+def _load_aliases() -> dict[str, str]:
+    """Load session aliases from aliases.json, migrating legacy .default if needed."""
+    if _ALIASES_FILE.exists():
+        try:
+            return json.loads(_ALIASES_FILE.read_text())
+        except Exception:
+            pass
+    # Migrate legacy .default → aliases.json
+    if _DEFAULT_ALIAS_FILE.exists():
+        target = _DEFAULT_ALIAS_FILE.read_text().strip()
+        if target:
+            return {"default": target}
+    return {}
+
+
+def _save_aliases(aliases: dict[str, str]) -> None:
+    DEFAULT_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _ALIASES_FILE.write_text(json.dumps(aliases, indent=2, ensure_ascii=False) + "\n")
+
+
+def _resolve_alias(name: str) -> str:
+    """Resolve an alias to its session folder name. Returns name unchanged if not an alias."""
+    return _load_aliases().get(name, name)
 
 
 def _profile(session: str) -> Path:
     """Return the filesystem path for a session.
 
-    'default' is an alias: it resolves to whatever session name is stored in
-    data/sessions/.default (written after QR scan or set manually).
-    If the alias file doesn't exist, falls back to the literal 'default' dir.
+    Session can be an alias (defined in aliases.json) or a literal folder name.
+    'default' always resolves via the alias table.
     """
-    if session == "default" and _DEFAULT_ALIAS_FILE.exists():
-        target = _DEFAULT_ALIAS_FILE.read_text().strip()
-        if target:
-            return DEFAULT_SESSIONS_DIR / target
-    return DEFAULT_SESSIONS_DIR / session
+    return DEFAULT_SESSIONS_DIR / _resolve_alias(session)
 
 
 def _set_default_alias(session_name: str) -> None:
     """Point the 'default' alias to a specific session name."""
-    DEFAULT_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    aliases = _load_aliases()
+    aliases["default"] = session_name
+    _save_aliases(aliases)
+    # Keep legacy .default in sync for external tools that may read it
     _DEFAULT_ALIAS_FILE.write_text(session_name)
 
 
@@ -700,7 +741,22 @@ def connect(session: str, open_browser: bool, force_new: bool):
             );
             if (Store && Store.Me) {
                 const id = Store.Me.get('id');
-                if (id && id.user) return id.user;
+                // WA now uses LIDs (Linked IDs) for privacy; server==='lid' means
+                // id.user is an opaque internal ID, not the real phone number.
+                // Only trust id.user when server==='c.us' (real phone) or undefined
+                // (older WA versions that predate LIDs).
+                if (id && id.user && id.server !== 'lid') return id.user;
+                // Try serialized form: "1234567890@c.us" (never "@lid")
+                if (id && id._serialized) {
+                    const m = id._serialized.match(/^(\\d+)@c\\.us$/);
+                    if (m) return m[1];
+                }
+                // Try explicit phone field
+                const ph = Store.Me.get('phone');
+                if (ph && typeof ph === 'string') {
+                    const digits = ph.replace(/\\D/g, '');
+                    if (digits.length >= 7) return digits;
+                }
             }
         } catch(e) {}
         try {
@@ -742,10 +798,29 @@ def connect(session: str, open_browser: bool, force_new: bool):
             pass
 
     asyncio.run(_flush_and_read_phone())
+
+    # Validate: a real E.164-without-plus is 7–15 digits only.
+    # If the JS returned something outside that range it's almost certainly a
+    # WA-internal ID that slipped through (e.g. a LID from an older WA build
+    # that doesn't expose id.server).  Discard it rather than naming the
+    # session folder after an opaque ID.
+    if detected_phone and not (detected_phone.isdigit() and 7 <= len(detected_phone) <= 15):
+        click.echo(
+            f"Advertencia: '{detected_phone}' no parece un número E.164 válido "
+            f"({len(detected_phone)} dígitos) — descartando.", err=True
+        )
+        detected_phone = None
+
     if detected_phone:
         click.echo(f"Teléfono detectado: {detected_phone}")
     else:
         click.echo("No se pudo detectar el número de teléfono.", err=True)
+        # --new with a phone-like session argument: use it as fallback so the
+        # session doesn't end up named _tmp_<timestamp> or an opaque LID.
+        if force_new and session != "default" and session.isdigit() and 7 <= len(session) <= 15:
+            detected_phone = session
+            click.echo(f"Usando el SESSION pasado como nombre de sesión: '{detected_phone}'")
+
     _terminate_proc(headless_proc)
     (profile / "SingletonLock").unlink(missing_ok=True)
     time.sleep(1)
@@ -768,7 +843,8 @@ def connect(session: str, open_browser: bool, force_new: bool):
             _set_default_alias(detected_phone)
             click.echo(f"'default' ahora apunta a '{detected_phone}'")
     elif not detected_phone and force_new:
-        click.echo(f"No se detectó el número. Sesión guardada como '{profile.name}'.")
+        click.echo(f"No se detectó el número. Sesión guardada como '{profile.name}'.", err=True)
+        click.echo("AVISO: revisá 'wavi list' y renombrá la sesión manualmente.", err=True)
     elif session == "default" and not detected_phone:
         pass  # keep as-is, alias not updated
     else:
@@ -1187,6 +1263,74 @@ def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str)
             click.echo(f"\nOutput: {adir}/")
             if shot:
                 click.echo(f"  screenshot.png  ← browser viewport at {shot}")
+
+
+# ── alias ─────────────────────────────────────────────────────────────────────
+
+@main.group()
+def alias():
+    """Manage human-readable aliases for sessions.
+
+    \b
+    Examples:
+      wavi alias set mateo 5491122608221
+      wavi alias set pulpo-bot 5491155612767
+      wavi alias list
+      wavi alias remove mateo
+
+    Once set, any command accepts the alias in place of the phone number:
+      wavi get mateo "José"
+      wavi status pulpo-bot
+    """
+
+
+@alias.command("set")
+@click.argument("name")
+@click.argument("session")
+def alias_set(name: str, session: str):
+    """Assign NAME as a friendly alias for SESSION (phone number or folder name)."""
+    if name in ("default",) and not session:
+        click.echo("Usá 'wavi connect' para cambiar el default.", err=True)
+        sys.exit(1)
+    profile = DEFAULT_SESSIONS_DIR / session
+    if not profile.exists():
+        click.echo(f"Sesión '{session}' no encontrada en {DEFAULT_SESSIONS_DIR}", err=True)
+        sys.exit(1)
+    aliases = _load_aliases()
+    aliases[name] = session
+    _save_aliases(aliases)
+    if name == "default":
+        _DEFAULT_ALIAS_FILE.write_text(session)
+    click.echo(f"Alias '{name}' → '{session}'")
+
+
+@alias.command("remove")
+@click.argument("name")
+def alias_remove(name: str):
+    """Remove alias NAME (does not delete the session folder)."""
+    if name == "default":
+        click.echo("El alias 'default' no se puede eliminar.", err=True)
+        sys.exit(1)
+    aliases = _load_aliases()
+    if name not in aliases:
+        click.echo(f"Alias '{name}' no existe.", err=True)
+        sys.exit(1)
+    del aliases[name]
+    _save_aliases(aliases)
+    click.echo(f"Alias '{name}' eliminado.")
+
+
+@alias.command("list")
+def alias_list():
+    """List all aliases and the session they point to."""
+    aliases = _load_aliases()
+    if not aliases:
+        click.echo("No hay aliases definidos.")
+        return
+    for name, session in sorted(aliases.items()):
+        profile = DEFAULT_SESSIONS_DIR / session
+        marker = "✓" if profile.exists() else "✗ carpeta no encontrada"
+        click.echo(f"  {name:<20} → {session}  {marker}")
 
 
 # ── serve ─────────────────────────────────────────────────────────────────────

@@ -14,6 +14,20 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |
 | `wavi queue [session]` | Show operation queue status | — |
 | `wavi stop [session]` | Gracefully shut down the Chrome daemon | — |
+| `wavi alias set <name> <session>` | Assign a friendly alias to a session | — |
+| `wavi alias list` | List all aliases | — |
+| `wavi alias remove <name>` | Remove an alias | — |
+
+### Session aliases
+
+All commands accept an alias in place of a phone number. Aliases are stored in `data/sessions/aliases.json`.
+
+```bash
+wavi alias set pulpo-bot 5491155612767
+wavi alias set mateo 5491122608221
+wavi status pulpo-bot       # same as: wavi status 5491155612767
+wavi get mateo "Contacto"
+```
 
 ## Architecture
 
