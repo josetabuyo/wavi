@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -53,7 +54,19 @@ from wavi.session import CDP_PORT, PID_FILE, PORT_FILE, WINDOW_H, WINDOW_W
 
 load_dotenv()
 
-DEFAULT_SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
+def _resolve_sessions_dir() -> Path:
+    # 1. Explicit env var (pipx installs, CI, Pulpo, any non-repo context)
+    if "WAVI_SESSIONS_DIR" in os.environ:
+        return Path(os.environ["WAVI_SESSIONS_DIR"])
+    # 2. Repo-relative path — only valid for editable/dev installs where data/ exists
+    repo_relative = Path(__file__).parent.parent / "data" / "sessions"
+    if repo_relative.parent.exists():
+        return repo_relative
+    # 3. XDG fallback for pipx/system installs without env var
+    xdg_data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return xdg_data / "wavi" / "sessions"
+
+DEFAULT_SESSIONS_DIR = _resolve_sessions_dir()
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 _HEADLESS_CHROME_ARGS = [
