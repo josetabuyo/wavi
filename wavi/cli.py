@@ -1428,6 +1428,30 @@ def alias_list():
         click.echo(f"  {name:<20} → {session}  {marker}")
 
 
+# ── install-skill ─────────────────────────────────────────────────────────────
+
+@main.command("install-skill")
+def install_skill() -> None:
+    """Install the wavi Claude Code skill to ~/.claude/skills/wavi/.
+
+    Copies SKILL.md (session safety rules + command reference) to the location
+    where Claude Code picks it up as the /wavi skill.  Run this after every
+    'pip install --upgrade wavi-lib' to keep the skill in sync.
+
+    \b
+    After installing, restart Claude Code once to activate the skill.
+    """
+    skill_src = Path(__file__).parent / "skill" / "SKILL.md"
+    if not skill_src.exists():
+        click.echo(f"Skill source not found at {skill_src}", err=True)
+        sys.exit(1)
+    skill_dst = Path.home() / ".claude" / "skills" / "wavi"
+    skill_dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(skill_src, skill_dst / "SKILL.md")
+    click.echo(f"Skill installed → {skill_dst}/SKILL.md")
+    click.echo("Restart Claude Code to activate /wavi.")
+
+
 # ── serve ─────────────────────────────────────────────────────────────────────
 
 @main.command("serve")

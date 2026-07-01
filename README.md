@@ -8,6 +8,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 |---|---|---|
 | `wavi connect [session]` | Start Chrome daemon, authenticate via QR | — |
 | `wavi status [session]` | Check if daemon is alive and authenticated | DOM |
+| `wavi reload [session]` | **Safe reload** — about:blank flush → WA → verify auth | — |
 | `wavi get <contact>` | Extract full message history from a chat (`--grow` to page through in chunks) | **Vision** |
 | `wavi send <contact> <message>` | Send a message | DOM + keyboard |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
@@ -17,6 +18,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi alias set <name> <session>` | Assign a friendly alias to a session | — |
 | `wavi alias list` | List all aliases | — |
 | `wavi alias remove <name>` | Remove an alias | — |
+| `wavi install-skill` | Install the Claude Code `/wavi` skill to `~/.claude/skills/wavi/` | — |
 
 ### Session aliases
 
@@ -50,6 +52,26 @@ Navigation and sidebar state use JavaScript evaluated directly on the page. Each
 ### Chrome daemon
 
 Chrome runs as a long-lived background process (started by `wavi connect`). Playwright connects and disconnects for each operation without ever killing Chrome. Killing Chrome mid-session corrupts WA's IndexedDB and invalidates the session. Shutdown is done only via `wavi stop`, which navigates to `about:blank` first so WA can flush state.
+
+### ⚠️ Session safety — critical rules
+
+**Never call `Page.reload` or `Storage.clearDataForOrigin` on the WhatsApp tab via raw CDP.**
+
+WhatsApp Web holds in-flight IndexedDB write transactions while running. Interrupting the page mid-transaction (via `Page.reload`, `Page.navigate`, or storage wipe) corrupts the LevelDB database and forces a full QR re-scan. `Storage.clearDataForOrigin` is worse — it deletes auth tokens entirely.
+
+**If WA becomes unresponsive or throttled, use the safe cycle:**
+
+```bash
+# Option A — soft reload (~15s, Chrome keeps running)
+wavi reload pulpo-bot
+# → session=restored  ✓
+# → session=qr_needed  auth lost, need QR scan
+
+# Option B — full restart (~30s)
+wavi stop pulpo-bot && wavi connect pulpo-bot
+```
+
+**External agents (Pulpo, scripts, automation):** never send CDP commands directly to the WA tab. Always go through `wavi` CLI or the HTTP API (`wavi serve`). If `wavi reload` returns `qr_needed`, alert a human — do not attempt to recover programmatically.
 
 ## Setup
 
