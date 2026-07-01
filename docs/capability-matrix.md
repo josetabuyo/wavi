@@ -49,6 +49,7 @@ cualquier señal (regla anti-drift).
 | Dirección inbound/outbound | **DOM**: íconos `msg-check`/`msg-dbl-check` | ticks por template matching | 🔮 Fase 3 | `test_runner.py` |
 | Badge no-leídos | (no usado actualmente) | disco verde con dígitos por color | 📋 | — |
 | Abrir/cerrar panel New Chat | **DOM**: `data-icon="new-chat-outline"`/`back-refreshed` | íconos por visión; Escape ya es fallback de cierre | parcial ✅ | `test_runner.py` |
+| Limpiar búsqueda del sidebar | **DOM**: `span[data-icon="search-back-btn"]` o `[data-testid="back"]` en `#side`/`#pane-side`; fallback: React native setter sobre `[data-testid="search-input"]` | flecha izq. en borde de la barra de búsqueda por visión | 📋 | — |
 | Lista de contactos completa | **DOM**: `[role="listitem"]` + scroll virtualizado | OCR del panel | 📋 | `test_runner.py` |
 
 ## Sesión y ciclo de vida

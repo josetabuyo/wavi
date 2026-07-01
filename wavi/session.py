@@ -95,6 +95,10 @@ _BLOB_INIT_SCRIPT = """
 # _OPEN_NEW_CHAT_JS           | span[data-icon="new-chat-outline"]| locate pencil/compose icon in left sidebar
 # _EXTRACT_CONTACTS_JS        | [role="listitem"] > [role="gridcell"] | OCR the "Nuevo chat" panel contact list
 # _CLOSE_NEW_CHAT_JS          | span[data-icon="back-refreshed"] | locate back-arrow icon via vision in panel header
+# _CLEAR_SIDEBAR_SEARCH_JS    | span[data-icon="search-back-btn"]| locate back-arrow at left of sidebar search bar
+#                             |   or [data-testid="back"] in     |   via vision; or click search bar + Escape
+#                             |   #side/#pane-side; fallback:    |
+#                             |   clear input via React setter   |
 # _CONTACTS_SCROLL_STATE_JS   | computed overflow on listitem parent | N/A — scroll state only
 # _SCROLL_CONTACTS_DOWN_JS    | same as above                    | N/A — scroll control only
 # _EXTRACT_VISIBLE_CONTACTS_JS| [role="listitem"] > [role="gridcell"] | OCR visible contact names
@@ -161,12 +165,14 @@ _CLICK_SCROLL_BOTTOM_BTN_JS = """
 
 _CHAT_SCROLL_JS = """
 () => {
-    const selectors = [
-        '[data-testid="conversation-panel-messages"]',
-        '#main div[role="region"]',
-        '#main .copyable-area'
-    ];
-    for (const s of selectors) {
+    // Primary selector: always return its state even when not scrollable so the
+    // caller can detect scrollTop≈0 and stop gracefully instead of treating a
+    // short (single-message) chat as "panel not found".
+    const primary = document.querySelector('[data-testid="conversation-panel-messages"]');
+    if (primary)
+        return { scrollTop: primary.scrollTop, scrollHeight: primary.scrollHeight, clientHeight: primary.clientHeight };
+    // Fallback selectors: require scrollability to avoid matching unrelated containers.
+    for (const s of ['#main div[role="region"]', '#main .copyable-area']) {
         const el = document.querySelector(s);
         if (el && el.scrollHeight > el.clientHeight)
             return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
@@ -330,6 +336,41 @@ _CLOSE_NEW_CHAT_JS = """
     if (!btn) return false;
     btn.click();
     return true;
+}
+"""
+
+# DOM signal: span[data-icon="search-back-btn"] or [data-testid="back"] inside #side/#pane-side.
+# Clicking the search back button exits search mode and restores the normal sidebar — the only
+# clean exit when the sidebar search bar is filled but the page focus is elsewhere (e.g. after
+# navigate_to_contact opens a chat and leaves the search bar filled but unfocused).
+# Fallback: clear the input value directly via React's native setter so the framework detects
+# the change without needing DOM focus.
+# Vision fallback: locate the left-pointing arrow at the left edge of the sidebar search bar.
+_CLEAR_SIDEBAR_SEARCH_JS = """
+() => {
+    // Try to click the search back button (exits search mode entirely).
+    const backBtn =
+        document.querySelector('span[data-icon="search-back-btn"]')?.closest('button')
+     || document.querySelector('#side [data-testid="back"]')
+     || document.querySelector('#pane-side [data-testid="back"]');
+    if (backBtn) {
+        backBtn.click();
+        return 'back_btn';
+    }
+    // Fallback: find the sidebar search input and clear it programmatically.
+    // React controls the input value, so we use the native setter to bypass
+    // the synthetic event layer and then fire 'input' so React reconciles.
+    const inp =
+        document.querySelector('[data-testid="search-input"]')
+     || document.querySelector('#side input[type="text"]')
+     || document.querySelector('#pane-side input[type="text"]');
+    if (inp && inp.value) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(inp, '');
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        return 'cleared_input';
+    }
+    return null;
 }
 """
 
@@ -958,19 +999,18 @@ class WASession:
     async def ensure_chat_list(self) -> None:
         """Navigate browser to the clean main chat list.
 
-        Handles three leftover states from previous commands:
-        - "Nuevo chat" panel open (list-contacts)  → JS back-button click
-        - Sidebar search bar filled (navigate_to_contact/get/send) → Escape x3
-        - Any other overlay/drawer → Escape
+        Handles leftover states from previous commands:
+        - "Nuevo chat" panel open → JS back-button click (_CLOSE_NEW_CHAT_JS)
+        - Sidebar search bar filled → JS back-button / input clear (_CLEAR_SIDEBAR_SEARCH_JS)
+        - Any other overlay → Escape as final safety net
         """
-        # Close "Nuevo chat" panel via back button if present.
         await self._page.evaluate(_CLOSE_NEW_CHAT_JS)
         await self._page.wait_for_timeout(300)
-        # Three Escapes: first clears/unfocuses sidebar search bar,
-        # second dismisses any remaining overlay, third is a safety net.
-        for _ in range(3):
-            await self._page.keyboard.press("Escape")
-            await self._page.wait_for_timeout(250)
+        await self._page.evaluate(_CLEAR_SIDEBAR_SEARCH_JS)
+        await self._page.wait_for_timeout(300)
+        # Single Escape as safety net for any remaining overlay (e.g. a dialog).
+        await self._page.keyboard.press("Escape")
+        await self._page.wait_for_timeout(250)
         try:
             await self._page.wait_for_selector(
                 '[data-testid="chat-list"], #pane-side', timeout=3_000
