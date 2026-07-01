@@ -58,6 +58,7 @@ cualquier señal (regla anti-drift).
 |---|---|---|---|---|
 | Autenticación / QR | **DOM**: selectores `chat-list` / `qrcode` / `data-ref` | — | — | `test_session.py` |
 | Daemon Chrome (vida/puerto) | PID + port files, CDP | scan local de sockets (ADR-008) | ✅ | `test_lazy_session.py` |
+| Resolución del directorio de sesiones | `WAVI_SESSIONS_DIR` env var → `data/sessions/` repo-relativo (editable) → `~/.local/share/wavi/sessions` XDG | — | ✅ | — |
 | Cola por sesión | flock POSIX (`queue.py`) | — | — | `test_lazy_session.py` |
 | Viewport estable 1280×1920 DPR=1 | flags de Chrome (ADR-002) | — | — | `test_session.py::TestViewportRegression` |
 
