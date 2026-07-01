@@ -881,6 +881,88 @@ def connect(session: str, open_browser: bool, force_new: bool):
     click.echo(f"Usá 'wavi stop {final_name}' para cerrar Chrome de manera segura.")
 
 
+# ── reload ────────────────────────────────────────────────────────────────────
+
+@main.command("reload")
+@click.argument("session", default="default")
+def reload_session(session: str):
+    """Safely reload WhatsApp Web for SESSION without touching Chrome.
+
+    Navigates to about:blank to let WA flush its IndexedDB state,
+    waits for the flush, then navigates back to WhatsApp Web and
+    verifies authentication.
+
+    Use this when WA becomes unresponsive or throttled — NEVER use
+    Page.reload via raw CDP, which interrupts in-flight IndexedDB
+    writes and corrupts the session.
+
+    \b
+    Returns:
+      session=restored  — WA loaded and authenticated
+      session=qr_needed — WA loaded but auth lost (needs QR scan)
+      session=timeout   — WA did not load within the timeout
+      session=error     — daemon not running or CDP unreachable
+    """
+    profile = _profile(session)
+
+    async def _go() -> str:
+        from playwright.async_api import async_playwright
+        port = _session_port(profile)
+        pw = await async_playwright().start()
+        try:
+            browser = await pw.chromium.connect_over_cdp(
+                f"http://localhost:{port}", timeout=5_000
+            )
+            ctx = browser.contexts[0] if browser.contexts else None
+            if not ctx or not ctx.pages:
+                await pw.stop()
+                return "error"
+            page = ctx.pages[0]
+
+            # Step 1: flush — navigate away so WA commits all pending IndexedDB writes
+            await page.goto("about:blank", timeout=8_000)
+            await asyncio.sleep(3)
+
+            # Step 2: reload WA
+            await page.goto("https://web.whatsapp.com/", wait_until="domcontentloaded", timeout=30_000)
+
+            # Step 3: wait for auth or QR
+            QR = "[data-testid='qrcode'], div[data-ref], canvas"
+            AUTH = "[data-testid='chat-list'], #side, input[role='textbox']"
+            try:
+                await page.wait_for_selector(f"{AUTH}, {QR}", timeout=60_000)
+            except Exception:
+                await browser.close()
+                await pw.stop()
+                return "timeout"
+
+            result = "restored" if await page.query_selector(AUTH) else "qr_needed"
+            await browser.close()
+            await pw.stop()
+            return result
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+            return "error"
+
+    from wavi.session import WASession
+    s = WASession(profile)
+    if not s.daemon_alive():
+        click.echo(f"daemon=stopped — ejecutá 'wavi connect {session}' primero.", err=True)
+        sys.exit(1)
+
+    pid = s._load_pid()
+    port = _session_port(profile)
+    click.echo(f"Recargando WA para '{session}' (PID {pid}, CDP :{port})...")
+    result = asyncio.run(_go())
+    click.echo(f"session={result}")
+    if result != "restored":
+        sys.exit(1)
+
+
 # ── stop ──────────────────────────────────────────────────────────────────────
 
 @main.command()
