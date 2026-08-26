@@ -48,6 +48,37 @@ chat sin antes:
    chat real quedó abierto (`conversation-panel-messages` presente) antes
    de continuar.
 
+## Addendum (2026-08-26, agentes externos)
+
+Uso real por un agente externo (Pulpo, vía la API HTTP `wavi serve`) expuso
+dos huecos:
+
+1. **Falsos candidatos por "grupos compartidos".** WA también devuelve, en
+   los mismos resultados de búsqueda, grupos cuyo *propio nombre no tiene
+   nada que ver* con lo buscado — aparecen solo porque la persona buscada es
+   miembro (ej. buscar "Rodolfo Prado" devolvía también "Blanca y sus
+   pollitos"). Se filtran ahora por `_name_matches()`: solo se consideran
+   candidatos cuyo nombre realmente contiene (o está contenido en) lo
+   buscado, insensible a mayúsculas/acentos.
+2. **Sin TTY, sin forma de resolver una ambigüedad real ya vista antes.**
+   Un agente que ya sabe (por un intento previo) cuál opción es la correcta
+   no tenía forma de confirmarlo sin una terminal interactiva. Se agregó
+   `--pick <n>` (1-based) a `wavi get`/`wavi send` — selecciona
+   directamente esa opción de la lista, sin prompt.
+3. **Orden por actividad.** Cuando quedan varias coincidencias reales, las
+   que tienen un chat existente (con hora de última actividad visible) se
+   priorizan sobre contactos guardados/no guardados nunca contactados. No
+   se parsean fechas/horas de WA — WA ya lista sus propios chats por
+   recencia, así que basta con anteponer "tiene actividad" a "nunca
+   mensajeado" y mantener el orden de descubrimiento dentro de cada grupo.
+4. **Efecto colateral encontrado y arreglado:** el propio flujo de refresco
+   (paso 2 de la Decisión) dejaba texto tipeado en el buscador del sidebar
+   sin limpiar antes de llamar a `navigate_to_new_chat()` — con la búsqueda
+   activa, WA oculta el botón de lápiz/nuevo-chat, así que
+   `navigate_to_new_chat()` fallaba con `RuntimeError` buscándolo. Ahora
+   `navigate_to_new_chat()` llama a `ensure_chat_list()` primero siempre,
+   para cualquier invocador, no solo para el refresco de `_resolve_contact`.
+
 ## Consecuencias
 
 - Cualquier acción de la CLI sobre "un contacto" imprime primero

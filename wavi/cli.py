@@ -915,7 +915,9 @@ def status(session: str):
               help="Stop scrolling at this date (YYYY-MM-DD). Captures messages on or after this date.")
 @click.option("--newest", is_flag=True, help="Incremental update: stop when the first already-known message is found.")
 @click.option("--grow", is_flag=True, help="Append older messages to existing history, block by block. Use with --max-iter to page through a long chat history in chunks.")
-def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None, newest: bool, grow: bool):
+@click.option("--pick", type=int, default=None,
+              help="Pick option N (1-based) when CONTACT is ambiguous, without needing a TTY — see the numbered list a prior ambiguous call printed.")
+def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None, newest: bool, grow: bool, pick: int | None):
     """Capture the full message history from CONTACT's chat.
 
     Scrolls up from the most recent message, capturing all visible bubbles per
@@ -956,6 +958,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             from_date=from_date_obj,
             newest=newest,
             grow=grow,
+            pick=pick,
         )
 
     from wavi.queue import is_locked, session_lock
@@ -998,7 +1001,9 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
 @click.argument("contact")
 @click.argument("message")
 @click.option("--screenshot-out", default=None, help="Save a screenshot of the chat after sending.")
-def send(session: str, contact: str, message: str, screenshot_out: str | None):
+@click.option("--pick", type=int, default=None,
+              help="Pick option N (1-based) when CONTACT is ambiguous, without needing a TTY — see the numbered list a prior ambiguous call printed.")
+def send(session: str, contact: str, message: str, screenshot_out: str | None, pick: int | None):
     """Send MESSAGE to CONTACT via WhatsApp.
 
     Opens the chat with CONTACT, types MESSAGE, and presses Enter.
@@ -1017,7 +1022,7 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None):
             if status != "restored":
                 raise RuntimeError(f"Sesión no autenticada (estado={status}). Ejecutá 'wavi connect' primero.")
 
-            await s.navigate_to_contact(contact)
+            await s.navigate_to_contact(contact, pick=pick)
             meta = await s.send_message(message)
             click.echo(f"Mensaje enviado a '{contact}' (input @ {meta['x']},{meta['y']})")
 

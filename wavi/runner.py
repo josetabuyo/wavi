@@ -87,8 +87,8 @@ class WARunner:
 
     # ── Chat navigation ───────────────────────────────────────────────────────
 
-    async def open_chat(self, contact: str) -> None:
-        await self.session.navigate_to_contact(contact)
+    async def open_chat(self, contact: str, pick: int | None = None) -> None:
+        await self.session.navigate_to_contact(contact, pick=pick)
 
     # ── Vision pipeline ───────────────────────────────────────────────────────
 
@@ -1157,6 +1157,7 @@ async def run_enhanced(
     newest: bool = False,
     grow: bool = False,
     chrome_path: Path | None = None,
+    pick: int | None = None,
 ) -> dict:
     """
     Extrapolation of run_once: same connect → open chat flow, then scrolls up
@@ -1165,6 +1166,9 @@ async def run_enhanced(
     iter_000/ holds the same initial capture that run_once produces.
     iter_001/, iter_002/, … hold successive screens scrolling toward the past.
     history_bubbles.json aggregates all deduplicated messages.
+
+    PICK (1-based) resolves an ambiguous CONTACT non-interactively — see
+    WASession._resolve_contact / ADR-010.
 
     Returns {"bubbles": [...all unique bubbles...]}.
     """
@@ -1179,7 +1183,7 @@ async def run_enhanced(
         await runner.close()
         raise RuntimeError("Connection timed out.")
 
-    await runner.open_chat(contact)
+    await runner.open_chat(contact, pick=pick)
     bubbles = await runner.capture_full_history(
         assets_dir=assets_dir, max_iterations=max_iterations, from_date=from_date,
         newest=newest, grow=grow,

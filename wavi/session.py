@@ -526,10 +526,18 @@ _SEARCH_RESULTS_JS = """
                         || cell.querySelector('[data-testid="cell-frame-secondary-detail"]');
         const subtitle = subtitleEl ? (subtitleEl.textContent || '').trim() : '';
 
+        // Only present on actual chats (Chats section) — a bare saved/unsaved
+        // contact with no conversation history has no last-activity time.
+        // Used to rank real chats above never-messaged contacts when a name
+        // is ambiguous, without trying to parse WA's date/time formats.
+        const tsEl = cell.querySelector('[data-testid="cell-frame-timestamp"]');
+        const last_activity = tsEl ? (tsEl.textContent || '').trim() : '';
+
         const rect = cell.getBoundingClientRect();
         out.push({
             name,
             subtitle,
+            last_activity,
             x: Math.round(rect.x + rect.width / 2),
             y: Math.round(rect.y + rect.height / 2),
         });
@@ -540,6 +548,25 @@ _SEARCH_RESULTS_JS = """
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _normalize_name(s: str) -> str:
+    """Lowercase, strip accents, collapse whitespace — for name matching."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    return " ".join(s.lower().split())
+
+
+def _name_matches(query: str, candidate_name: str) -> bool:
+    """True if CANDIDATE_NAME could plausibly be what QUERY refers to.
+
+    WA's search also returns rows from unrelated "shared groups" — a group
+    whose own name doesn't contain the query at all, just because the
+    person being searched for is a member. Those must never be presented as
+    if they were a match on the query itself.
+    """
+    q, c = _normalize_name(query), _normalize_name(candidate_name)
+    return q in c or c in q
+
 
 def _is_process_alive(pid: int) -> bool:
     try:
@@ -832,16 +859,20 @@ class WASession:
         await self._page.wait_for_timeout(1500)
         return True
 
-    async def _resolve_contact(self, contact: str) -> dict:
+    async def _resolve_contact(self, contact: str, pick: int | None = None) -> dict:
         """Find CONTACT's chat/entry, disambiguating with a human when more
         than one distinct match exists rather than guessing which one they
         meant — the same display name can legitimately belong to an
         existing chat AND one or more unrelated saved/unsaved contacts.
         See docs/adr/ADR-010-contact-disambiguation.md.
 
+        PICK (1-based) selects an option non-interactively — for scripts/
+        agents that already know which index they want (e.g. from a prior
+        failed call's printed list), without needing a TTY.
+
         Never returns a wrong contact silently: raises RuntimeError if
         nothing matches (even after refreshing the contact list) or if
-        disambiguation is needed but no human is available to ask (no TTY).
+        disambiguation is needed but no human/PICK is available to resolve it.
         """
         import sys as _sys
 
@@ -865,16 +896,42 @@ class WASession:
                 f"de contactos. Ver captura: {shot_path}"
             )
 
+        # WA's search also returns rows from unrelated "shared groups" (a
+        # group whose OWN name doesn't match at all, just because CONTACT is
+        # a member) — e.g. searching "Rodolfo Prado" surfacing "Blanca y sus
+        # pollitos". Keep only rows whose own name actually matches the
+        # query; never present those as if they were "Rodolfo Prado".
+        matching = [c for c in candidates if _name_matches(contact, c["name"])]
+        if not matching:
+            shot_path = await self._debug_screenshot("no_contact_found")
+            raise RuntimeError(
+                f"WA devolvió resultados para '{contact}' pero ninguno tiene "
+                f"ese nombre (probablemente grupos compartidos sin relación). "
+                f"Ver captura: {shot_path}"
+            )
+
         seen: set[tuple[str, str]] = set()
         unique: list[dict] = []
-        for c in candidates:
+        for c in matching:
             key = (c["name"], c["subtitle"])
             if key in seen:
                 continue
             seen.add(key)
             unique.append(c)
 
-        if len(unique) == 1:
+        # Real chats (have a last-activity time) ahead of bare contacts
+        # that were never messaged — WA already orders actual chats by
+        # recency, so a stable sort preserves that ordering within each group.
+        unique.sort(key=lambda c: 0 if c.get("last_activity") else 1)
+
+        if pick is not None:
+            if not (1 <= pick <= len(unique)):
+                raise RuntimeError(
+                    f"--pick {pick} está fuera de rango — hay {len(unique)} "
+                    f"coincidencia(s) para '{contact}'."
+                )
+            chosen = unique[pick - 1]
+        elif len(unique) == 1:
             chosen = unique[0]
         else:
             import click as _click
@@ -885,7 +942,8 @@ class WASession:
                 )
                 raise RuntimeError(
                     f"Hay {len(unique)} coincidencias para '{contact}' y no hay "
-                    f"una terminal interactiva para preguntar cuál. Sé más "
+                    f"una terminal interactiva para preguntar cuál. Pasá "
+                    f"--pick <n> con el número de la lista, o sé más "
                     f"específico (ej. incluí el número de teléfono):\n{lines}"
                 )
             _click.echo(f"\nHay {len(unique)} coincidencias para '{contact}' — elegí una:\n")
@@ -899,14 +957,14 @@ class WASession:
         print(f"[wavi] Contacto confirmado: {chosen['name']}{detail}", file=_sys.stderr)
         return chosen
 
-    async def navigate_to_contact(self, contact: str) -> None:
-        chosen = await self._resolve_contact(contact)
+    async def navigate_to_contact(self, contact: str, pick: int | None = None) -> None:
+        chosen = await self._resolve_contact(contact, pick=pick)
 
         opened = await self.open_search_result(chosen["x"], chosen["y"])
         if not opened:
             # The row's coordinates could have shifted (list re-rendered) —
             # resolve and click once more before giving up.
-            chosen = await self._resolve_contact(contact)
+            chosen = await self._resolve_contact(contact, pick=pick)
             opened = await self.open_search_result(chosen["x"], chosen["y"])
 
         if not opened:
@@ -1095,7 +1153,16 @@ class WASession:
         return {"selector": info.get("selector"), "x": info["x"], "y": info["y"]}
 
     async def navigate_to_new_chat(self) -> None:
-        """Open the WhatsApp 'New chat' panel and wait for the contact list to appear."""
+        """Open the WhatsApp 'New chat' panel and wait for the contact list to appear.
+
+        Real bug, 2026-08-26: _resolve_contact's refresh-on-no-match path
+        calls this right after search_contacts() leaves text typed in the
+        sidebar search box (never cleared) — with search active, WA hides
+        the pencil/new-chat button, so it couldn't be found. Ensuring a
+        clean sidebar state first fixes it for every caller, not just that
+        one.
+        """
+        await self.ensure_chat_list()
         clicked = await self._page.evaluate(_OPEN_NEW_CHAT_JS)
         if not clicked:
             raise RuntimeError("Could not find 'new-chat-outline' button in WA Web")

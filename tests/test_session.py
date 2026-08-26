@@ -188,6 +188,79 @@ class TestResolveContact:
         result = await session._resolve_contact("Rodolfo Prado")
         assert result == candidates[1]
 
+    @pytest.mark.asyncio
+    async def test_filters_out_unrelated_shared_groups(self, session):
+        """Real bug reported by Pulpo, 2026-08-26: searching 'Rodolfo Prado'
+        also returned rows for groups they're merely a member of ('Blanca y
+        sus pollitos', 'Grupo por mamá') — WA's own name-independent 'shared
+        groups' search feature. Those must never be presented as if they
+        were named 'Rodolfo Prado'."""
+        candidates = [
+            {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "x": 1, "y": 1},
+            {"name": "Blanca y sus pollitos", "subtitle": "Rodolfo Prado y Noelia Prado también están en este grupo.", "x": 1, "y": 2},
+            {"name": "Grupo por mamá", "subtitle": "Rodolfo Prado y Karen Prado también están en este grupo.", "x": 1, "y": 3},
+        ]
+        session.search_contacts = AsyncMock(return_value=candidates)
+
+        result = await session._resolve_contact("Rodolfo Prado")
+
+        assert result["name"] == "Rodolfo Prado"
+
+    @pytest.mark.asyncio
+    async def test_raises_when_no_candidate_name_actually_matches(self, session, tmp_path):
+        session.profile_dir = tmp_path
+        session.search_contacts = AsyncMock(return_value=[
+            {"name": "Blanca y sus pollitos", "subtitle": "Rodolfo Prado también está en este grupo.", "x": 1, "y": 1},
+        ])
+        with pytest.raises(RuntimeError, match="ninguno tiene ese nombre"):
+            await session._resolve_contact("Rodolfo Prado")
+
+    @pytest.mark.asyncio
+    async def test_accent_and_case_insensitive_match(self, session):
+        candidates = [{"name": "José García", "subtitle": "", "x": 1, "y": 1}]
+        session.search_contacts = AsyncMock(return_value=candidates)
+        result = await session._resolve_contact("jose garcia")
+        assert result["name"] == "José García"
+
+    @pytest.mark.asyncio
+    async def test_real_chats_ranked_above_bare_contacts(self, session, monkeypatch):
+        """The user asked for matches to be ordered by last activity when
+        several exist. WA already lists real chats by recency internally,
+        so ranking 'has any activity at all' above 'never messaged' and
+        keeping discovery order within each group achieves that without
+        having to parse WA's date/time text ourselves."""
+        bare_contact = {"name": "Rodolfo Prado", "subtitle": "+54 9 11 7019-3919", "x": 1, "y": 1}
+        real_chat = {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "last_activity": "9:43 a. m.", "x": 1, "y": 2}
+        # Bare contact appears first in DOM/search order, real chat second —
+        # the real chat must still be ranked first (or offered first).
+        session.search_contacts = AsyncMock(return_value=[bare_contact, real_chat])
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("click.prompt", lambda *a, **k: 1)  # pick "option 1" as offered
+
+        result = await session._resolve_contact("Rodolfo Prado")
+        assert result is real_chat
+
+    @pytest.mark.asyncio
+    async def test_pick_selects_without_tty(self, session, monkeypatch):
+        """--pick lets a script/agent resolve ambiguity non-interactively —
+        no TTY required, no prompt."""
+        candidates = [
+            {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "last_activity": "9:43 a. m.", "x": 1, "y": 1},
+            {"name": "Rodolfo Prado", "subtitle": "+54 9 11 6671-4914", "x": 1, "y": 2},
+        ]
+        session.search_contacts = AsyncMock(return_value=candidates)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        result = await session._resolve_contact("Rodolfo Prado", pick=2)
+        assert result == candidates[1]
+
+    @pytest.mark.asyncio
+    async def test_pick_out_of_range_raises(self, session):
+        candidates = [{"name": "Rodolfo Prado", "subtitle": "a", "x": 1, "y": 1}]
+        session.search_contacts = AsyncMock(return_value=candidates)
+        with pytest.raises(RuntimeError, match="fuera de rango"):
+            await session._resolve_contact("Rodolfo Prado", pick=5)
+
 
 class TestNavigateToContact:
     @pytest.fixture
@@ -519,9 +592,28 @@ class TestNewChatPanel:
 
         await s.navigate_to_new_chat()
 
-        s._page.evaluate.assert_called_once()
-        s._page.wait_for_selector.assert_called_once()
-        s._page.wait_for_timeout.assert_called_once()
+        assert s._page.evaluate.called
+        assert s._page.wait_for_selector.called
+        assert s._page.wait_for_timeout.called
+
+    @pytest.mark.asyncio
+    async def test_navigate_to_new_chat_ensures_clean_sidebar_first(self):
+        """Real bug, 2026-08-26: _resolve_contact's refresh path calls this
+        right after search_contacts() leaves text in the sidebar search box
+        — with search active WA hides the pencil/new-chat button. Must
+        clear that state before looking for the button."""
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        s._page.evaluate = AsyncMock(return_value=True)
+        s._page.wait_for_selector = AsyncMock()
+        s._page.wait_for_timeout = AsyncMock()
+
+        await s.navigate_to_new_chat()
+
+        # ensure_chat_list's own evaluate calls (_CLOSE_NEW_CHAT_JS,
+        # _CLEAR_SIDEBAR_SEARCH_JS) plus the pencil-icon click itself.
+        assert s._page.evaluate.call_count >= 3
+        s._page.keyboard.press.assert_any_call("Escape")
 
     @pytest.mark.asyncio
     async def test_navigate_to_new_chat_not_found(self):
