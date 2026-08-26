@@ -13,6 +13,12 @@ solo cuando headless=True y la página aún no está en WA.
 TestViewportRegression (ADR-002): garantiza que el viewport 1280×1920 nunca regrese
 a "imagen enana". Si alguno de estos tests falla, los screenshots tendrán menos
 mensajes de lo esperado y full-sync-enhanced necesitará más iteraciones.
+
+TestNeverDeleteSessionProfile (ADR-009): garantiza que 'wavi connect' nunca
+vuelve a borrar un perfil de sesión existente. El 2026-08-18 se confirmó que
+'--new' hacía shutil.rmtree(phone_profile) sobre una sesión autenticada antes
+de reemplazarla — pérdida irrecuperable de auth. Ahora se archiva (rename),
+nunca se borra.
 """
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,9 +45,148 @@ def _make_page(selector_found: bool = True) -> MagicMock:
     page.wait_for_timeout = AsyncMock()
     page.wait_for_selector = AsyncMock() if selector_found else AsyncMock(side_effect=Exception("timeout"))
     page.locator = MagicMock()  # no debe llamarse — lo detectamos en los tests
+    page.screenshot = AsyncMock(return_value=b"")
     # navigate_to_contact uses evaluate() for DOM scroll (ADR-002)
     page.evaluate = AsyncMock(return_value=False)  # False → no scroll button found → fallback
     return page
+
+
+def _stub_resolved(session: WASession, name: str = "Gregorio", x: int = 100, y: int = 200) -> None:
+    """Bypass contact search/disambiguation entirely — used by tests that
+    only care about what happens AFTER a contact is resolved (scrolling)."""
+    session._resolve_contact = AsyncMock(return_value={"name": name, "subtitle": "", "x": x, "y": y})
+    session.open_search_result = AsyncMock(return_value=True)
+
+
+class TestSearchContacts:
+    """search_contacts() owns the actual search-box interaction — clicking,
+    clearing, typing — that navigate_to_contact used to do inline before
+    ADR-010 added disambiguation."""
+
+    @pytest.fixture
+    def session(self):
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        s._page.evaluate = AsyncMock(return_value=[{"name": "Gregorio", "subtitle": "", "x": 1, "y": 2}])
+        return s
+
+    @pytest.mark.asyncio
+    async def test_clicks_search_box_by_coordinate(self, session):
+        await session.search_contacts("Gregorio")
+        session._page.mouse.click.assert_any_call(WASession.SEARCH_X, WASession.SEARCH_Y)
+
+    @pytest.mark.asyncio
+    async def test_clears_with_keyboard_not_dom(self, session):
+        await session.search_contacts("Gregorio")
+        calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
+        assert "Meta+a" in calls
+        assert "Delete" in calls
+
+    @pytest.mark.asyncio
+    async def test_types_contact_name(self, session):
+        await session.search_contacts("Gregorio")
+        session._page.keyboard.type.assert_called_once_with("Gregorio", delay=40)
+
+    @pytest.mark.asyncio
+    async def test_never_uses_locator(self, session):
+        await session.search_contacts("Gregorio")
+        session._page.locator.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_results_appear(self, session):
+        session._page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
+        result = await session.search_contacts("Nadie")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_candidates_from_page_evaluate(self, session):
+        candidates = [
+            {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "x": 100, "y": 240},
+            {"name": "Rodolfo Prado", "subtitle": "+54 9 11 6671-4914", "x": 100, "y": 500},
+        ]
+        session._page.evaluate = AsyncMock(return_value=candidates)
+        result = await session.search_contacts("Rodolfo Prado")
+        assert result == candidates
+
+
+class TestResolveContact:
+    """ADR-010: navigate_to_contact must never guess which contact was
+    meant when the display name is ambiguous — a human decides, or it
+    refuses outright when there's no TTY to ask."""
+
+    @pytest.fixture
+    def session(self):
+        return _make_session()
+
+    @pytest.mark.asyncio
+    async def test_single_match_auto_resolves_without_prompting(self, session, monkeypatch):
+        candidate = {"name": "Gregorio", "subtitle": "", "x": 10, "y": 20}
+        session.search_contacts = AsyncMock(return_value=[candidate])
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)  # must not matter — only 1 match
+        result = await session._resolve_contact("Gregorio")
+        assert result == candidate
+
+    @pytest.mark.asyncio
+    async def test_dedupes_identical_name_and_subtitle_pairs(self, session):
+        dup = {"name": "Gregorio", "subtitle": "hola", "x": 10, "y": 20}
+        session.search_contacts = AsyncMock(return_value=[dup, dict(dup)])
+        result = await session._resolve_contact("Gregorio")
+        assert result == dup  # only one distinct candidate → no prompt needed
+
+    @pytest.mark.asyncio
+    async def test_refreshes_contact_list_when_nothing_found(self, session):
+        """Justo después de vincular por QR, la lista de chats puede seguir
+        sincronizando desde el teléfono — la primera búsqueda puede no
+        encontrar resultados todavía."""
+        candidate = {"name": "Gregorio", "subtitle": "", "x": 10, "y": 20}
+        session.search_contacts = AsyncMock(side_effect=[[], [candidate]])
+        session.navigate_to_new_chat = AsyncMock()
+        session.close_new_chat = AsyncMock()
+
+        result = await session._resolve_contact("Gregorio")
+
+        assert result == candidate
+        session.navigate_to_new_chat.assert_awaited_once()
+        session.close_new_chat.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_raises_if_nothing_found_even_after_refresh(self, session, tmp_path):
+        session.profile_dir = tmp_path
+        session.search_contacts = AsyncMock(return_value=[])
+        session.navigate_to_new_chat = AsyncMock()
+        session.close_new_chat = AsyncMock()
+        session._page = _make_page()
+
+        with pytest.raises(RuntimeError, match="No se encontró ningún chat/contacto"):
+            await session._resolve_contact("Nadie")
+
+    @pytest.mark.asyncio
+    async def test_multiple_matches_without_tty_raises_instead_of_guessing(self, session, monkeypatch):
+        """El bug real (2026-08-26): 'Rodolfo Prado' coincidía con un chat
+        existente Y con 4 contactos distintos. Sin una terminal para
+        preguntar, nunca debe elegir uno arbitrariamente."""
+        candidates = [
+            {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "x": 1, "y": 1},
+            {"name": "Rodolfo Prado", "subtitle": "+54 9 11 6671-4914", "x": 1, "y": 2},
+        ]
+        session.search_contacts = AsyncMock(return_value=candidates)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        with pytest.raises(RuntimeError, match="Hay 2 coincidencias"):
+            await session._resolve_contact("Rodolfo Prado")
+
+    @pytest.mark.asyncio
+    async def test_multiple_matches_with_tty_prompts_and_uses_the_choice(self, session, monkeypatch):
+        candidates = [
+            {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "x": 1, "y": 1},
+            {"name": "Rodolfo Prado", "subtitle": "+54 9 11 6671-4914", "x": 1, "y": 2},
+        ]
+        session.search_contacts = AsyncMock(return_value=candidates)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("click.prompt", lambda *a, **k: 2)  # human picks the 2nd option
+
+        result = await session._resolve_contact("Rodolfo Prado")
+        assert result == candidates[1]
 
 
 class TestNavigateToContact:
@@ -49,39 +194,15 @@ class TestNavigateToContact:
     def session(self):
         s = _make_session()
         s._page = _make_page(selector_found=True)
+        _stub_resolved(s)
         return s
 
     @pytest.mark.asyncio
-    async def test_clicks_search_box_by_coordinate(self, session):
+    async def test_opens_resolved_candidate_via_click_not_keyboard(self, session):
+        """El resultado se abre haciendo clic en las coordenadas resueltas
+        (ADR-010), nunca con ArrowDown/Enter a ciegas ni con page.click(selector)."""
         await session.navigate_to_contact("Gregorio")
-        session._page.mouse.click.assert_any_call(
-            WASession.SEARCH_X, WASession.SEARCH_Y
-        )
-
-    @pytest.mark.asyncio
-    async def test_clears_with_keyboard_not_dom(self, session):
-        await session.navigate_to_contact("Gregorio")
-        calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
-        assert "Meta+a" in calls
-        assert "Delete" in calls
-
-    @pytest.mark.asyncio
-    async def test_types_contact_name(self, session):
-        await session.navigate_to_contact("Gregorio")
-        session._page.keyboard.type.assert_called_once_with("Gregorio", delay=40)
-
-    @pytest.mark.asyncio
-    async def test_never_uses_locator(self, session):
-        await session.navigate_to_contact("Gregorio")
-        session._page.locator.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_opens_result_with_keyboard_not_locator(self, session):
-        """El resultado se abre con teclado (ADR-001), nunca con page.click(selector)."""
-        await session.navigate_to_contact("Gregorio")
-        calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
-        assert "ArrowDown" in calls, "Debe navegar al resultado con ArrowDown"
-        assert "Enter" in calls, "Debe abrir el resultado con Enter"
+        session.open_search_result.assert_awaited_once_with(100, 200)
         session._page.locator.assert_not_called()
 
     @pytest.mark.asyncio
@@ -102,25 +223,42 @@ class TestNavigateToContact:
         assert scroll_args, "El fallback DOM scroll debe usar delta 999_999"
 
     @pytest.mark.asyncio
-    async def test_scroll_fires_after_selector_wait(self, session):
-        """El scroll al fondo ocurre después de wait_for_selector."""
+    async def test_scroll_fires_after_resolution(self, session):
+        """El scroll al fondo ocurre después de resolver y abrir el chat."""
         order: list[str] = []
-        session._page.wait_for_selector = AsyncMock(
-            side_effect=lambda *a, **kw: order.append("selector")
+        session.open_search_result = AsyncMock(
+            side_effect=lambda *a, **kw: order.append("opened") or True
         )
         session._page.evaluate = AsyncMock(
             side_effect=lambda *a, **kw: order.append("evaluate") or False
         )
         await session.navigate_to_contact("Gregorio")
-        assert "selector" in order and "evaluate" in order
-        assert order.index("selector") < order.index("evaluate")
+        assert "opened" in order and "evaluate" in order
+        assert order.index("opened") < order.index("evaluate")
 
     @pytest.mark.asyncio
-    async def test_scroll_fires_after_selector_even_on_timeout(self, session):
-        """El scroll se ejecuta aunque wait_for_selector falle por timeout."""
-        session._page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
-        await session.navigate_to_contact("Gregorio")
-        assert session._page.evaluate.called
+    async def test_retries_resolution_once_if_click_did_not_open_a_chat(self, session):
+        """Si el clic no abrió el chat (p.ej. la fila se movió entre la
+        búsqueda y el clic), se reintenta resolver + abrir una vez más
+        antes de rendirse."""
+        session.open_search_result = AsyncMock(side_effect=[False, True])
+        await session.navigate_to_contact("Gregorio")  # must not raise
+        assert session._resolve_contact.call_count == 2
+        assert session.open_search_result.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_raises_and_never_scrolls_if_chat_never_opened(self, session, tmp_path):
+        """Si nunca se pudo confirmar que el chat abrió, debe levantar
+        RuntimeError y NUNCA intentar el scroll-to-bottom sobre un chat que
+        no existe. Antes esto se tragaba en silencio y devolvía mensajes de
+        la pantalla de bienvenida como si fueran del contacto (bug real,
+        2026-08-26: 'Rodolfo Prado' devolvió el banner de 'Llamadas y
+        videollamadas ya están disponibles')."""
+        session.profile_dir = tmp_path
+        session.open_search_result = AsyncMock(return_value=False)
+        with pytest.raises(RuntimeError, match="No se pudo abrir el chat"):
+            await session.navigate_to_contact("Gregorio")
+        assert not session._page.evaluate.called
 
     @pytest.mark.asyncio
     async def test_scroll_retries_if_not_at_bottom(self):
@@ -131,6 +269,7 @@ class TestNavigateToContact:
         """
         s = _make_session()
         page = _make_page()
+        _stub_resolved(s)
 
         # evaluate calls in order:
         # 1. _CLICK_SCROLL_BOTTOM_BTN_JS (initial) → False (no button)
@@ -164,6 +303,7 @@ class TestNavigateToContact:
         """Si ya está en el fondo desde el primer check, no hace retries innecesarios."""
         s = _make_session()
         page = _make_page()
+        _stub_resolved(s)
 
         page.evaluate = AsyncMock(side_effect=[
             False,                                                           # btn initial
@@ -452,3 +592,47 @@ class TestNewChatPanel:
 
         with pytest.raises(Exception, match="Timeout"):
             await s.navigate_to_new_chat()
+
+
+# ── ADR-009: nunca borrar un perfil de sesión ──────────────────────────────────
+
+class TestNeverDeleteSessionProfile:
+    """Guardas estáticas contra la reintroducción del bug del 2026-08-18:
+    'wavi connect --new' hacía shutil.rmtree(phone_profile) sobre una sesión
+    ya autenticada antes de reemplazarla. Ver docs/adr/ADR-009."""
+
+    def test_connect_source_never_calls_rmtree(self):
+        """connect() no debe llamar shutil.rmtree bajo ninguna rama — la
+        sesión existente se archiva (.rename), nunca se borra."""
+        import inspect
+
+        from wavi.cli import connect
+        source = inspect.getsource(connect.callback)  # click.Command wraps the fn
+        assert "rmtree" not in source, (
+            "connect() llama shutil.rmtree — eso borra un perfil de sesión "
+            "sin posibilidad de recuperación. Debe archivar con .rename() "
+            "en su lugar. Ver ADR-009."
+        )
+
+    def test_connect_archives_existing_profile_on_collision(self):
+        """Cuando --new detecta un teléfono que ya tiene perfil, el perfil
+        viejo debe seguir existiendo en disco después (archivado), nunca
+        desaparecer."""
+        import inspect
+
+        from wavi.cli import connect
+        source = inspect.getsource(connect.callback)  # click.Command wraps the fn
+        assert "_archived_" in source and ".rename(" in source, (
+            "connect() debe archivar (rename a *_archived_<timestamp>) el "
+            "perfil existente ante una colisión de --new, no reemplazarlo "
+            "sin dejar rastro. Ver ADR-009."
+        )
+
+    def test_cleanup_crash_files_never_touches_indexeddb(self):
+        """_cleanup_crash_files() solo debe tocar metadata de recuperación
+        de pestañas de Chrome, nunca IndexedDB (donde vive el auth de WA)."""
+        import inspect
+
+        from wavi.cli import _cleanup_crash_files
+        source = inspect.getsource(_cleanup_crash_files)
+        assert "IndexedDB" not in source

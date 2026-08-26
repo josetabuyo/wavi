@@ -6,11 +6,19 @@ send messages, and monitor chats from the terminal.
 ## Session lifecycle
 
 ```bash
-wavi connect [session]    # start Chrome daemon + authenticate (QR if needed)
+wavi connect [session]    # start Chrome daemon, wait for auth
+wavi qr      [session]    # self-contained: opens a local web page, "Buscar QR"
+                           # button starts the daemon if needed and shows a
+                           # QR that never goes stale (never a separate step)
 wavi status  [session]    # check: daemon alive? session authenticated?
 wavi reload  [session]    # safely reload WA when throttled or unresponsive
 wavi stop    [session]    # graceful shutdown (about:blank flush → SIGTERM)
+wavi events  [session]    # session lifecycle log — connects, QR, archives
 ```
+
+QR scanning is never done inline by `connect` — run `wavi qr <session>` (or
+pass `--open` to `connect` to launch it automatically). It never shows a
+stale screenshot: press the button again anytime for a fresh QR.
 
 ### Session aliases
 
@@ -38,6 +46,28 @@ wavi list-contacts [session]                  # list all contacts
 ```bash
 wavi send [session] "Contact Name" "message text"
 ```
+
+## Contact resolution — never guesses when a name is ambiguous
+
+`wavi get` and `wavi send` resolve CONTACT through WhatsApp's own search
+before doing anything else:
+
+1. Search for the name. If nothing matches, refresh the contact list (opens
+   "New chat" once to force WA to sync) and search again — covers a
+   freshly-linked session whose chat list is still syncing from the phone.
+2. If still nothing matches, fail loudly with an error (never silently
+   proceeds against the wrong screen).
+3. If more than one distinct match exists (same display name can belong to
+   an existing chat AND unrelated saved/unsaved contacts), it prints every
+   candidate with whatever distinguishes them (last message preview, phone
+   number, status text) and prompts interactively for a choice.
+4. Without a TTY to ask (scripts, the HTTP API), it refuses instead of
+   guessing — the error lists the candidates so you can be more specific
+   (e.g. include the phone number).
+5. Once resolved, it prints "Contacto confirmado: <name> — <detail>" and
+   *verifies* the chat actually opened before capturing/sending anything.
+
+See docs/adr/ADR-010-contact-disambiguation.md.
 
 ## Skill install / update
 

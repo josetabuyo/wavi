@@ -1020,8 +1020,8 @@ wheels = [
 ]
 
 [[package]]
-name = "wavi"
-version = "0.2.0"
+name = "wavi-lib"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

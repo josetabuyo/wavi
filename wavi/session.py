@@ -501,6 +501,43 @@ _EXTRACT_SIDEBAR_UPDATES_JS = """
 }
 """
 
+# Search-box results: WA groups matches under "Chats" / "Contactos" /
+# "Grupos en común" / "Mensajes" headers, and the SAME display name can
+# legitimately appear more than once (an existing chat plus one or more
+# unrelated contacts sharing that name) — see ADR-010 / navigate_to_contact.
+# We deliberately do NOT try to tell sections apart here (fragile: headers
+# aren't tagged with a stable selector); instead every distinct
+# (name, subtitle) row is surfaced so the caller can disambiguate with a
+# human instead of guessing.
+_SEARCH_RESULTS_JS = """
+() => {
+    const cells = document.querySelectorAll('[data-testid="cell-frame-container"]');
+    const out = [];
+    cells.forEach((cell) => {
+        const titleEl = cell.querySelector('[data-testid="cell-frame-title"] span[title]')
+                     || cell.querySelector('span[title]')
+                     || cell.querySelector('[data-testid="cell-frame-title"]');
+        const name = titleEl
+            ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim()
+            : '';
+        if (!name) return;
+
+        const subtitleEl = cell.querySelector('[data-testid="cell-frame-secondary-detail"] span')
+                        || cell.querySelector('[data-testid="cell-frame-secondary-detail"]');
+        const subtitle = subtitleEl ? (subtitleEl.textContent || '').trim() : '';
+
+        const rect = cell.getBoundingClientRect();
+        out.push({
+            name,
+            subtitle,
+            x: Math.round(rect.x + rect.width / 2),
+            y: Math.round(rect.y + rect.height / 2),
+        });
+    });
+    return out;
+}
+"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -740,7 +777,23 @@ class WASession:
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    async def navigate_to_contact(self, contact: str) -> None:
+    async def _debug_screenshot(self, tag: str) -> Path | None:
+        import time as _time
+        debug_dir = self.profile_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        shot_path = debug_dir / f"{tag}_{int(_time.time())}.png"
+        try:
+            await self._page.screenshot(path=str(shot_path))
+            return shot_path
+        except Exception:
+            return None
+
+    async def search_contacts(self, query: str, *, wait_results_ms: int = 5_000) -> list[dict]:
+        """Type QUERY into the search box and return every distinct result
+        row ({name, subtitle, x, y}) — chats, saved contacts, and unsaved
+        numbers alike. Returns [] if nothing showed up within the timeout
+        (e.g. a freshly-linked session still syncing its chat list — see
+        navigate_to_contact's refresh-and-retry)."""
         # Click en el cuadro de búsqueda por coordenadas (ADR-001: sin locator)
         await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
         await self._page.wait_for_timeout(300)
@@ -754,25 +807,119 @@ class WASession:
         await self._page.wait_for_timeout(200)
 
         # Escribir el contacto con delays realistas
-        await self._page.keyboard.type(contact, delay=40)
-        await self._page.wait_for_timeout(1500)
+        await self._page.keyboard.type(query, delay=40)
 
-        # Abrir primer resultado con teclado — más robusto que coordenadas o selectores
-        await self._page.keyboard.press("ArrowDown")
-        await self._page.wait_for_timeout(300)
-        await self._page.keyboard.press("Enter")
-
-        # Esperar a que WA pinte los mensajes
-        bubble_ready = (
-            "[data-testid='msg-container'], "
-            "[data-testid='conversation-panel-messages'], "
-            ".copyable-text, [class*='message-']"
-        )
         try:
-            await self._page.wait_for_selector(bubble_ready, timeout=15_000)
+            await self._page.wait_for_selector(
+                '[data-testid="cell-frame-container"]', timeout=wait_results_ms
+            )
         except Exception:
-            pass
+            return []
+        await self._page.wait_for_timeout(400)
+        return await self._page.evaluate(_SEARCH_RESULTS_JS)
+
+    async def open_search_result(self, x: int, y: int) -> bool:
+        """Click a result row (coordinates from search_contacts) and verify
+        a real conversation ended up open — never assume success from the
+        click alone."""
+        await self._page.mouse.click(x, y)
+        try:
+            await self._page.wait_for_selector(
+                "[data-testid='conversation-panel-messages']", timeout=15_000
+            )
+        except Exception:
+            return False
         await self._page.wait_for_timeout(1500)
+        return True
+
+    async def _resolve_contact(self, contact: str) -> dict:
+        """Find CONTACT's chat/entry, disambiguating with a human when more
+        than one distinct match exists rather than guessing which one they
+        meant — the same display name can legitimately belong to an
+        existing chat AND one or more unrelated saved/unsaved contacts.
+        See docs/adr/ADR-010-contact-disambiguation.md.
+
+        Never returns a wrong contact silently: raises RuntimeError if
+        nothing matches (even after refreshing the contact list) or if
+        disambiguation is needed but no human is available to ask (no TTY).
+        """
+        import sys as _sys
+
+        candidates = await self.search_contacts(contact)
+        if not candidates:
+            # Refresh: forcing the "New chat" panel open makes WA sync/render
+            # its full contact list, surfacing entries the sidebar search
+            # may not have indexed yet (e.g. right after a fresh QR link).
+            try:
+                await self.navigate_to_new_chat()
+                await self.close_new_chat()
+            except Exception:
+                pass
+            candidates = await self.search_contacts(contact, wait_results_ms=15_000)
+
+        if not candidates:
+            shot_path = await self._debug_screenshot("no_contact_found")
+            raise RuntimeError(
+                f"No se encontró ningún chat/contacto que coincida con "
+                f"'{contact}', ni siquiera después de actualizar la lista "
+                f"de contactos. Ver captura: {shot_path}"
+            )
+
+        seen: set[tuple[str, str]] = set()
+        unique: list[dict] = []
+        for c in candidates:
+            key = (c["name"], c["subtitle"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(c)
+
+        if len(unique) == 1:
+            chosen = unique[0]
+        else:
+            import click as _click
+            if not _sys.stdin.isatty():
+                lines = "\n".join(
+                    f"  [{i}] {c['name']}" + (f" — {c['subtitle']}" if c["subtitle"] else "")
+                    for i, c in enumerate(unique, 1)
+                )
+                raise RuntimeError(
+                    f"Hay {len(unique)} coincidencias para '{contact}' y no hay "
+                    f"una terminal interactiva para preguntar cuál. Sé más "
+                    f"específico (ej. incluí el número de teléfono):\n{lines}"
+                )
+            _click.echo(f"\nHay {len(unique)} coincidencias para '{contact}' — elegí una:\n")
+            for i, c in enumerate(unique, 1):
+                detail = f" — {c['subtitle']}" if c["subtitle"] else ""
+                _click.echo(f"  [{i}] {c['name']}{detail}")
+            choice = _click.prompt("\nNúmero", type=_click.IntRange(1, len(unique)))
+            chosen = unique[choice - 1]
+
+        detail = f" — {chosen['subtitle']}" if chosen["subtitle"] else ""
+        print(f"[wavi] Contacto confirmado: {chosen['name']}{detail}", file=_sys.stderr)
+        return chosen
+
+    async def navigate_to_contact(self, contact: str) -> None:
+        chosen = await self._resolve_contact(contact)
+
+        opened = await self.open_search_result(chosen["x"], chosen["y"])
+        if not opened:
+            # The row's coordinates could have shifted (list re-rendered) —
+            # resolve and click once more before giving up.
+            chosen = await self._resolve_contact(contact)
+            opened = await self.open_search_result(chosen["x"], chosen["y"])
+
+        if not opened:
+            shot_path = await self._debug_screenshot("navigate_failed")
+            import sys
+            print(
+                f"[wavi] navigate_to_contact: no se pudo abrir el chat con "
+                f"'{contact}' — screenshot: {shot_path}", file=sys.stderr,
+            )
+            raise RuntimeError(
+                f"No se pudo abrir el chat con '{contact}'. "
+                f"Ver captura de debug: {shot_path}"
+            )
 
         # WA prepends older messages above the anchor after loading, which shifts the
         # scroll position up. Try the WA "scroll to bottom" button first — it triggers
