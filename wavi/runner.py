@@ -97,6 +97,15 @@ class WARunner:
         Take a screenshot, run the full vision pipeline, return classified bubbles.
         Bubbles are sorted id=1 (newest) → N (oldest).
         """
+        # Park the cursor somewhere neutral first. A prior click can leave it
+        # resting over a message's reaction badge — WA shows a hover tooltip
+        # ("N reacciones" + who reacted) that floats over the last messages
+        # and contaminates classification (garbled/duplicate/misattributed
+        # bubbles right at that spot). Confirmed 2026-08-26: this dropped a
+        # real outgoing message entirely and misclassified another as
+        # incoming with truncated OCR text.
+        await self.session._page.mouse.move(5, 5)
+        await self.session._page.wait_for_timeout(150)
         data = await self.session.screenshot()
         if assets_dir:
             Path(assets_dir).mkdir(parents=True, exist_ok=True)

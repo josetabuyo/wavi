@@ -101,8 +101,19 @@ def evaluate_case(expected: list[dict], actual: list[dict]) -> dict:
         metrics["text_sim"] = sum(
             text_similarity(e.get("text", ""), a.get("text", "")) for e, a in pairs
         ) / n_match
+        rx_pairs = [(e, a) for e, a in pairs if e.get("reaction")]
+        metrics["reaction_acc"] = (
+            sum(1 for e, a in rx_pairs if e.get("reaction") == a.get("reaction")) / len(rx_pairs)
+            if rx_pairs else 1.0
+        )
+        metrics["has_reaction_acc"] = sum(
+            1 for e, a in pairs if bool(e.get("has_reaction")) == bool(a.get("has_reaction"))
+        ) / n_match
     else:
-        metrics.update(sender_acc=0.0, type_acc=0.0, timestamp_acc=0.0, text_sim=0.0)
+        metrics.update(
+            sender_acc=0.0, type_acc=0.0, timestamp_acc=0.0, text_sim=0.0,
+            reaction_acc=0.0, has_reaction_acc=0.0,
+        )
 
     return metrics
 
@@ -115,6 +126,8 @@ DEFAULT_THRESHOLDS = {
     "type_acc": 0.90,
     "timestamp_acc": 0.80,
     "text_sim": 0.85,
+    "reaction_acc": 0.90,
+    "has_reaction_acc": 0.90,
 }
 
 

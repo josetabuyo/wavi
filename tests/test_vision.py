@@ -13,7 +13,9 @@ from PIL import Image
 from wavi.element_detector import detect_bubbles
 from wavi.vision import (
     Bubble,
+    _extract_reaction,
     _extract_timestamp,
+    _find_reaction_badge,
     _is_noise,
     _is_waveform_garbage,
     _save_debug_image,
@@ -427,3 +429,147 @@ class TestEmbeddedImageFooters:
         assert len(bubbles) == 2, f"Expected 2 bubbles, got {len(bubbles)}"
         assert bubbles[0]["type"] == "me"     # sorted by y, green comes first (y=10)
         assert bubbles[1]["type"] == "other"  # white comes second (y=220)
+
+
+# ── _extract_reaction ────────────────────────────────────────────────────────
+# Real bug, 2026-08-26: a reaction badge sits on/near a bubble's edge and gets
+# swept into the same OCR pass as the message/duration text next to it. This
+# used to leave garbage like "1:01 1 reacción 9 1" as the message's own text
+# and threw away the reaction info entirely. Now it's split out into its own
+# field on Bubble instead of being lost or corrupting the message text.
+
+class TestExtractReaction:
+    def test_no_reaction_returns_text_unchanged(self):
+        text, reaction = _extract_reaction("Hola cómo estás?")
+        assert text == "Hola cómo estás?"
+        assert reaction is None
+
+    def test_extracts_reaction_with_count_from_audio_duration_text(self):
+        """Real capture: an audio bubble's own OCR text ('1:01' duration +
+        stray digits) had a reaction badge mixed into it."""
+        text, reaction = _extract_reaction("1:01 1 reacción 9 1")
+        assert reaction == "1 reacción"
+        assert "reacción" not in text
+
+    def test_extracts_plural_reacciones(self):
+        text, reaction = _extract_reaction("hola 3 reacciones chau")
+        assert reaction == "3 reacciones"
+        assert text == "hola chau"
+
+    def test_extracts_reaction_without_leading_count(self):
+        text, reaction = _extract_reaction("reacción Rodolfo Prado")
+        assert reaction == "reacción"
+        assert text == "Rodolfo Prado"
+
+    def test_collapses_extra_whitespace_after_removal(self):
+        text, _ = _extract_reaction("excelente   1 reacción   gracias")
+        assert text == "excelente gracias"
+
+    def test_case_insensitive_and_accent_insensitive(self):
+        _, reaction = _extract_reaction("1 REACCION")
+        assert reaction is not None
+
+
+# ── Bubble.as_dict — reaction field ──────────────────────────────────────────
+
+class TestBubbleReactionField:
+    def test_reaction_omitted_when_none(self):
+        b = Bubble(id=1, sender="me", msg_type="text", timestamp=None, text="hola", bbox={})
+        assert "reaction" not in b.as_dict()
+
+    def test_reaction_included_when_present(self):
+        b = Bubble(id=1, sender="me", msg_type="text", timestamp=None, text="hola", bbox={}, reaction="1 reacción")
+        assert b.as_dict()["reaction"] == "1 reacción"
+
+    def test_has_reaction_omitted_when_false(self):
+        b = Bubble(id=1, sender="me", msg_type="text", timestamp=None, text="hola", bbox={})
+        assert "has_reaction" not in b.as_dict()
+
+    def test_has_reaction_and_image_included_when_present(self):
+        b = Bubble(
+            id=1, sender="me", msg_type="text", timestamp=None, text="hola", bbox={},
+            has_reaction=True, reaction_image="shot_reaction_1.png",
+        )
+        d = b.as_dict()
+        assert d["has_reaction"] is True
+        assert d["reaction_image"] == "shot_reaction_1.png"
+
+
+# ── _find_reaction_badge ──────────────────────────────────────────────────────
+# Real bug, 2026-08-26: a small always-visible reaction emoji badge sits just
+# outside a bubble's own edge (bottom-right for outgoing, bottom-left for
+# incoming) and was never captured at all. Detected generically by color
+# (small, highly-saturated blob against WA's low-saturation wallpaper/bubble
+# fills) — we don't try to identify which emoji or how many reacted.
+
+def _wallpaper_canvas(w: int = 300, h: int = 200) -> np.ndarray:
+    """Low-saturation beige background, like WA's default wallpaper."""
+    arr = np.full((h, w, 3), (230, 222, 208), dtype=np.uint8)
+    return arr
+
+
+class TestFindReactionBadge:
+    def test_no_badge_on_plain_wallpaper(self):
+        arr = _wallpaper_canvas()
+        img = Image.fromarray(arr, mode="RGB")
+        bubble = {"type": "me", "x": 50, "y": 50, "w": 150, "h": 40}
+        assert _find_reaction_badge(img, bubble) is None
+
+    def test_detects_saturated_blob_near_outgoing_bubble_corner(self):
+        """Mirrors the real case: a red heart badge just below-right of an
+        outgoing ('me') bubble's bottom edge."""
+        arr = _wallpaper_canvas()
+        bubble = {"type": "me", "x": 50, "y": 50, "w": 150, "h": 40}
+        x1, y1 = bubble["x"] + bubble["w"], bubble["y"] + bubble["h"]
+        # Small, highly-saturated red blob (a real emoji badge), positioned
+        # just outside the bubble's bottom-right corner.
+        arr[y1 + 2:y1 + 16, x1 - 20:x1 - 6] = (220, 20, 20)
+        img = Image.fromarray(arr, mode="RGB")
+
+        box = _find_reaction_badge(img, bubble)
+
+        assert box is not None
+        bx0, by0, bx1, by1 = box
+        assert bx0 < x1 and bx1 > x1 - 25  # roughly where we placed the blob
+
+    def test_detects_badge_near_incoming_bubble_left_edge(self):
+        arr = _wallpaper_canvas()
+        bubble = {"type": "other", "x": 100, "y": 50, "w": 150, "h": 40}
+        x0, y1 = bubble["x"], bubble["y"] + bubble["h"]
+        arr[y1 + 2:y1 + 16, x0 + 6:x0 + 20] = (30, 160, 60)
+        img = Image.fromarray(arr, mode="RGB")
+
+        assert _find_reaction_badge(img, bubble) is not None
+
+    def test_ignores_large_saturated_area_as_false_positive(self):
+        """A big colorful region (e.g. a media thumbnail poking into the
+        search strip) must not be mistaken for a small reaction badge."""
+        arr = _wallpaper_canvas()
+        bubble = {"type": "me", "x": 50, "y": 50, "w": 150, "h": 40}
+        x1, y1 = bubble["x"] + bubble["w"], bubble["y"] + bubble["h"]
+        arr[y1:y1 + 40, x1 - 100:x1 + 10] = (200, 30, 30)  # spans the whole strip
+        img = Image.fromarray(arr, mode="RGB")
+
+        assert _find_reaction_badge(img, bubble) is None
+
+    def test_ignores_wa_accent_blue_as_false_positive(self):
+        """Real bug: WA's own UI chrome (blue double-check 'read' mark,
+        audio playback-position dot) is saturated and sits right at a
+        bubble's edge — it must not be mistaken for a reaction badge."""
+        arr = _wallpaper_canvas()
+        bubble = {"type": "me", "x": 50, "y": 50, "w": 150, "h": 40}
+        x1, y1 = bubble["x"] + bubble["w"], bubble["y"] + bubble["h"]
+        wa_blue_rgb = (80, 196, 247)  # sampled from the real playback dot
+        arr[y1 + 2:y1 + 16, x1 - 20:x1 - 6] = wa_blue_rgb
+        img = Image.fromarray(arr, mode="RGB")
+
+        assert _find_reaction_badge(img, bubble) is None
+
+    def test_ignores_badge_too_far_from_bubble_edge(self):
+        arr = _wallpaper_canvas()
+        bubble = {"type": "me", "x": 50, "y": 50, "w": 150, "h": 40}
+        x1, y1 = bubble["x"] + bubble["w"], bubble["y"] + bubble["h"]
+        arr[y1 + 60:y1 + 74, x1 - 20:x1 - 6] = (220, 20, 20)  # well outside search_h
+        img = Image.fromarray(arr, mode="RGB")
+
+        assert _find_reaction_badge(img, bubble) is None

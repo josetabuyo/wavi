@@ -112,6 +112,53 @@ class TestInstallBlobMonitor:
         assert "__wavi_installed" in _BLOB_INIT_SCRIPT
 
 
+class TestGetBubblesParksMouse:
+    """Real bug, 2026-08-26: the mouse cursor left resting over a message's
+    reaction badge (from a prior click — e.g. an audio play button) can
+    trigger WA's hover tooltip ('N reacciones' + who reacted), which then
+    gets captured in the screenshot and corrupts classification of the
+    real messages underneath it — one outgoing message vanished entirely,
+    another got misclassified as incoming with truncated OCR text. Parking
+    the cursor away from the chat before every classification screenshot
+    prevents the tooltip from ever appearing."""
+
+    @pytest.mark.asyncio
+    async def test_moves_mouse_away_before_screenshot(self, monkeypatch, tmp_path):
+        runner = _runner()
+        runner.session._page = MagicMock()
+        runner.session._page.mouse.move = AsyncMock()
+        runner.session._page.wait_for_timeout = AsyncMock()
+        runner.session.screenshot = AsyncMock(return_value=b"\x89PNG\x00")
+
+        def fake_analyze(shot_path, assets_dir=None, save_debug=False):
+            return []
+
+        monkeypatch.setattr("wavi.runner.analyze", fake_analyze)
+
+        await runner.get_bubbles(assets_dir=tmp_path)
+
+        runner.session._page.mouse.move.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mouse_move_happens_before_screenshot_not_after(self, monkeypatch, tmp_path):
+        runner = _runner()
+        order: list[str] = []
+        runner.session._page = MagicMock()
+        runner.session._page.mouse.move = AsyncMock(side_effect=lambda *a: order.append("move"))
+        runner.session._page.wait_for_timeout = AsyncMock()
+
+        async def fake_screenshot():
+            order.append("screenshot")
+            return b"\x89PNG\x00"
+
+        runner.session.screenshot = fake_screenshot
+        monkeypatch.setattr("wavi.runner.analyze", lambda *a, **k: [])
+
+        await runner.get_bubbles(assets_dir=tmp_path)
+
+        assert order == ["move", "screenshot"]
+
+
 class TestGetDpr:
     @pytest.mark.asyncio
     async def test_returns_page_device_pixel_ratio(self):

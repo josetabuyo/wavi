@@ -73,6 +73,9 @@ class Bubble:
     dom_id: str | None = None             # WA DOM data-id attribute — stable across screenshots
     transcript: str | None = None        # Groq/whisper transcription for audio bubbles
     audio_path: str | None = None        # relative path to .ogg within history_dir (e.g. "iter_002/audio_17.ogg")
+    reaction: str | None = None           # e.g. "1 reacción" — OCR text of a reaction badge, if leaked into OCR
+    has_reaction: bool = False            # a reaction emoji badge was detected near this bubble (any emoji, any count)
+    reaction_image: str | None = None     # relative path to a small saved crop of the badge, if assets_dir was given
 
     def as_dict(self) -> dict:
         d = {
@@ -89,6 +92,12 @@ class Bubble:
             d["transcript"] = self.transcript
         if self.audio_path is not None:
             d["audio_path"] = self.audio_path
+        if self.reaction is not None:
+            d["reaction"] = self.reaction
+        if self.has_reaction:
+            d["has_reaction"] = True
+        if self.reaction_image is not None:
+            d["reaction_image"] = self.reaction_image
         return d
 
 
@@ -186,6 +195,97 @@ def _is_waveform_garbage(text: str) -> bool:
         return False
     noise = sum(1 for c in text if c in '|•01-[]lL ')
     return noise / len(text) > 0.45
+
+
+_REACTION_RE = re.compile(r"\d{0,3}\s*reacci[oó]n(?:es)?", re.IGNORECASE)
+
+
+def _extract_reaction(text: str) -> tuple[str, str | None]:
+    """Pull a reaction-badge fragment ("1 reacción", "reacciones") out of
+    OCR'd bubble text, returning (cleaned_text, reaction_or_None).
+
+    A reaction badge sits on/near a bubble's edge and gets swept into the
+    same OCR pass as the message/duration text next to it — e.g. an audio
+    bubble's own "1:01" duration coming back as "1:01 1 reacción 9 1". This
+    keeps that signal instead of discarding it, separated from the actual
+    message text. See analyze() and runner.get_bubbles() (which also parks
+    the mouse off any reaction badge before screenshotting, to avoid WA's
+    hover tooltip contaminating the capture in the first place).
+    """
+    m = _REACTION_RE.search(text)
+    if not m:
+        return text, None
+    reaction = m.group(0).strip()
+    cleaned = re.sub(r"\s+", " ", text[:m.start()] + text[m.end():]).strip()
+    return cleaned, reaction
+
+
+# Reaction emoji badges (❤️👍😂…) sit just outside a bubble's own edge — right
+# side for outgoing ("me") bubbles, left side for incoming ("other") ones —
+# and are small, highly-saturated blobs against WA's low-saturation wallpaper
+# and bubble fills. Detected generically by color, not by emoji identity: we
+# don't try to tell which emoji or how many reacted, only that at least one
+# reaction exists (see ADR-011).
+_REACTION_BADGE_SEARCH_W = 110
+_REACTION_BADGE_SEARCH_H = 22  # tight: bubbles can stack with little gap —
+# too generous a window bleeds into the NEXT bubble's own badge below it
+_REACTION_BADGE_SAT_MIN = 90
+_WA_BLUE_HUE_MIN = 110  # PIL HSV hue is 0-255; WA's accent blue sits ~140
+_WA_BLUE_HUE_MAX = 170
+_REACTION_BADGE_MIN_PIXELS = 15
+_REACTION_BADGE_MAX_SPAN = 40
+_REACTION_BADGE_CROP_PAD = 15
+
+
+def _find_reaction_badge(img: Image.Image, bubble: dict) -> tuple[int, int, int, int] | None:
+    """Look for a reaction badge near BUBBLE's outer bottom corner.
+
+    Returns a (x0, y0, x1, y1) crop box in IMG's coordinate space if a
+    compact, highly-saturated blob was found, else None.
+    """
+    import numpy as _np
+
+    W, H = img.size
+    x0, y0, w, h = bubble["x"], bubble["y"], bubble["w"], bubble["h"]
+    x1, y1 = x0 + w, y0 + h
+
+    if bubble.get("type") == "me":
+        sx0, sx1 = max(0, x1 - _REACTION_BADGE_SEARCH_W), min(W, x1 + 20)
+    else:
+        sx0, sx1 = max(0, x0 - 20), min(W, x0 + _REACTION_BADGE_SEARCH_W)
+    # Strictly below the bubble's own bottom edge — not overlapping into it.
+    # WA draws colorful, saturated UI chrome INSIDE that edge too (the blue
+    # double-check "read" mark on sent text, the playback-position dot on
+    # audio waveforms); starting the search a few px into the bubble instead
+    # of just past it misidentified both as reaction badges.
+    sy0 = max(0, y1 + 2)
+    sy1 = min(H, y1 + _REACTION_BADGE_SEARCH_H)
+    if sx1 <= sx0 or sy1 <= sy0:
+        return None
+
+    region = img.crop((sx0, sy0, sx1, sy1)).convert("HSV")
+    arr = _np.array(region)
+    hue, sat = arr[:, :, 0], arr[:, :, 1]
+    # WA's own accent blue (double-check "read" marks, audio playback-position
+    # dot) is saturated too and can sit right at a bubble's edge — exclude
+    # its narrow hue band so UI chrome doesn't get mistaken for an emoji.
+    is_wa_blue = (hue > _WA_BLUE_HUE_MIN) & (hue < _WA_BLUE_HUE_MAX)
+    mask = (sat > _REACTION_BADGE_SAT_MIN) & ~is_wa_blue
+    ys, xs = _np.where(mask)
+    if len(xs) < _REACTION_BADGE_MIN_PIXELS:
+        return None
+
+    bx0, bx1, by0, by1 = xs.min(), xs.max(), ys.min(), ys.max()
+    # Compact blob only — avoids false positives on e.g. a colorful media
+    # thumbnail that happens to fall inside the search strip.
+    if (bx1 - bx0) > _REACTION_BADGE_MAX_SPAN or (by1 - by0) > _REACTION_BADGE_MAX_SPAN:
+        return None
+
+    pad = _REACTION_BADGE_CROP_PAD
+    return (
+        max(0, sx0 + bx0 - pad), max(0, sy0 + by0 - pad),
+        min(W, sx0 + bx1 + pad), min(H, sy0 + by1 + pad),
+    )
 
 
 def classify_msg_type(text: str, raw_blocks: list[dict]) -> str:
@@ -404,16 +504,38 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
         tmp.unlink()
 
         text = " ".join(b["text"].strip() for b in raw_blocks if b["text"].strip())
+
+        # A reaction badge ("❤️ 1", "N reacciones") sits on/near a bubble's
+        # edge and gets swept into the same OCR pass as the message text —
+        # e.g. an audio bubble's own duration text coming back as
+        # "1:01 1 reacción 9 1". Pull it into its own field instead of
+        # leaving it mixed into the message text.
+        text, reaction = _extract_reaction(text)
+
         local_id = len(split) - i
+
+        has_reaction = False
+        reaction_image: str | None = None
+        badge_box = _find_reaction_badge(img, bubble)
+        if badge_box:
+            has_reaction = True
+            if assets_dir:
+                rel_name = f"{screenshot_path.stem}_reaction_{local_id}.png"
+                img.crop(badge_box).save(assets / rel_name)
+                reaction_image = rel_name
+
         results.append(Bubble(
-            id          = local_id,
-            screen_id   = local_id,
-            sender      = bubble["type"],
-            msg_type    = classify_msg_type(text, raw_blocks),
-            timestamp   = _build_timestamp(_date_for_y(y0), _extract_timestamp(raw_blocks)),
-            text        = text,
-            bbox        = {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
-            raw_blocks  = raw_blocks,
+            id             = local_id,
+            screen_id      = local_id,
+            sender         = bubble["type"],
+            msg_type       = classify_msg_type(text, raw_blocks),
+            timestamp      = _build_timestamp(_date_for_y(y0), _extract_timestamp(raw_blocks)),
+            text           = text,
+            bbox           = {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
+            raw_blocks     = raw_blocks,
+            reaction       = reaction,
+            has_reaction   = has_reaction,
+            reaction_image = reaction_image,
         ))
 
     _stages["bubble_ocr"] = time.perf_counter() - _t

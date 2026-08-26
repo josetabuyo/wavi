@@ -63,6 +63,8 @@ def main() -> int:
                 "timestamp": b.timestamp,
                 "text": b.text,
                 "bbox": b.bbox,
+                **({"reaction": b.reaction} if b.reaction else {}),
+                **({"has_reaction": True} if b.has_reaction else {}),
             }
             for b in bubbles
         ],
