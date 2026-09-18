@@ -90,6 +90,52 @@ class TestSplitRowFields:
         _name, _last_message, timestamp = _split_row_fields(elements)
         assert timestamp == "10:17 a. m."
 
+    def test_period_separated_timestamp_with_meridiem(self):
+        # Real WA Web/EasyOCR output (confirmed against a live session,
+        # 2026-09-18): period separator, not colon.
+        elements = [
+            _el("Comunidad UTN GIAR", 151, 10, 293, 30),
+            _el("11.27 a. m.", 491, 10, 551, 30),
+        ]
+        name, _last_message, timestamp = _split_row_fields(elements)
+        assert name == "Comunidad UTN GIAR"
+        assert timestamp == "11.27 a. m."
+
+    def test_bare_time_with_dropped_meridiem(self):
+        # Real WA Web/EasyOCR output: the am/pm suffix is sometimes dropped
+        # by OCR at this confidence threshold, leaving a bare "H.MM".
+        elements = [
+            _el("Javier Lurgo", 150, 10, 250, 30),
+            _el("11.02", 497, 10, 525, 30),
+        ]
+        name, _last_message, timestamp = _split_row_fields(elements)
+        assert name == "Javier Lurgo"
+        assert timestamp == "11.02"
+
+    def test_positional_fallback_for_relative_day_label(self):
+        # No regex can enumerate every locale's relative-day/weekday labels
+        # ("Ayer", "Lunes", ...) — real WA Web output, right-aligned with a
+        # large gap from the name, same as a real timestamp would be.
+        elements = [
+            _el("BJJ Guerreros", 149, 1081, 255, 1102),
+            _el("Ayer", 527, 1087, 555, 1101),
+        ]
+        name, _last_message, timestamp = _split_row_fields(elements)
+        assert name == "BJJ Guerreros"
+        assert timestamp == "Ayer"
+
+    def test_positional_fallback_does_not_split_a_wrapped_multiword_name(self):
+        # Negative case: two words of the same name/title, small gap
+        # (real intra-phrase gaps observed: ~4-10px) — must NOT be treated
+        # as name + timestamp just because there's no timestamp OCR'd at all.
+        elements = [
+            _el("María", 0, 10, 40, 30),
+            _el("García", 45, 10, 90, 30),
+        ]
+        name, _last_message, timestamp = _split_row_fields(elements)
+        assert name == "María García"
+        assert timestamp == ""
+
 
 # ── _split_contact_fields ────────────────────────────────────────────────────
 

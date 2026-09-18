@@ -2,9 +2,21 @@
 
 **Fecha:** 2026-09-18
 **Estado:** v0.4.0 publicado (PyPI + git push a `main`, commit `38ed2be`), más
-el split de campos de `parse_sidebar_rows()` (commit `4bee0d4`) y
-`parse_contacts_panel_rows()` (nuevo, ver abajo). Suite base verde (221 passed,
-15 skipped), suite de grounding verde (10/10 sobre el corpus).
+el split de campos de `parse_sidebar_rows()` (commit `4bee0d4`),
+`parse_contacts_panel_rows()` (commit `991f286`), y un fix de timestamp
+encontrado validando contra una sesión real (ver abajo). Suite base verde
+(225 passed, 15 skipped), suite de grounding verde (10/10 sobre el corpus).
+
+**Sesión real conectada:** `wavi qr default` (22793010001200) escaneado y
+autenticado este mismo día — primera vez que este trabajo se validó contra
+WhatsApp Web real, no solo el corpus estático. Encontró y confirmó dos cosas:
+1. Un bug real en `_split_row_fields()`: el regex de timestamp solo aceptaba
+   separador `:`, pero esta sesión renderiza con `.` (`"11.27 a. m."`) y a
+   veces sin sufijo am/pm. Arreglado (regex ampliado + fallback posicional
+   para formas no enumerables como "Ayer"/fechas). Ver plan-mejoras.md §4.8.
+2. `_OPEN_NEW_CHAT_JS` (DOM) está roto en esta sesión — WA cambió el ícono de
+   "nuevo chat". `wavi list-contacts` falla en vivo. Confirma en la práctica
+   por qué existe esta migración.
 
 ## Dónde está la sustancia
 

@@ -265,6 +265,29 @@ corpus-grounding`, 10/10 casos). Deliberadamente **no** cableados a `session.py`
 todavía — solo detección sobre imágenes estáticas, cero riesgo sobre la sesión de
 WA viva.
 
+**Validación contra sesión real (2026-09-18):** se escaneó el QR de la sesión
+`default` (22793010001200, vía `wavi qr default` — flujo seguro, reutiliza el
+daemon ya corriendo, nunca hace `Page.reload`) y se corrió `parse_sidebar_rows()`
+contra un screenshot real capturado con `wavi check-updates` (comando de solo
+lectura). Esto expuso un bug real que el corpus histórico nunca había atrapado:
+`_RE_TIMESTAMP` solo matcheaba separador de dos puntos (`11:27`), pero WA Web en
+este locale/versión renderiza con punto (`11.27 a. m.`) y a veces sin sufijo
+am/pm (`11.02`, OCR lo descarta por confianza baja) — el timestamp salía vacío
+en el 100% de las filas y contaminaba `name`. Fix: regex ampliado (acepta `:`
+o `.`, am/pm opcional) + fallback posicional (elemento más a la derecha de la
+línea superior, si hay un salto horizontal ≥60px respecto al resto — calibrado
+contra gaps reales de ~4-10px entre palabras de una misma frase vs. ~190-350px
+hasta la columna de timestamp) para formas que ningún regex puede enumerar
+("Ayer", nombres de día, fechas absolutas — confirmado que el fallback también
+las captura correctamente, ej. `"viernes"`, `"18/8/2026"`). Resultado: 21/21
+filas de chat reales con timestamp correcto (las 4 restantes son header/
+buscador/filtros/banner, sin timestamp real). `tests/test_corpus_grounding.py`
+ahora también verifica que al menos una fila por caso tenga timestamp no vacío
+(chequeo de existencia, no de mayoría — algunos casos del corpus son screenshots
+de resultados de búsqueda con secciones "Contactos"/"Mensajes" donde la mayoría
+de filas legítimamente no llevan timestamp). 5 tests unitarios nuevos en
+`tests/test_vision_grounding.py`.
+
 **Fix de rendimiento encontrado en el camino:** el captioning de Florence-2
 crasheaba en MPS (Metal, GPU de Apple Silicon) con un `RuntimeError` de dtype
 mismatch — bug real de upstream (solo castean los inputs a float16 para
@@ -303,7 +326,13 @@ en `wavi/_vendor/omniparser_utils.py`: **585s → 118s corriendo el corpus compl
    validado sintéticamente).
 4. Cubrir el resto de la tabla de inventario DOM (íconos, necesitan YOLO/template,
    no solo OCR): scroll-bottom button (§`_CLICK_SCROLL_BOTTOM_BTN_JS`),
-   new-chat/back icons, reacciones — mismo patrón (detección primero sobre
+   new-chat/back icons (**confirmado roto en la sesión real, 2026-09-18** —
+   `_OPEN_NEW_CHAT_JS` busca `span[data-icon="new-chat-outline"]` pero WA Web
+   ya no lo usa; el botón de "nuevo chat" hoy es el `+` verde arriba a la
+   derecha del sidebar. `wavi list-contacts` falla con `RuntimeError` en
+   `navigate_to_contact` como consecuencia — evidencia directa y actual de la
+   fragilidad que motiva esta migración, no solo una hipótesis), reacciones —
+   mismo patrón (detección primero sobre
    corpus estático, cableado a `session.py` después, por separado).
 5. Evaluar si conviene sumar un VLM (Qwen-VL u otro) como capa de *razonamiento*
    sobre lo que OmniParser detecta — ver §4.6. Mantiene la filosofía de wavi como

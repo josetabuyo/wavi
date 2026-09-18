@@ -100,3 +100,16 @@ def test_parse_sidebar_rows(case_dir: Path):
     assert named >= len(rows) * 0.8, (
         f"{case_dir.name}: only {named}/{len(rows)} rows got a non-empty name"
     )
+
+    # Existence check, not a majority threshold like `name` above: some
+    # corpus cases are search-result screenshots (section headers like
+    # "Contactos"/"Mensajes", contact-invite rows) where most rows
+    # legitimately never carry a timestamp — as low as 1/6 in
+    # tireless_000. This check still exists because the very first version
+    # of this test only checked `name`, and a timestamp-regex bug (only
+    # matched colon-separated times; real WA Web output uses periods, e.g.
+    # "11.27 a. m.") shipped with ALL rows empty and went undetected until
+    # validated against a live session (2026-09-18) — `>= 1` still catches
+    # that failure mode without being brittle to sparse, legitimate cases.
+    timestamped = sum(1 for row in rows if row["timestamp"].strip())
+    assert timestamped >= 1, f"{case_dir.name}: no row got a non-empty timestamp"

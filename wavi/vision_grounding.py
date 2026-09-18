@@ -307,10 +307,27 @@ SIDEBAR_PX = 580  # matches wavi/vision.py's SIDEBAR_PX — kept independent
 # new screenshots (e.g. very long contact names that wrap to 3 lines).
 SIDEBAR_ROW_GAP_PX = 20
 
-# Duplicated from wavi/vision.py's RE_TIME — same reasoning as SIDEBAR_PX
-# above (no import-time dependency on wavi.vision, which is Apple/macOS
-# oriented; this module stays cross-platform).
-_RE_TIMESTAMP = re.compile(r'\d{1,2}:\d{2}\s*(a|p)\.?\s*m\.?', re.I)
+# Broader than wavi/vision.py's RE_TIME on purpose: RE_TIME assumes a colon
+# separator and a required am/pm suffix (true for in-bubble Apple Vision OCR
+# text), but real EasyOCR output against a live sidebar showed WA rendering
+# "11.27 a. m." (period separator) and, for the same session, bare "11.02"
+# with the am/pm suffix silently dropped by OCR at this confidence threshold
+# — confirmed 2026-09-18 against a live WhatsApp Web screenshot, not just the
+# static corpus (the corpus's smoke test never asserted anything about
+# `timestamp`, so this went unnoticed at first). am/pm is optional here for
+# that reason. Still doesn't (and can't practically) match every locale's
+# relative-day label ("Ayer", weekday names, absolute dates) — see the
+# positional fallback in _split_row_fields for those.
+_RE_TIMESTAMP = re.compile(r'\d{1,2}[:.]\d{2}(?:\s*(a|p)\.?\s*m\.?)?', re.I)
+
+# Minimum horizontal gap (px) between the last name-column element and a
+# candidate timestamp element for the positional fallback in
+# _split_row_fields to trust it. Calibrated against real sidebar OCR output:
+# words within the same phrase sit ~4-10px apart (e.g. "~Jorge" / "era
+# penal ."), while the timestamp column (right-aligned near the crop's right
+# edge) sits 190-350px away from the name text — this threshold sits
+# comfortably between the two, not derived from first principles.
+_TIMESTAMP_GAP_PX = 60
 
 
 class SidebarRow(TypedDict):
@@ -337,10 +354,14 @@ def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
     WA's cell layout is name + timestamp on the top line, message preview
     below (documented in wavi/session.py:447-451) — re-clusters the row back
     into visual lines by y-overlap, then pulls the timestamp out of the top
-    line by regex (right-aligned, so the rightmost regex match wins if more
-    than one element on that line happens to match — rare, but cheap to
-    handle correctly). There's no DOM structure to lean on here, so regex
-    shape is the only reliable signal.
+    line in two passes: regex first (right-aligned, so the rightmost regex
+    match wins if more than one element happens to match — rare, but cheap
+    to handle correctly), then a positional fallback — the rightmost element
+    on the line, if it sits clearly apart from the rest (see
+    _TIMESTAMP_GAP_PX) — for shapes no regex can enumerate: relative-day
+    labels ("Ayer"), weekday names, absolute dates, all locale-dependent.
+    There's no DOM structure to lean on here, so shape + position are the
+    only signals available.
     """
     lines = sorted(
         _cluster_by_y_overlap(elements),
@@ -354,6 +375,12 @@ def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
     for i, el in enumerate(top):
         if _RE_TIMESTAMP.search(el.get("content") or ""):
             ts_idx = i  # keep overwriting: rightmost match wins
+
+    if ts_idx is None and len(top) >= 2:
+        gap = top[-1]["bbox"][0] - top[-2]["bbox"][2]
+        if gap >= _TIMESTAMP_GAP_PX:
+            ts_idx = len(top) - 1
+
     timestamp = (top[ts_idx].get("content") or "").strip() if ts_idx is not None else ""
     name = " ".join(el.get("content") or "" for i, el in enumerate(top) if i != ts_idx).strip()
 
