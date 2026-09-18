@@ -9,8 +9,24 @@ sesión (ver "Cómo retomar" para el estado del working tree). Desde v0.4.0
 validado contra sesión real (`e6181b4`), refactor de portabilidad
 `ChatAppProfile` (`9dab6c8`), bump a v0.5.0 (`b848e7f`), `direction` vía YOLO
 sin captioning + calibración contra sesión real (esta sesión, ver abajo).
-Suite base verde (233 passed, 18 skipped), suite de grounding verde (12/12
-sobre el corpus incluyendo el caso nuevo, sin regresiones). ruff limpio.
+Suite base verde (233 passed, 19 skipped), suite de grounding verde (14/14
+sobre el corpus incluyendo 2 casos nuevos, sin regresiones). ruff limpio.
+
+**`wavi debug-open` + `_OPEN_NEW_CHAT_JS` arreglado (2026-09-18, mismo día,
+después de lo de arriba):** nuevo comando `wavi debug-open <session>`
+(ADR-012) — relanza el daemon persistente VISIBLE (no headless) bajo
+demanda, para debug/inspección DOM sin arriesgar dos Chrome sobre el mismo
+perfil (se niega a correr si el daemon ya está vivo o el perfil no está
+autenticado). Procedimiento completo documentado en la skill
+`wa-session-guard` ("Debugging visibly"): `stop` → `debug-open` → trabajo →
+`stop` → `connect` (vuelve a headless). Con eso, se inspeccionó el DOM real
+y se confirmó + arregló `_OPEN_NEW_CHAT_JS` (WA reemplazó el ícono lápiz por
+un `+` sin `data-icon`; fix usa `aria-label="Nuevo chat"` como fallback,
+mismo patrón que `_CLICK_SEND_BTN_JS`). `wavi list-contacts default` corrió
+end-to-end por primera vez desde que se confirmó roto. Nuevo caso de corpus
+real `tests/corpus/cases/nuevo_chat_panel_000/` (gitignorado) +
+`test_parse_contacts_panel_rows()` — primera validación de
+`parse_contacts_panel_rows()` contra OCR real (antes solo sintética).
 
 **`direction` en `parse_sidebar_rows()` (2026-09-18, esta sesión):** el
 próximo paso recomendado por el handoff anterior, implementado y luego
@@ -61,9 +77,10 @@ manuales sobre la tab). Encontró y confirmó:
    para formas no enumerables como "Ayer"/fechas). Ver plan-mejoras.md §4.8.
 2. `locate_compose_area()` correcto contra un screenshot real de chat abierto
    (`input_box` sobre "Escribe un mensaje", `send_button` sobre el ícono mic).
-3. `_OPEN_NEW_CHAT_JS` (DOM) está roto en esta sesión — WA cambió el ícono de
-   "nuevo chat". `wavi list-contacts` falla en vivo. Confirma en la práctica
-   por qué existe esta migración.
+3. `_OPEN_NEW_CHAT_JS` (DOM) estaba roto — WA cambió el ícono de "nuevo
+   chat". `wavi list-contacts` fallaba en vivo. Confirma en la práctica por
+   qué existe esta migración. **Arreglado más tarde en esta misma sesión**
+   — ver `wavi debug-open` abajo.
 
 **Sobre el tamaño de `data/` (llamó la atención de System@ba-mac):** llegó a
 ~17GB por perfiles de Chrome viejos/rotos (pulpo-bot en 4 variantes, mateo
@@ -113,9 +130,9 @@ vez de correr `status` sobre sesiones que no se van a usar.
    chat"). Comparte con `parse_sidebar_rows` el crop de columna izquierda y el
    clustering de filas (extraídos a `_ocr_cell_rows()`); solo cambia el split
    por fila (`_split_contact_fields()`: sin timestamp, primera línea = nombre
-   completo, resto = subtítulo). **Sin caso de corpus real todavía** —
-   validado solo con tests unitarios sintéticos (`tests/test_vision_grounding.py`).
-   Ver "Pendiente" abajo.
+   completo, resto = subtítulo). Validado contra 1 caso de corpus real
+   (`nuevo_chat_panel_000`, ver `wavi debug-open` abajo) además de los tests
+   unitarios sintéticos.
 
 **Ninguna de las tres está cableada a `session.py`.** Es deliberado — session.py
 maneja la sesión de WA autenticada en vivo, y tocarla es mayor riesgo. Ver
@@ -130,15 +147,13 @@ generalización en sí (ver Fase 5 de plan-mejoras.md).
 
 ## Próximo paso recomendado (el más chico, más obvio)
 
-Sembrar un caso de corpus real con el panel "Nuevo chat" abierto (screenshot +
-`expected.json`, mismo formato que `tests/corpus/cases/`) y correr
-`parse_contacts_panel_rows()` contra él — sigue siendo la única de las tres
-funciones sin ningún caso de corpus real (ver tabla abajo). Mismo patrón ya
-usado dos veces esta sesión: `wavi check-updates default` da un screenshot
-del sidebar, pero el panel "Nuevo chat" no tiene un comando CLI de solo
-lectura equivalente hoy — hay que revisar si algún comando existente lo abre
-de paso, o si hace falta un click manual (mayor riesgo, ver
-`wa-session-guard`) para capturarlo.
+Aplicar el mismo patrón (`wavi debug-open` + inspección DOM en vivo) al
+resto de señales de íconos confirmadas rotas o pendientes:
+`_CLICK_SCROLL_BOTTOM_BTN_JS`, `_CLOSE_NEW_CHAT_JS`,
+`_CLEAR_SIDEBAR_SEARCH_JS` (ver tabla abajo) — mismo procedimiento que ya
+funcionó para `_OPEN_NEW_CHAT_JS`: `stop` → `debug-open` → inspeccionar/
+arreglar selector → capturar screenshot para corpus si aplica → `stop` →
+`connect`.
 
 Alternativa igual de chica: mejorar la precisión de `_detect_row_direction()`
 (implementada y calibrada esta sesión, ver abajo) — tiene falsos
@@ -163,7 +178,7 @@ De las 16 señales documentadas ahí, este es el estado real a 2026-09-18:
 | `_FETCH_BLOB_JS` / `_DRAIN_JS` | N/A — API de browser pura, nunca necesita visión |
 | `direction` (tick ✓/✓✓ en sidebar) | ✅ `_detect_row_direction()` (YOLO sin captioning) — validado contra 1 caso de corpus real, falsos +/- conocidos y documentados |
 | `_CLICK_SCROLL_BOTTOM_BTN_JS` | ❌ Pendiente — ícono, sin fallback |
-| `_OPEN_NEW_CHAT_JS` | ❌ Pendiente — **confirmado roto en la sesión real** (WA cambió el ícono) |
+| `_OPEN_NEW_CHAT_JS` | ✅ Arreglado (2026-09-18, `wavi debug-open` + fallback `aria-label`) |
 | `_CLOSE_NEW_CHAT_JS` | ❌ Pendiente — ícono |
 | `_CLEAR_SIDEBAR_SEARCH_JS` | ❌ Pendiente — ícono (ya tiene fallback no-visual: click + Escape) |
 | `_GET_VISIBLE_MSG_IDS_JS` | ⚠️ Ya tiene fallback OCR pre-existente en `runner.get()` (no de esta migración) |
@@ -180,12 +195,14 @@ continuación del patrón OCR-only usado hasta acá.
 1. ~~`direction` vía detección de íconos~~ ✅ implementado y calibrado contra
    sesión real esta sesión (2026-09-18) — falsos +/- conocidos, ver detalle
    arriba.
-2. Sembrar un caso de corpus real con el panel "Nuevo chat" abierto — ver
-   "Próximo paso recomendado" arriba.
-3. Resto de señales de íconos (`_CLICK_SCROLL_BOTTOM_BTN_JS`,
-   `_OPEN_NEW_CHAT_JS` — priorizar, ya confirmado roto —, `_CLOSE_NEW_CHAT_JS`,
-   `_CLEAR_SIDEBAR_SEARCH_JS`) — mismo patrón: detección sobre corpus estático
-   primero, cableado después, por separado.
+2. ~~Sembrar un caso de corpus real con el panel "Nuevo chat" abierto~~ ✅
+   hecho (2026-09-18, `nuevo_chat_panel_000`, vía `wavi debug-open`).
+3. ~~`_OPEN_NEW_CHAT_JS` roto~~ ✅ arreglado (2026-09-18). Resto de señales de
+   íconos (`_CLICK_SCROLL_BOTTOM_BTN_JS`, `_CLOSE_NEW_CHAT_JS`,
+   `_CLEAR_SIDEBAR_SEARCH_JS`) — ver "Próximo paso recomendado" arriba, mismo
+   patrón: `wavi debug-open` para inspeccionar/arreglar el selector primero,
+   detección vision sobre corpus estático si aplica, cableado a `session.py`
+   después, por separado.
 4. Cablear `locate_compose_area()` + `parse_sidebar_rows()` +
    `parse_contacts_panel_rows()` a `session.py` como fallback real detrás de
    un flag — con pruebas contra una sesión de staging antes de default-on.
@@ -222,10 +239,16 @@ y `wavi/vision_grounding.py`, pero el resumen rápido:
 
 ```bash
 cd /Users/josetabuyo/Development/wavi
-git log --oneline -5                 # confirmar que seguís en b848e7f o más nuevo
+git log --oneline -5                 # confirmar que seguís en d89a297 o más nuevo
 make corpus-grounding                # confirmar que el corpus sigue verde
 uv run wavi status default           # confirmar que la sesión real sigue autenticada
 ```
 
 Leer `docs/plan-mejoras.md` §4.8 completo antes de tocar nada — tiene el
 contexto de negocio (por qué), este archivo tiene el mapa (qué sigue).
+
+Si el próximo paso implica encontrar/arreglar un selector DOM roto (como
+`_OPEN_NEW_CHAT_JS` esta sesión) o capturar un screenshot que ningún comando
+de solo lectura da hoy: `wavi debug-open` (ver ADR-012 y la sección
+"Debugging visibly" de la skill `wa-session-guard`) — nunca abrir Chrome
+visible a mano por fuera de ese comando.

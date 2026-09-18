@@ -293,20 +293,38 @@ def _cleanup_crash_files(profile: Path) -> None:
             shutil.rmtree(p, ignore_errors=True)
 
 
-def _launch_headless_daemon(profile: Path, port: int) -> subprocess.Popen:
-    """Launch headless Chrome daemon on `port`, save PID and port, return the process."""
+def _launch_daemon(profile: Path, port: int, visible: bool = False) -> subprocess.Popen:
+    """Launch the Chrome daemon on `port`, save PID and port, return the process.
+
+    `visible=False` (default) is every normal path — routine `wavi connect`,
+    the auto-start fallback, etc. `visible=True` exists only for `wavi
+    debug-open` (manual/vision debugging against an already-authenticated
+    profile): same flags, same profile, same port-file bookkeeping, just
+    without `--headless=new` so a real window opens. Never called with
+    `visible=True` from routine connect/QR flows — see debug-open's
+    docstring for why that distinction matters (never two Chrome instances
+    on the same profile).
+    """
     (profile / "SingletonLock").unlink(missing_ok=True)
+    args = list(_VISIBLE_CHROME_ARGS if visible else _HEADLESS_CHROME_ARGS)
+    if not visible:
+        args.append("--headless=new")
     proc = subprocess.Popen(
         ["arch", "-arm64", str(REAL_CHROME)]
         + [f"--user-data-dir={profile}", f"--remote-debugging-port={port}"]
-        + _HEADLESS_CHROME_ARGS
-        + ["--headless=new", f"--window-size={WINDOW_W},{WINDOW_H}", "about:blank"],
+        + args
+        + [f"--window-size={WINDOW_W},{WINDOW_H}", "about:blank"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     (profile / PID_FILE).write_text(str(proc.pid))
     (profile / PORT_FILE).write_text(str(port))
     return proc
+
+
+def _launch_headless_daemon(profile: Path, port: int) -> subprocess.Popen:
+    """Launch headless Chrome daemon on `port`, save PID and port, return the process."""
+    return _launch_daemon(profile, port, visible=False)
 
 
 async def _wait_cdp_ready(port: int, timeout_s: int = 20) -> bool:
@@ -844,6 +862,76 @@ def stop(session: str):
     asyncio.run(_stop_daemon_for_profile(profile))
     click.echo("Daemon stopped cleanly.")
     log_event(DEFAULT_SESSIONS_DIR, session, "stop")
+
+
+# ── debug-open ────────────────────────────────────────────────────────────────
+
+@main.command("debug-open")
+@click.argument("session", default="default")
+def debug_open(session: str):
+    """Relaunch SESSION's daemon VISIBLY (not headless), for manual/DOM/vision debugging.
+
+    For when you need to actually see the page — inspecting a UI change WA
+    shipped, finding a new selector after one broke, watching a click land.
+    Every other wavi command keeps working normally against this daemon
+    while it's visible (they all attach over CDP, same as headless).
+
+    Deliberately narrow, to keep this safe to reach for often: SESSION must
+    already be authenticated (no QR flow here — run 'wavi connect --open'
+    first if it isn't) and its daemon must already be stopped (run 'wavi
+    stop SESSION' first) — refuses otherwise rather than ever risking two
+    Chrome instances on the same profile (see wa-session-guard skill,
+    "Never connect the same number twice simultaneously").
+
+    The other half of this procedure, every time: once you're done,
+    'wavi stop SESSION' again, then plain 'wavi connect SESSION' to go back
+    to headless — headless is the only mode that should be left running
+    unattended.
+    """
+    profile = _profile(session)
+    if not profile.exists():
+        click.echo(f"Session '{session}' no existe. Corré 'wavi connect {session} --open' primero.", err=True)
+        sys.exit(1)
+
+    from wavi.session import WASession
+    s = WASession(profile)
+    if s.daemon_alive():
+        click.echo(
+            f"El daemon de '{session}' ya está corriendo (PID {s._load_pid()}). "
+            f"Corré 'wavi stop {session}' primero — nunca dos Chrome sobre el mismo perfil.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Claim from the society registry, same as 'connect' — 'wavi stop' deletes
+    # chrome_daemon.port on the way out, so _session_port()'s fallback would
+    # otherwise silently land on the hardcoded CDP_PORT default (9222),
+    # outside Wavi's registered range and untracked by the society.
+    port = _claim_port(str(profile))
+    _kill_port_processes(port)
+    time.sleep(1)
+
+    click.echo(f"Levantando Chrome VISIBLE para '{session}' (perfil ya autenticado esperado)...")
+    proc = _launch_daemon(profile, port, visible=True)
+    if not asyncio.run(_wait_cdp_ready(port)):
+        click.echo(f"Chrome no expuso CDP en el puerto {port} a tiempo.", err=True)
+        _terminate_proc(proc)
+        sys.exit(1)
+
+    status = asyncio.run(_check_session_status(profile))
+    if status != "restored":
+        click.echo(
+            f"Perfil no autenticado (status={status}) — 'debug-open' no maneja QR. "
+            f"Corré 'wavi stop {session}' y después 'wavi connect {session} --open' para autenticar.",
+            err=True,
+        )
+        _terminate_proc(proc)
+        sys.exit(1)
+
+    click.echo(f"Chrome VISIBLE activo para '{session}' (PID {proc.pid}, CDP :{port}).")
+    click.echo("Los comandos 'wavi' normales (get/list-contacts/check-updates/...) usan este mismo daemon.")
+    click.echo(f"Cuando termines: 'wavi stop {session}' y después 'wavi connect {session}' para volver a headless.")
+    log_event(DEFAULT_SESSIONS_DIR, session, "debug_open_visible", pid=proc.pid, port=port)
 
 
 # ── events ────────────────────────────────────────────────────────────────────

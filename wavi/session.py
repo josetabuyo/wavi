@@ -288,16 +288,29 @@ _CLICK_SEND_BTN_JS = """
 """
 
 # DOM signal: span[data-icon="new-chat-outline"] (left sidebar compose button).
+# Confirmed broken against a live session, 2026-09-18 (see docs/plan-mejoras.md
+# §4.8): WA replaced the pencil icon with a green "+" button that carries no
+# data-icon attribute at all anymore — inspected live via 'wavi debug-open',
+# the only remaining anchor is aria-label="Nuevo chat" (its SVG <title> is
+# "ic-add", shared with an unrelated "Nueva lista" button elsewhere in the
+# DOM, so the icon alone is ambiguous; aria-label is the one attribute that
+# picks out this specific button). Kept the old data-icon lookups first in
+# case a future WA build reverts, same locale-agnostic-first, aria-label-
+# fallback pattern as _CLICK_SEND_BTN_JS above.
 # Vision fallback: locate the pencil/compose icon in the left icon bar via screenshot.
 _OPEN_NEW_CHAT_JS = """
 () => {
     const icon = document.querySelector('span[data-icon="new-chat-outline"]') ||
                  document.querySelector('span[data-icon="new-chat-alt"]');
-    if (!icon) return false;
-    const btn = icon.closest('button');
-    if (!btn) return false;
-    btn.click();
-    return true;
+    if (icon) {
+        const btn = icon.closest('button');
+        if (btn) { btn.click(); return true; }
+    }
+    for (const lbl of ['Nuevo chat', 'New chat']) {
+        const btn = document.querySelector(`button[aria-label="${lbl}"]`);
+        if (btn) { btn.click(); return true; }
+    }
+    return false;
 }
 """
 

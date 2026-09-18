@@ -42,9 +42,18 @@ def _discover_cases() -> list[Path]:
 
 CASES = _discover_cases()
 
+# nuevo_chat_panel_* cases show the "Nuevo chat" contacts panel, not an open
+# chat — locate_compose_area/parse_sidebar_rows assume the latter (a compose
+# bar, sidebar chat-list rows with timestamps) and are meaningless against
+# the former (confirmed: test_locate_compose_area fails outright on this
+# screen — no compose bar exists to find). They get their own test below,
+# scoped to _CONTACTS_PANEL_CASES.
+_CONTACTS_PANEL_CASES = [d for d in CASES if d.name.startswith("nuevo_chat_panel")]
+_OPEN_CHAT_CASES = [d for d in CASES if d not in _CONTACTS_PANEL_CASES]
 
-@pytest.mark.skipif(not CASES, reason=f"no corpus cases in {CASES_DIR}")
-@pytest.mark.parametrize("case_dir", CASES, ids=lambda d: d.name)
+
+@pytest.mark.skipif(not _OPEN_CHAT_CASES, reason=f"no corpus cases in {CASES_DIR}")
+@pytest.mark.parametrize("case_dir", _OPEN_CHAT_CASES, ids=lambda d: d.name)
 def test_locate_compose_area(case_dir: Path):
     from PIL import Image
 
@@ -74,8 +83,8 @@ def test_locate_compose_area(case_dir: Path):
     )
 
 
-@pytest.mark.skipif(not CASES, reason=f"no corpus cases in {CASES_DIR}")
-@pytest.mark.parametrize("case_dir", CASES, ids=lambda d: d.name)
+@pytest.mark.skipif(not _OPEN_CHAT_CASES, reason=f"no corpus cases in {CASES_DIR}")
+@pytest.mark.parametrize("case_dir", _OPEN_CHAT_CASES, ids=lambda d: d.name)
 def test_parse_sidebar_rows(case_dir: Path):
     from wavi.vision_grounding import SIDEBAR_PX, parse_sidebar_rows
 
@@ -116,6 +125,32 @@ def test_parse_sidebar_rows(case_dir: Path):
     # that failure mode without being brittle to sparse, legitimate cases.
     timestamped = sum(1 for row in rows if row["timestamp"].strip())
     assert timestamped >= 1, f"{case_dir.name}: no row got a non-empty timestamp"
+
+
+@pytest.mark.skipif(not _CONTACTS_PANEL_CASES, reason="no corpus case for the 'Nuevo chat' contacts panel")
+@pytest.mark.parametrize("case_dir", _CONTACTS_PANEL_CASES, ids=lambda d: d.name)
+def test_parse_contacts_panel_rows(case_dir: Path):
+    """First validation of parse_contacts_panel_rows against real OCR — until
+    now it only had synthetic unit coverage (see its docstring in
+    wavi/vision_grounding.py). Same smoke-check shape as test_parse_sidebar_rows
+    (row count + bbox + name-majority), minus the timestamp check: contacts
+    panel rows never carry one by design (name + subtitle only).
+    """
+    from wavi.vision_grounding import SIDEBAR_PX, parse_contacts_panel_rows
+
+    rows = parse_contacts_panel_rows(case_dir / "screenshot.png")
+    if rows is None:
+        pytest.skip("vision-omniparser extra not installed")
+
+    assert len(rows) >= 5, f"{case_dir.name}: only found {len(rows)} contact rows, expected several"
+
+    for row in rows:
+        assert row["bbox"]["x"] < SIDEBAR_PX, f"{case_dir.name}: row bbox extends outside the sidebar crop"
+
+    named = sum(1 for row in rows if row["name"].strip())
+    assert named >= len(rows) * 0.8, (
+        f"{case_dir.name}: only {named}/{len(rows)} rows got a non-empty name"
+    )
 
 
 _DIRECTION_CASES = [d for d in CASES if (d / "expected_direction.json").exists()]

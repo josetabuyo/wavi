@@ -387,6 +387,41 @@ dado lo ruidoso del heurístico. 6 tests unitarios nuevos en
 `tests/test_vision_grounding.py` (mockean
 `_yolo_available`/`_load_yolo_model`/`predict_yolo`, no requieren pesos).
 
+**`wavi debug-open` — daemon visible bajo demanda (2026-09-18, mismo día):**
+para sembrar el caso de corpus del panel "Nuevo chat" hacía falta abrirlo, y
+`wavi list-contacts` (el único camino existente) fallaba por el bug de
+`_OPEN_NEW_CHAT_JS` de más abajo — sin poder ver la página, no había forma
+de encontrar el selector roto. El daemon persistente es headless por diseño
+(ADR-006) y no había ningún comando para verlo — `_VISIBLE_CHROME_ARGS`
+existía en `cli.py` como código muerto, anticipando el hueco sin resolverlo.
+Nuevo comando `wavi debug-open <session>` (ADR-012): relanza el daemon SIN
+`--headless=new`, mismo perfil, mismo mecanismo de claim de puerto que
+`connect`. Deliberadamente angosto — se niega a correr si el daemon ya está
+vivo o si el perfil no está autenticado (nunca maneja QR) — para que dé
+confianza usarlo seguido sin repetir el riesgo de dos Chrome sobre el mismo
+perfil que `wa-session-guard` ya advertía. `_launch_headless_daemon()` se
+generalizó a `_launch_daemon(profile, port, visible=bool)`, mismo
+bookkeeping de PID/puerto. Procedimiento completo (documentado también en la
+skill `wa-session-guard`, sección "Debugging visibly"):
+`wavi stop` → `wavi debug-open` → (inspección/debug) → `wavi stop` →
+`wavi connect` (vuelve a headless). Validado en vivo el mismo día: permitió
+inspeccionar el DOM real de la sesión autenticada y encontrar el selector
+roto (ver ítem siguiente), después cerrado y reconectado a headless sin
+problemas.
+
+**`_OPEN_NEW_CHAT_JS` arreglado (2026-09-18, mismo día):** con el daemon
+visible, inspección directa del DOM confirmó lo que el handoff anterior
+sospechaba — WA reemplazó el ícono lápiz (`span[data-icon="new-chat-outline"]`)
+por un botón `+` sin ningún atributo `data-icon`. El único ancla que queda es
+`aria-label="Nuevo chat"` (su `<svg><title>` es `"ic-add"`, compartido con un
+botón no relacionado — "Nueva lista" —, así que el ícono solo no alcanza).
+Fix en `wavi/session.py`: mismo patrón ya usado en `_CLICK_SEND_BTN_JS`
+(selector `data-icon` primero, si no matchea cae a `aria-label` en
+español/inglés). Validado en vivo: `wavi list-contacts default` corrió
+end-to-end por primera vez desde que se confirmó roto, capturando la lista
+completa de contactos + el screenshot que se usó para sembrar
+`nuevo_chat_panel_000`.
+
 **Pendiente (próximos pasos, uno a la vez):**
 1. Cablear `locate_compose_area()` y `parse_sidebar_rows()` a `session.py` como
    fallback real detrás de un flag, con pruebas contra una sesión de staging
@@ -399,19 +434,15 @@ dado lo ruidoso del heurístico. 6 tests unitarios nuevos en
    (cuando OCR mete el tick dentro del bbox de texto) sería la continuación
    natural si `direction` termina siendo crítico para algún caller; no
    bloqueante hoy porque nada lo consume todavía (pendiente #1 de esta lista).
-3. Sembrar un caso de corpus con el panel "Nuevo chat" abierto y correr
-   `parse_contacts_panel_rows()` contra él (2026-09-18: implementado, solo
-   validado sintéticamente).
-4. Cubrir el resto de la tabla de inventario DOM (íconos, necesitan YOLO/template,
-   no solo OCR): scroll-bottom button (§`_CLICK_SCROLL_BOTTOM_BTN_JS`),
-   new-chat/back icons (**confirmado roto en la sesión real, 2026-09-18** —
-   `_OPEN_NEW_CHAT_JS` busca `span[data-icon="new-chat-outline"]` pero WA Web
-   ya no lo usa; el botón de "nuevo chat" hoy es el `+` verde arriba a la
-   derecha del sidebar. `wavi list-contacts` falla con `RuntimeError` en
-   `navigate_to_contact` como consecuencia — evidencia directa y actual de la
-   fragilidad que motiva esta migración, no solo una hipótesis), reacciones —
-   mismo patrón (detección primero sobre
-   corpus estático, cableado a `session.py` después, por separado).
+3. ~~Sembrar un caso de corpus con el panel "Nuevo chat" abierto~~ ✅ hecho
+   (2026-09-18, `nuevo_chat_panel_000`) — `test_parse_contacts_panel_rows()`
+   nuevo en `tests/test_corpus_grounding.py`, primera validación contra OCR
+   real (antes solo sintética). Ver detalle abajo (`wavi debug-open`).
+4. ~~`_OPEN_NEW_CHAT_JS` roto~~ ✅ arreglado (2026-09-18) — ver detalle abajo.
+   Resto de señales de íconos que siguen pendientes: scroll-bottom button
+   (§`_CLICK_SCROLL_BOTTOM_BTN_JS`), `_CLOSE_NEW_CHAT_JS`,
+   `_CLEAR_SIDEBAR_SEARCH_JS`, reacciones — mismo patrón (detección primero
+   sobre corpus estático, cableado a `session.py` después, por separado).
 5. Evaluar si conviene sumar un VLM (Qwen-VL u otro) como capa de *razonamiento*
    sobre lo que OmniParser detecta — ver §4.6. Mantiene la filosofía de wavi como
    harness: OmniParser/vision aporta los "ojos" (detección estructurada), el
