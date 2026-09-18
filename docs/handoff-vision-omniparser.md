@@ -3,20 +3,38 @@
 **Fecha:** 2026-09-18
 **Estado:** v0.4.0 publicado (PyPI + git push a `main`, commit `38ed2be`), más
 el split de campos de `parse_sidebar_rows()` (commit `4bee0d4`),
-`parse_contacts_panel_rows()` (commit `991f286`), y un fix de timestamp
-encontrado validando contra una sesión real (ver abajo). Suite base verde
-(225 passed, 15 skipped), suite de grounding verde (10/10 sobre el corpus).
+`parse_contacts_panel_rows()` (commit `991f286`), un fix de timestamp
+encontrado validando contra una sesión real (commit `e6181b4`), y un refactor
+de portabilidad (`ChatAppProfile`, ver abajo — sin commitear todavía al cierre
+de esta nota). Suite base verde (227 passed, 15 skipped), suite de grounding
+verde (10/10 sobre el corpus).
 
 **Sesión real conectada:** `wavi qr default` (22793010001200) escaneado y
 autenticado este mismo día — primera vez que este trabajo se validó contra
-WhatsApp Web real, no solo el corpus estático. Encontró y confirmó dos cosas:
+WhatsApp Web real, no solo el corpus estático. Validación de solo lectura
+(`status`/`queue`/`events`/`check-updates`/`get` — nunca `send`, nunca clicks
+manuales sobre la tab). Encontró y confirmó:
 1. Un bug real en `_split_row_fields()`: el regex de timestamp solo aceptaba
    separador `:`, pero esta sesión renderiza con `.` (`"11.27 a. m."`) y a
    veces sin sufijo am/pm. Arreglado (regex ampliado + fallback posicional
    para formas no enumerables como "Ayer"/fechas). Ver plan-mejoras.md §4.8.
-2. `_OPEN_NEW_CHAT_JS` (DOM) está roto en esta sesión — WA cambió el ícono de
+2. `locate_compose_area()` correcto contra un screenshot real de chat abierto
+   (`input_box` sobre "Escribe un mensaje", `send_button` sobre el ícono mic).
+3. `_OPEN_NEW_CHAT_JS` (DOM) está roto en esta sesión — WA cambió el ícono de
    "nuevo chat". `wavi list-contacts` falla en vivo. Confirma en la práctica
    por qué existe esta migración.
+
+**Sobre el tamaño de `data/` (~17GB, llamó la atención de System@ba-mac):**
+esperado, no es basura — `data/sessions/` guarda perfiles de Chrome por sesión
+de WA (varios GB cada uno, IndexedDB/caché de WA incluido) más variantes
+archivadas nunca borradas por diseño (ver `docs/adr/ADR-009-never-delete-session-profiles.md`
+— archivar y renombrar, jamás borrar, porque una sesión perdida cuesta un
+nuevo QR scan penalizado por WA). `weights/` son los ~1GB de pesos de
+OmniParser. `output/` son screenshots/historiales de pruebas acumulados. Hay
+~15 carpetas `_tmp_*` de ~80MB cada una en `data/sessions/` que parecen
+perfiles de Chrome de desarrollo/testing viejos — candidatas a revisar en
+algún momento, pero **no tocadas** (el usuario pidió explícitamente no borrar
+nada en esta sesión).
 
 ## Dónde está la sustancia
 
@@ -52,6 +70,13 @@ WhatsApp Web real, no solo el corpus estático. Encontró y confirmó dos cosas:
 **Ninguna de las tres está cableada a `session.py`.** Es deliberado — session.py
 maneja la sesión de WA autenticada en vivo, y tocarla es mayor riesgo. Ver
 `wa-session-guard` skill antes de tocar `session.py`.
+
+**Las tres aceptan un `profile: ChatAppProfile = WHATSAPP_WEB` opcional**
+(nuevo, 2026-09-18) — agrupa las constantes específicas de WA Web (ancho de
+sidebar, regex de timestamp, umbrales) para que agregar otro chat después sea
+escribir un `ChatAppProfile` nuevo, no reescribir la lógica de detección. Hoy
+`WHATSAPP_WEB` es el único perfil real; esto es la costura, no la
+generalización en sí (ver Fase 5 de plan-mejoras.md).
 
 ## Próximo paso recomendado (el más chico, más obvio)
 

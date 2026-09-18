@@ -8,7 +8,15 @@ forma lazy dentro de las funciones que sí los necesitan). Para el pipeline
 completo sobre el corpus real, ver tests/test_corpus_grounding.py (gateado
 por WAVI_CORPUS=1).
 """
-from wavi.vision_grounding import _cluster_by_y_overlap, _split_contact_fields, _split_row_fields
+import re
+
+from wavi.vision_grounding import (
+    WHATSAPP_WEB,
+    ChatAppProfile,
+    _cluster_by_y_overlap,
+    _split_contact_fields,
+    _split_row_fields,
+)
 
 
 def _el(content, x0, y0, x1, y1):
@@ -135,6 +143,50 @@ class TestSplitRowFields:
         name, _last_message, timestamp = _split_row_fields(elements)
         assert name == "María García"
         assert timestamp == ""
+
+
+# ── ChatAppProfile parametrization ──────────────────────────────────────────
+# Proves `profile` actually drives behavior (not just a decorative parameter)
+# — groundwork for adding a second chat app later without rewriting detection
+# logic, per docs/plan-mejoras.md Fase 5. WHATSAPP_WEB is still the only real
+# profile; these tests use a synthetic one purely to exercise the plumbing.
+
+class TestChatAppProfile:
+    def test_split_row_fields_defaults_to_whatsapp_web(self):
+        elements = [
+            _el("Ana", 0, 10, 40, 30),
+            _el("10:17 a. m.", 200, 10, 280, 30),
+        ]
+        assert _split_row_fields(elements) == _split_row_fields(elements, WHATSAPP_WEB)
+
+    def test_custom_profile_timestamp_regex_and_gap_override_defaults(self):
+        custom = ChatAppProfile(
+            name="synthetic",
+            sidebar_px=WHATSAPP_WEB.sidebar_px,
+            footer_band_frac=WHATSAPP_WEB.footer_band_frac,
+            compose_placeholder_re=WHATSAPP_WEB.compose_placeholder_re,
+            row_gap_px=WHATSAPP_WEB.row_gap_px,
+            timestamp_re=re.compile(r"^TS-\d+$"),
+            timestamp_gap_px=200,  # deliberately large: positional fallback must NOT fire
+        )
+        # Small gap (10px), well under either profile's threshold — only a
+        # matching regex can identify "TS-42" as a timestamp here, never the
+        # positional fallback. Isolates the regex's effect specifically.
+        elements = [
+            _el("Ana", 0, 10, 40, 30),
+            _el("TS-42", 50, 10, 90, 30),
+        ]
+
+        # Default profile's clock regex doesn't match "TS-42", and the gap
+        # (10px) is far under its positional threshold (60px) — stays in name.
+        name, _last_message, timestamp = _split_row_fields(elements)
+        assert timestamp == ""
+        assert name == "Ana TS-42"
+
+        # Custom profile's regex matches "TS-42" directly.
+        name, _last_message, timestamp = _split_row_fields(elements, custom)
+        assert timestamp == "TS-42"
+        assert name == "Ana"
 
 
 # ── _split_contact_fields ────────────────────────────────────────────────────

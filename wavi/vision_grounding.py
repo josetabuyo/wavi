@@ -10,6 +10,16 @@ locates *UI elements* — icons and controls, not just text — from a plain
 screenshot, using microsoft/OmniParser-v2.0 (YOLO icon detector + Florence-2
 icon captioner + EasyOCR for text seeding). It works on any OS.
 
+## ChatAppProfile — groundwork for more than WhatsApp
+
+Every public function takes an optional `profile: ChatAppProfile` argument
+(default `WHATSAPP_WEB`), bundling the chat-app-specific constants (sidebar
+crop width, row-gap threshold, timestamp shape/regex, compose placeholder
+text). WhatsApp Web is still the only profile that exists — this is not a
+second chat app, just the seam that lets one be added later (a new
+ChatAppProfile instance) without rewriting the detection functions, per
+docs/plan-mejoras.md Fase 5.
+
 ## Why this isn't wired into session.py yet
 
 This module only reads static screenshot files. It never opens a live
@@ -61,10 +71,36 @@ code crashed on MPS (`RuntimeError: Input type (float) and bias type
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
 WEIGHTS_DIR = Path(__file__).parent.parent / "weights"
+
+
+@dataclass(frozen=True)
+class ChatAppProfile:
+    """Bundles the chat-app-specific constants every function in this module
+    needs (crop geometry, OCR text shapes) behind one parameter, instead of
+    each function reaching for WA-specific module globals directly.
+
+    Not a generalization to a second chat app yet — WHATSAPP_WEB below is
+    still the only profile, and every function defaults to it, so behavior
+    is unchanged. This exists so that adding Telegram/Slack/etc. later is a
+    matter of writing a new ChatAppProfile instance and passing it in, not
+    rewriting the detection functions — see docs/plan-mejoras.md Fase 5
+    ("generalización... la 'gramática visual de chats' aplicable a
+    Telegram/Slack"). Frozen: profiles are shared, read-only configuration,
+    never mutated per-call.
+    """
+    name: str
+    sidebar_px: int
+    footer_band_frac: float
+    compose_placeholder_re: re.Pattern[str]
+    row_gap_px: int
+    timestamp_re: re.Pattern[str]
+    timestamp_gap_px: int
+
 
 # Footer band where the compose input + send button live, as a fraction of
 # image height from the bottom. WA Web's compose bar is consistently short
@@ -79,6 +115,53 @@ FOOTER_BAND_FRAC = 0.15
 # between the anchor words absorbs whatever EasyOCR did or didn't catch
 # between them, including nothing.
 _COMPOSE_PLACEHOLDER_RE = re.compile(r"(escribe.*mensaj|type.*a.*messag)", re.I)
+
+SIDEBAR_PX = 580  # matches wavi/vision.py's SIDEBAR_PX — kept independent
+# on purpose (this module has no import-time dependency on wavi.vision) but
+# should be updated alongside it if WA's sidebar width ever changes.
+
+# Vertical gap (px) above which two OCR text lines are considered different
+# sidebar rows rather than two lines of the same chat cell (name + preview).
+# WA Web's cell height is ~72-90px with lines close together within a cell
+# and a clearer gap between cells; 20px was picked empirically against the
+# corpus and isn't first-principles derived — revisit if it misclusters on
+# new screenshots (e.g. very long contact names that wrap to 3 lines).
+SIDEBAR_ROW_GAP_PX = 20
+
+# Broader than wavi/vision.py's RE_TIME on purpose: RE_TIME assumes a colon
+# separator and a required am/pm suffix (true for in-bubble Apple Vision OCR
+# text), but real EasyOCR output against a live sidebar showed WA rendering
+# "11.27 a. m." (period separator) and, for the same session, bare "11.02"
+# with the am/pm suffix silently dropped by OCR at this confidence threshold
+# — confirmed 2026-09-18 against a live WhatsApp Web screenshot, not just the
+# static corpus (the corpus's smoke test never asserted anything about
+# `timestamp`, so this went unnoticed at first). am/pm is optional here for
+# that reason. Still doesn't (and can't practically) match every locale's
+# relative-day label ("Ayer", weekday names, absolute dates) — see the
+# positional fallback in _split_row_fields for those.
+_RE_TIMESTAMP = re.compile(r'\d{1,2}[:.]\d{2}(?:\s*(a|p)\.?\s*m\.?)?', re.I)
+
+# Minimum horizontal gap (px) between the last name-column element and a
+# candidate timestamp element for the positional fallback in
+# _split_row_fields to trust it. Calibrated against real sidebar OCR output:
+# words within the same phrase sit ~4-10px apart (e.g. "~Jorge" / "era
+# penal ."), while the timestamp column (right-aligned near the crop's right
+# edge) sits 190-350px away from the name text — this threshold sits
+# comfortably between the two, not derived from first principles.
+_TIMESTAMP_GAP_PX = 60
+
+# The only profile in use today — see ChatAppProfile's docstring. Every
+# function below defaults to this, so passing no `profile` argument keeps
+# today's exact WA Web behavior.
+WHATSAPP_WEB = ChatAppProfile(
+    name="whatsapp_web",
+    sidebar_px=SIDEBAR_PX,
+    footer_band_frac=FOOTER_BAND_FRAC,
+    compose_placeholder_re=_COMPOSE_PLACEHOLDER_RE,
+    row_gap_px=SIDEBAR_ROW_GAP_PX,
+    timestamp_re=_RE_TIMESTAMP,
+    timestamp_gap_px=_TIMESTAMP_GAP_PX,
+)
 
 
 class ElementBox(TypedDict):
@@ -210,7 +293,9 @@ def _group_text_lines(text_elements: list[dict]) -> list[dict]:
     return result
 
 
-def locate_compose_area(screenshot_path: Path) -> ComposeArea | None:
+def locate_compose_area(
+    screenshot_path: Path, profile: ChatAppProfile = WHATSAPP_WEB
+) -> ComposeArea | None:
     """Locates the WhatsApp Web compose input box and send button in a
     screenshot via OmniParser, replacing the DOM signals documented for
     _FIND_COMPOSE_INPUT_JS / _CHECK_COMPOSE_EMPTY_JS / _CLICK_SEND_BTN_JS in
@@ -229,7 +314,7 @@ def locate_compose_area(screenshot_path: Path) -> ComposeArea | None:
     with Image.open(screenshot_path) as img:
         img_w, img_h = img.size
 
-    footer_y0 = img_h * (1 - FOOTER_BAND_FRAC)
+    footer_y0 = img_h * (1 - profile.footer_band_frac)
     footer_elements = []
     for el in elements:
         _x0, y0, _x1, y1 = el["bbox"]
@@ -249,7 +334,7 @@ def locate_compose_area(screenshot_path: Path) -> ComposeArea | None:
     #    splits this string across multiple word-level boxes.
     text_lines = _group_text_lines([el for el in footer_elements if el["type"] == "text"])
     for line in text_lines:
-        if _COMPOSE_PLACEHOLDER_RE.search(line["content"]):
+        if profile.compose_placeholder_re.search(line["content"]):
             input_box = _to_pixel_bbox(line["bbox"], img_w, img_h)
             row_y0, row_y1 = line["bbox"][1], line["bbox"][3]
             break
@@ -295,40 +380,6 @@ def locate_compose_area(screenshot_path: Path) -> ComposeArea | None:
 # Florence-2 icon pipeline entirely and is correspondingly much faster than
 # locate_compose_area() (no captioning pass).
 
-SIDEBAR_PX = 580  # matches wavi/vision.py's SIDEBAR_PX — kept independent
-# on purpose (this module has no import-time dependency on wavi.vision) but
-# should be updated alongside it if WA's sidebar width ever changes.
-
-# Vertical gap (px) above which two OCR text lines are considered different
-# sidebar rows rather than two lines of the same chat cell (name + preview).
-# WA Web's cell height is ~72-90px with lines close together within a cell
-# and a clearer gap between cells; 20px was picked empirically against the
-# corpus and isn't first-principles derived — revisit if it misclusters on
-# new screenshots (e.g. very long contact names that wrap to 3 lines).
-SIDEBAR_ROW_GAP_PX = 20
-
-# Broader than wavi/vision.py's RE_TIME on purpose: RE_TIME assumes a colon
-# separator and a required am/pm suffix (true for in-bubble Apple Vision OCR
-# text), but real EasyOCR output against a live sidebar showed WA rendering
-# "11.27 a. m." (period separator) and, for the same session, bare "11.02"
-# with the am/pm suffix silently dropped by OCR at this confidence threshold
-# — confirmed 2026-09-18 against a live WhatsApp Web screenshot, not just the
-# static corpus (the corpus's smoke test never asserted anything about
-# `timestamp`, so this went unnoticed at first). am/pm is optional here for
-# that reason. Still doesn't (and can't practically) match every locale's
-# relative-day label ("Ayer", weekday names, absolute dates) — see the
-# positional fallback in _split_row_fields for those.
-_RE_TIMESTAMP = re.compile(r'\d{1,2}[:.]\d{2}(?:\s*(a|p)\.?\s*m\.?)?', re.I)
-
-# Minimum horizontal gap (px) between the last name-column element and a
-# candidate timestamp element for the positional fallback in
-# _split_row_fields to trust it. Calibrated against real sidebar OCR output:
-# words within the same phrase sit ~4-10px apart (e.g. "~Jorge" / "era
-# penal ."), while the timestamp column (right-aligned near the crop's right
-# edge) sits 190-350px away from the name text — this threshold sits
-# comfortably between the two, not derived from first principles.
-_TIMESTAMP_GAP_PX = 60
-
 
 class SidebarRow(TypedDict):
     bbox: ElementBox
@@ -346,9 +397,11 @@ class SidebarRow(TypedDict):
     direction: Literal["inbound", "outbound"] | None
 
 
-def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
+def _split_row_fields(
+    elements: list[dict], profile: ChatAppProfile = WHATSAPP_WEB
+) -> tuple[str, str, str]:
     """Splits one sidebar row's OCR elements (already isolated to a single
-    chat cell by SIDEBAR_ROW_GAP_PX, but still a flat bag mixing every text
+    chat cell by profile.row_gap_px, but still a flat bag mixing every text
     line in that cell) into (name, last_message, timestamp).
 
     WA's cell layout is name + timestamp on the top line, message preview
@@ -358,10 +411,10 @@ def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
     match wins if more than one element happens to match — rare, but cheap
     to handle correctly), then a positional fallback — the rightmost element
     on the line, if it sits clearly apart from the rest (see
-    _TIMESTAMP_GAP_PX) — for shapes no regex can enumerate: relative-day
-    labels ("Ayer"), weekday names, absolute dates, all locale-dependent.
-    There's no DOM structure to lean on here, so shape + position are the
-    only signals available.
+    profile.timestamp_gap_px) — for shapes no regex can enumerate:
+    relative-day labels ("Ayer"), weekday names, absolute dates, all
+    locale-dependent. There's no DOM structure to lean on here, so shape +
+    position are the only signals available.
     """
     lines = sorted(
         _cluster_by_y_overlap(elements),
@@ -373,12 +426,12 @@ def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
     top = sorted(lines[0], key=lambda el: el["bbox"][0])
     ts_idx: int | None = None
     for i, el in enumerate(top):
-        if _RE_TIMESTAMP.search(el.get("content") or ""):
+        if profile.timestamp_re.search(el.get("content") or ""):
             ts_idx = i  # keep overwriting: rightmost match wins
 
     if ts_idx is None and len(top) >= 2:
         gap = top[-1]["bbox"][0] - top[-2]["bbox"][2]
-        if gap >= _TIMESTAMP_GAP_PX:
+        if gap >= profile.timestamp_gap_px:
             ts_idx = len(top) - 1
 
     timestamp = (top[ts_idx].get("content") or "").strip() if ts_idx is not None else ""
@@ -394,9 +447,11 @@ def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
     return name, last_message, timestamp
 
 
-def _ocr_cell_rows(screenshot_path: Path) -> list[list[tuple[str, tuple[int, int, int, int]]]] | None:
-    """OCR-clusters the left column (width SIDEBAR_PX) of a WA Web
-    screenshot into rows by vertical gap (SIDEBAR_ROW_GAP_PX) — one row per
+def _ocr_cell_rows(
+    screenshot_path: Path, profile: ChatAppProfile = WHATSAPP_WEB
+) -> list[list[tuple[str, tuple[int, int, int, int]]]] | None:
+    """OCR-clusters the left column (width profile.sidebar_px) of a
+    screenshot into rows by vertical gap (profile.row_gap_px) — one row per
     list cell. Shared by `parse_sidebar_rows` (chat list) and
     `parse_contacts_panel_rows` (the "Nuevo chat" contact list), which use
     the same left-column crop and the same row-boundary heuristic; they only
@@ -414,7 +469,7 @@ def _ocr_cell_rows(screenshot_path: Path) -> list[list[tuple[str, tuple[int, int
 
     image = Image.open(screenshot_path)
     img_w, _img_h = image.size
-    column = image.crop((0, 0, min(SIDEBAR_PX, img_w), image.size[1]))
+    column = image.crop((0, 0, min(profile.sidebar_px, img_w), image.size[1]))
 
     text, bboxes = check_ocr_box(
         column, output_bb_format="xyxy", easyocr_args={"paragraph": False, "text_threshold": 0.7}
@@ -426,7 +481,7 @@ def _ocr_cell_rows(screenshot_path: Path) -> list[list[tuple[str, tuple[int, int
     current_y1: int | None = None
     for content, bbox in elements:
         y0 = bbox[1]
-        if current and current_y1 is not None and y0 - current_y1 > SIDEBAR_ROW_GAP_PX:
+        if current and current_y1 is not None and y0 - current_y1 > profile.row_gap_px:
             rows.append(current)
             current = []
         current.append((content, bbox))
@@ -448,7 +503,9 @@ def _row_elements(row: list[tuple[str, tuple[int, int, int, int]]]) -> list[dict
     return [{"content": content, "bbox": list(bbox)} for content, bbox in row]
 
 
-def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
+def parse_sidebar_rows(
+    screenshot_path: Path, profile: ChatAppProfile = WHATSAPP_WEB
+) -> list[SidebarRow] | None:
     """OCR-clusters the WA Web sidebar (chat list) into rows, then splits
     each row into name / last_message / timestamp (see `_split_row_fields`).
     `direction` is always None here — see the SidebarRow docstring for why.
@@ -461,14 +518,14 @@ def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
     Returns None if the vision-omniparser extra isn't installed (never
     raises for that reason).
     """
-    rows = _ocr_cell_rows(screenshot_path)
+    rows = _ocr_cell_rows(screenshot_path, profile)
     if rows is None:
         return None
 
     result: list[SidebarRow] = []
     for row in rows:
         text = " | ".join(c for c, _b in sorted(row, key=lambda item: item[1][0]))
-        name, last_message, timestamp = _split_row_fields(_row_elements(row))
+        name, last_message, timestamp = _split_row_fields(_row_elements(row), profile)
         result.append({
             "bbox": _row_bbox(row),
             "text": text,
@@ -526,14 +583,16 @@ def _split_contact_fields(elements: list[dict]) -> tuple[str, str]:
     return name, subtitle
 
 
-def parse_contacts_panel_rows(screenshot_path: Path) -> list[ContactRow] | None:
+def parse_contacts_panel_rows(
+    screenshot_path: Path, profile: ChatAppProfile = WHATSAPP_WEB
+) -> list[ContactRow] | None:
     """OCR-clusters the WA Web "Nuevo chat" contacts panel into rows, then
     splits each row into name / subtitle (see `_split_contact_fields`).
 
     Returns None if the vision-omniparser extra isn't installed (never
     raises for that reason).
     """
-    rows = _ocr_cell_rows(screenshot_path)
+    rows = _ocr_cell_rows(screenshot_path, profile)
     if rows is None:
         return None
 

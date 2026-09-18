@@ -1,8 +1,8 @@
 window.WAVI_TEST_RESULTS = {
-  "timestamp": "2026-09-18 11:47:50",
-  "duration": 0.72,
-  "total": 240,
-  "passed": 225,
+  "timestamp": "2026-09-18 12:23:42",
+  "duration": 0.65,
+  "total": 242,
+  "passed": 227,
   "failed": 0,
   "skipped": 15,
   "exit_code": 0,
@@ -11,21 +11,21 @@ window.WAVI_TEST_RESULTS = {
       "doc": "Vision pipeline metrics on one golden screenshot must meet thresholds.",
       "nodeid": "tests/test_corpus.py::test_corpus_case[gracias_rodo_reaction]",
       "outcome": "skipped",
-      "duration": 0.000164,
+      "duration": 0.000156,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus.py', 53, 'Skipped: corpus eval is slow (real OCR) — set WAVI_CORPUS=1 or run `make corpus`')"
     },
     {
       "doc": "Vision pipeline metrics on one golden screenshot must meet thresholds.",
       "nodeid": "tests/test_corpus.py::test_corpus_case[lurgo_000]",
       "outcome": "skipped",
-      "duration": 9.9e-05,
+      "duration": 9e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus.py', 53, 'Skipped: corpus eval is slow (real OCR) — set WAVI_CORPUS=1 or run `make corpus`')"
     },
     {
       "doc": "Vision pipeline metrics on one golden screenshot must meet thresholds.",
       "nodeid": "tests/test_corpus.py::test_corpus_case[lurgo_001]",
       "outcome": "skipped",
-      "duration": 8.2e-05,
+      "duration": 8.8e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus.py', 53, 'Skipped: corpus eval is slow (real OCR) — set WAVI_CORPUS=1 or run `make corpus`')"
     },
     {
@@ -39,7 +39,7 @@ window.WAVI_TEST_RESULTS = {
       "doc": "Vision pipeline metrics on one golden screenshot must meet thresholds.",
       "nodeid": "tests/test_corpus.py::test_corpus_case[tireless_000]",
       "outcome": "skipped",
-      "duration": 7.5e-05,
+      "duration": 8.4e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus.py', 53, 'Skipped: corpus eval is slow (real OCR) — set WAVI_CORPUS=1 or run `make corpus`')"
     },
     {
@@ -53,609 +53,609 @@ window.WAVI_TEST_RESULTS = {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_locate_compose_area[lurgo_000]",
       "outcome": "skipped",
-      "duration": 7.1e-05,
+      "duration": 7.6e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 45, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_locate_compose_area[lurgo_001]",
       "outcome": "skipped",
-      "duration": 8.2e-05,
+      "duration": 7.6e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 45, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_locate_compose_area[lurgo_002]",
       "outcome": "skipped",
-      "duration": 7.3e-05,
+      "duration": 7.4e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 45, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_locate_compose_area[tireless_000]",
       "outcome": "skipped",
-      "duration": 6.8e-05,
+      "duration": 7.5e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 45, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_parse_sidebar_rows[gracias_rodo_reaction]",
       "outcome": "skipped",
-      "duration": 6.7e-05,
+      "duration": 7.3e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 76, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_parse_sidebar_rows[lurgo_000]",
       "outcome": "skipped",
-      "duration": 7.6e-05,
+      "duration": 7.3e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 76, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_parse_sidebar_rows[lurgo_001]",
       "outcome": "skipped",
-      "duration": 7.1e-05,
+      "duration": 6.6e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 76, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_parse_sidebar_rows[lurgo_002]",
       "outcome": "skipped",
-      "duration": 7.2e-05,
+      "duration": 7.1e-05,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 76, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_corpus_grounding.py::test_parse_sidebar_rows[tireless_000]",
       "outcome": "skipped",
-      "duration": 7.4e-05,
+      "duration": 0.000298,
       "longrepr": "('/Users/josetabuyo/Development/wavi/tests/test_corpus_grounding.py', 76, 'Skipped: corpus eval is slow (CPU inference) — set WAVI_CORPUS=1 or run `make corpus-grounding`')"
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_events.py::test_log_event_writes_valid_json_line",
       "outcome": "passed",
-      "duration": 0.002462,
+      "duration": 0.002471,
       "longrepr": null
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_events.py::test_log_event_appends_not_overwrites",
       "outcome": "passed",
-      "duration": 0.000837,
+      "duration": 0.000903,
       "longrepr": null
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_events.py::test_log_event_never_raises_on_bad_dir",
       "outcome": "passed",
-      "duration": 0.00061,
+      "duration": 0.000658,
       "longrepr": null
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_events.py::test_read_events_filters_by_session",
       "outcome": "passed",
-      "duration": 0.000925,
+      "duration": 0.000844,
       "longrepr": null
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_events.py::test_read_events_respects_limit",
       "outcome": "passed",
-      "duration": 0.001265,
+      "duration": 0.001163,
       "longrepr": null
     },
     {
       "doc": "The type of the None singleton.",
       "nodeid": "tests/test_events.py::test_read_events_returns_empty_list_when_no_log",
       "outcome": "passed",
-      "duration": 0.000433,
+      "duration": 0.000412,
       "longrepr": null
     },
     {
       "doc": "El evento más crítico del ADR-009: cuando --new archiva un perfil existente en vez de borrarlo, debe quedar registrado con el nombre del archivo destino.",
       "nodeid": "tests/test_events.py::test_critical_profile_archived_event_is_logged",
       "outcome": "passed",
-      "duration": 0.000574,
+      "duration": 0.000551,
       "longrepr": null
     },
     {
       "doc": "If daemon was already running, _stop_daemon_for_profile is never called.",
       "nodeid": "tests/test_lazy_session.py::TestLazySessionAlreadyRunning::test_no_stop_when_daemon_was_running",
       "outcome": "passed",
-      "duration": 0.001129,
+      "duration": 0.001125,
       "longrepr": null
     },
     {
       "doc": "If daemon was NOT running before, and command left a PID file, stop it.",
       "nodeid": "tests/test_lazy_session.py::TestLazyInvocationStopsDaemon::test_stops_daemon_started_by_command",
       "outcome": "passed",
-      "duration": 0.000939,
+      "duration": 0.000956,
       "longrepr": null
     },
     {
       "doc": "If daemon wasn't running and command left no PID file, no stop called.",
       "nodeid": "tests/test_lazy_session.py::TestLazyInvocationStopsDaemon::test_no_stop_if_command_left_no_pid_file",
       "outcome": "passed",
-      "duration": 0.001059,
+      "duration": 0.000786,
       "longrepr": null
     },
     {
       "doc": "Cleanup errors in finally block must not propagate.",
       "nodeid": "tests/test_lazy_session.py::TestLazyInvocationStopsDaemon::test_stop_exception_is_swallowed",
       "outcome": "passed",
-      "duration": 0.001648,
+      "duration": 0.00112,
       "longrepr": null
     },
     {
       "doc": "wa-session-guard: el capturador de QR bajo demanda nunca debe navegar ni recargar la tab — solo lee su estado actual vía CDP.",
       "nodeid": "tests/test_qr_server.py::TestNeverNavigates::test_fetch_qr_never_calls_goto",
       "outcome": "passed",
-      "duration": 0.000658,
+      "duration": 0.000932,
       "longrepr": null
     },
     {
       "doc": "wa-session-guard: el capturador de QR bajo demanda nunca debe navegar ni recargar la tab — solo lee su estado actual vía CDP.",
       "nodeid": "tests/test_qr_server.py::TestNeverNavigates::test_check_status_never_calls_goto",
       "outcome": "passed",
-      "duration": 0.000247,
+      "duration": 0.000263,
       "longrepr": null
     },
     {
       "doc": "wa-session-guard: el capturador de QR bajo demanda nunca debe navegar ni recargar la tab — solo lee su estado actual vía CDP.",
       "nodeid": "tests/test_qr_server.py::TestNeverNavigates::test_fetch_qr_never_calls_reload",
       "outcome": "passed",
-      "duration": 0.000297,
+      "duration": 0.000282,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_qr_server.py::TestFetchQr::test_returns_restored_when_authenticated",
       "outcome": "passed",
-      "duration": 0.001517,
+      "duration": 0.001369,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_qr_server.py::TestFetchQr::test_returns_qr_b64_and_ref_when_qr_needed",
       "outcome": "passed",
-      "duration": 0.001423,
+      "duration": 0.001156,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_qr_server.py::TestFetchQr::test_returns_error_dict_on_exception",
       "outcome": "passed",
-      "duration": 0.000466,
+      "duration": 0.000456,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_qr_server.py::TestCheckStatus::test_restored_when_auth_selector_present",
       "outcome": "passed",
-      "duration": 0.000849,
+      "duration": 0.000894,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_qr_server.py::TestCheckStatus::test_expired_when_ref_changed",
       "outcome": "passed",
-      "duration": 0.001059,
+      "duration": 0.00082,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_qr_server.py::TestCheckStatus::test_waiting_when_ref_unchanged",
       "outcome": "passed",
-      "duration": 0.000842,
+      "duration": 0.00099,
       "longrepr": null
     },
     {
       "doc": "`kill <pid>` sends SIGTERM, which does NOT raise KeyboardInterrupt — only Ctrl-C (SIGINT) does. Without an explicit SIGTERM handler, serve()'s finally block (which releases the port) never runs, leaking a GHOST registration in 'las ports audit' forever. Found 2026-08-21 when three 'wavi qr' processes killed via `kill` left three orphaned claims.",
       "nodeid": "tests/test_qr_server.py::TestPortReleasedOnSigterm::test_serve_installs_a_sigterm_handler",
       "outcome": "passed",
-      "duration": 0.000336,
+      "duration": 0.00033,
       "longrepr": null
     },
     {
       "doc": "ADR-008 / .agent.json: cualquier puerto que este proceso escuche debe pasar por el registry de la Local Agent Society, para que 'las ports audit' lo vea — nunca un bind directo e invisible.",
       "nodeid": "tests/test_qr_server.py::TestPortClaimedFromSociety::test_claim_port_hits_society_registry_first",
       "outcome": "passed",
-      "duration": 0.00267,
+      "duration": 0.002197,
       "longrepr": null
     },
     {
       "doc": "ADR-008 / .agent.json: cualquier puerto que este proceso escuche debe pasar por el registry de la Local Agent Society, para que 'las ports audit' lo vea — nunca un bind directo e invisible.",
       "nodeid": "tests/test_qr_server.py::TestPortClaimedFromSociety::test_claim_port_falls_back_to_os_ephemeral_if_society_down",
       "outcome": "passed",
-      "duration": 0.000277,
+      "duration": 0.000248,
       "longrepr": null
     },
     {
       "doc": "El usuario pidió explícitamente señales sonoras al cargar la web.",
       "nodeid": "tests/test_qr_server.py::TestPageHasSoundCues::test_page_beeps_on_load",
       "outcome": "passed",
-      "duration": 0.000138,
+      "duration": 0.000136,
       "longrepr": null
     },
     {
       "doc": "El usuario pidió explícitamente señales sonoras al cargar la web.",
       "nodeid": "tests/test_qr_server.py::TestPageHasSoundCues::test_page_uses_web_audio_no_external_assets",
       "outcome": "passed",
-      "duration": 0.000136,
+      "duration": 0.000135,
       "longrepr": null
     },
     {
       "doc": "El usuario pidió que apretar 'Buscar QR' sea el único paso — que arranque el daemon si hace falta, sin exigir 'wavi connect' antes.",
       "nodeid": "tests/test_qr_server.py::TestSelfContainedEntryPoint::test_ensure_daemon_reuses_existing_daemon_without_relaunching",
       "outcome": "passed",
-      "duration": 0.000665,
+      "duration": 0.000607,
       "longrepr": null
     },
     {
       "doc": "A reused daemon might be sitting at about:blank from a previous run — _check_session_status (which navigates to WA) must run either way, not just on a fresh launch.",
       "nodeid": "tests/test_qr_server.py::TestSelfContainedEntryPoint::test_ensure_daemon_navigates_even_when_reusing_daemon",
       "outcome": "passed",
-      "duration": 0.0006,
+      "duration": 0.001819,
       "longrepr": null
     },
     {
       "doc": "El usuario pidió que apretar 'Buscar QR' sea el único paso — que arranque el daemon si hace falta, sin exigir 'wavi connect' antes.",
       "nodeid": "tests/test_qr_server.py::TestSelfContainedEntryPoint::test_ensure_daemon_launches_when_not_alive",
       "outcome": "passed",
-      "duration": 0.000989,
+      "duration": 0.001013,
       "longrepr": null
     },
     {
       "doc": "El usuario pidió que apretar 'Buscar QR' sea el único paso — que arranque el daemon si hace falta, sin exigir 'wavi connect' antes.",
       "nodeid": "tests/test_qr_server.py::TestSelfContainedEntryPoint::test_ensure_daemon_reports_error_if_cdp_never_comes_up",
       "outcome": "passed",
-      "duration": 0.000865,
+      "duration": 0.000854,
       "longrepr": null
     },
     {
       "doc": "La regresión concreta: 'wavi qr' ya no debe cortar con sys.exit si el daemon está parado — eso ahora lo maneja el botón.",
       "nodeid": "tests/test_qr_server.py::TestSelfContainedEntryPoint::test_qr_cmd_does_not_require_daemon_alive_upfront",
       "outcome": "passed",
-      "duration": 0.001254,
+      "duration": 0.001358,
       "longrepr": null
     },
     {
       "doc": "El usuario aceptó window.close() como intento best-effort, con cierre manual como fallback aceptable si el navegador lo bloquea.",
       "nodeid": "tests/test_qr_server.py::TestSelfContainedEntryPoint::test_page_closes_itself_on_success",
       "outcome": "passed",
-      "duration": 0.000141,
+      "duration": 0.000132,
       "longrepr": null
     },
     {
       "doc": "El usuario pidió que apretar 'Buscar QR' sea el único paso — que arranque el daemon si hace falta, sin exigir 'wavi connect' antes.",
       "nodeid": "tests/test_qr_server.py::TestSelfContainedEntryPoint::test_handler_source_sets_shutdown_event_on_restored",
       "outcome": "passed",
-      "duration": 0.000405,
+      "duration": 0.000379,
       "longrepr": null
     },
     {
       "doc": "DPR=1: sin escala. Bubble centro crop_y=362, HEADER=60 → bvy=422.",
       "nodeid": "tests/test_runner.py::TestMatchBubbleToButton::test_dpr1_direct_match",
       "outcome": "passed",
-      "duration": 0.000186,
+      "duration": 0.000172,
       "longrepr": null
     },
     {
       "doc": "DPR=2 (Retina). Bubble crop_y=586, h=136 → center=654. bvy_css = (654 + 60) / 2 = 357. Botón real a vy=354 → distancia=3px < tolerancia 80px.",
       "nodeid": "tests/test_runner.py::TestMatchBubbleToButton::test_dpr2_retina_match",
       "outcome": "passed",
-      "duration": 0.000154,
+      "duration": 0.000147,
       "longrepr": null
     },
     {
       "doc": "Si no se pasa DPR=2 para datos Retina, la misma burbuja NO matchea el botón correcto (demostrando por qué el fix importa).",
       "nodeid": "tests/test_runner.py::TestMatchBubbleToButton::test_dpr1_would_fail_on_retina_data",
       "outcome": "passed",
-      "duration": 0.000147,
+      "duration": 0.000135,
       "longrepr": null
     },
     {
       "doc": "Verifica la conversión crop-physical → CSS-viewport con DPR variable. Fórmula: bvy_css = (crop_center_y + HEADER_PX) / dpr",
       "nodeid": "tests/test_runner.py::TestMatchBubbleToButton::test_picks_nearest_of_multiple_buttons",
       "outcome": "passed",
-      "duration": 0.000147,
+      "duration": 0.000138,
       "longrepr": null
     },
     {
       "doc": "Verifica la conversión crop-physical → CSS-viewport con DPR variable. Fórmula: bvy_css = (crop_center_y + HEADER_PX) / dpr",
       "nodeid": "tests/test_runner.py::TestMatchBubbleToButton::test_no_match_beyond_tolerance",
       "outcome": "passed",
-      "duration": 0.000139,
+      "duration": 0.000131,
       "longrepr": null
     },
     {
       "doc": "Verifica la conversión crop-physical → CSS-viewport con DPR variable. Fórmula: bvy_css = (crop_center_y + HEADER_PX) / dpr",
       "nodeid": "tests/test_runner.py::TestMatchBubbleToButton::test_empty_buttons_returns_none",
       "outcome": "passed",
-      "duration": 0.000158,
+      "duration": 0.000131,
       "longrepr": null
     },
     {
       "doc": "Burbuja alta (reply + audio, h=261): el centro se usa para el match.",
       "nodeid": "tests/test_runner.py::TestMatchBubbleToButton::test_tall_bubble_center_used",
       "outcome": "passed",
-      "duration": 0.000139,
+      "duration": 0.000135,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_runner.py::TestInstallBlobMonitor::test_calls_evaluate_with_init_script",
       "outcome": "passed",
-      "duration": 0.000783,
+      "duration": 0.000577,
       "longrepr": null
     },
     {
       "doc": "El script tiene el guard __wavi_installed para no instalar dos veces.",
       "nodeid": "tests/test_runner.py::TestInstallBlobMonitor::test_script_contains_guard",
       "outcome": "passed",
-      "duration": 0.00044,
+      "duration": 0.000362,
       "longrepr": null
     },
     {
       "doc": "Real bug, 2026-08-26: the mouse cursor left resting over a message's reaction badge (from a prior click — e.g. an audio play button) can trigger WA's hover tooltip ('N reacciones' + who reacted), which then gets captured in the screenshot and corrupts classification of the real messages underneath it — one outgoing message vanished entirely, another got misclassified as incoming with truncated OCR text. Parking the cursor away from the chat before every classification screenshot prevents the tooltip from ever appearing.",
       "nodeid": "tests/test_runner.py::TestGetBubblesParksMouse::test_moves_mouse_away_before_screenshot",
       "outcome": "passed",
-      "duration": 0.003166,
+      "duration": 0.00129,
       "longrepr": null
     },
     {
       "doc": "Real bug, 2026-08-26: the mouse cursor left resting over a message's reaction badge (from a prior click — e.g. an audio play button) can trigger WA's hover tooltip ('N reacciones' + who reacted), which then gets captured in the screenshot and corrupts classification of the real messages underneath it — one outgoing message vanished entirely, another got misclassified as incoming with truncated OCR text. Parking the cursor away from the chat before every classification screenshot prevents the tooltip from ever appearing.",
       "nodeid": "tests/test_runner.py::TestGetBubblesParksMouse::test_mouse_move_happens_before_screenshot_not_after",
       "outcome": "passed",
-      "duration": 0.001289,
+      "duration": 0.001325,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_runner.py::TestGetDpr::test_returns_page_device_pixel_ratio",
       "outcome": "passed",
-      "duration": 0.000615,
+      "duration": 0.000526,
       "longrepr": null
     },
     {
       "doc": "El historial completo tiene IDs 1..N sin huecos ni duplicados (1=newest, N=oldest).",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistory::test_ids_sequential_and_unique",
       "outcome": "passed",
-      "duration": 0.001598,
+      "duration": 0.001323,
       "longrepr": null
     },
     {
       "doc": "Mensajes de scroll-ups más profundos (más antiguos) aparecen antes.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistory::test_chronological_order",
       "outcome": "passed",
-      "duration": 0.001271,
+      "duration": 0.001395,
       "longrepr": null
     },
     {
       "doc": "screen_id mantiene el ID local de la pantalla, aunque id se reasigne globalmente.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistory::test_screen_id_preserved",
       "outcome": "passed",
-      "duration": 0.001514,
+      "duration": 0.001338,
       "longrepr": null
     },
     {
       "doc": "Burbuja en zona de solapamiento entre iteraciones se incluye una sola vez.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistory::test_overlap_counted_once",
       "outcome": "passed",
-      "duration": 0.001704,
+      "duration": 0.001336,
       "longrepr": null
     },
     {
       "doc": "Si el scroll produce una iteración donde todos los candidatos son overlap (no hay mensajes nuevos), el resultado no tiene duplicados ni cambia el orden.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistory::test_empty_iteration_is_noop",
       "outcome": "passed",
-      "duration": 0.001687,
+      "duration": 0.001175,
       "longrepr": null
     },
     {
       "doc": "Dos mensajes con texto idéntico pero timestamp diferente deben contarse ambos. Cubre el riesgo de colisión en el content-key dedup.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistory::test_identical_text_different_timestamp_both_survive",
       "outcome": "passed",
-      "duration": 0.001564,
+      "duration": 0.001401,
       "longrepr": null
     },
     {
       "doc": "_assign_dom_ids asigna el dom_id al bubble más cercano en y.",
       "nodeid": "tests/test_runner.py::TestAssignDomIds::test_assign_dom_ids_matches_by_y",
       "outcome": "passed",
-      "duration": 0.000175,
+      "duration": 0.000195,
       "longrepr": null
     },
     {
       "doc": "No asigna dom_id si está fuera del rango de tolerancia.",
       "nodeid": "tests/test_runner.py::TestAssignDomIds::test_assign_dom_ids_no_match_beyond_tolerance",
       "outcome": "passed",
-      "duration": 0.000153,
+      "duration": 0.000157,
       "longrepr": null
     },
     {
       "doc": "Si dom_msgs está vacío, no asigna nada.",
       "nodeid": "tests/test_runner.py::TestAssignDomIds::test_assign_dom_ids_empty_dom_msgs_noop",
       "outcome": "passed",
-      "duration": 0.000146,
+      "duration": 0.000148,
       "longrepr": null
     },
     {
       "doc": "When anchor has dom_id, finds it in new_bubbles by dom_id regardless of OCR.",
       "nodeid": "tests/test_runner.py::TestAnchorMatchingStrategy::test_anchor_found_by_dom_id_even_if_ocr_differs",
       "outcome": "passed",
-      "duration": 0.00014,
+      "duration": 0.000143,
       "longrepr": null
     },
     {
       "doc": "When anchor has no dom_id, falls back to bubble_key OCR matching.",
       "nodeid": "tests/test_runner.py::TestAnchorMatchingStrategy::test_anchor_falls_back_to_ocr_when_no_dom_id",
       "outcome": "passed",
-      "duration": 0.000142,
+      "duration": 0.000131,
       "longrepr": null
     },
     {
       "doc": "Same dom_id → same key, even if OCR text differs.",
       "nodeid": "tests/test_runner.py::TestBubbleKeyWithDomId::test_dom_id_takes_priority_over_ocr",
       "outcome": "passed",
-      "duration": 0.000216,
+      "duration": 0.000128,
       "longrepr": null
     },
     {
       "doc": "Two identical texts with different dom_ids are distinct messages.",
       "nodeid": "tests/test_runner.py::TestBubbleKeyWithDomId::test_different_dom_ids_not_deduped",
       "outcome": "passed",
-      "duration": 0.000161,
+      "duration": 0.000128,
       "longrepr": null
     },
     {
       "doc": "Without dom_id, falls back to OCR-based key.",
       "nodeid": "tests/test_runner.py::TestBubbleKeyWithDomId::test_fallback_to_ocr_when_no_dom_id",
       "outcome": "passed",
-      "duration": 0.000136,
+      "duration": 0.000124,
       "longrepr": null
     },
     {
       "doc": "Normal path: two iterations then scrollTop reaches bottom.",
       "nodeid": "tests/test_runner.py::TestScrollAllContacts::test_reaches_bottom",
       "outcome": "passed",
-      "duration": 0.001121,
+      "duration": 0.001241,
       "longrepr": null
     },
     {
       "doc": "Empty extract_visible_contacts is retried; loop continues after non-empty retry.",
       "nodeid": "tests/test_runner.py::TestScrollAllContacts::test_empty_visible_retried",
       "outcome": "passed",
-      "duration": 0.001072,
+      "duration": 0.000911,
       "longrepr": null
     },
     {
       "doc": "If all retries return empty, loop breaks and returns whatever was collected.",
       "nodeid": "tests/test_runner.py::TestScrollAllContacts::test_empty_visible_all_retries_exhausted_breaks",
       "outcome": "passed",
-      "duration": 0.001217,
+      "duration": 0.00079,
       "longrepr": null
     },
     {
       "doc": "A single stall does not stop the loop; extra wait is added and scroll continues.",
       "nodeid": "tests/test_runner.py::TestScrollAllContacts::test_stall_waits_then_continues",
       "outcome": "passed",
-      "duration": 0.001003,
+      "duration": 0.00113,
       "longrepr": null
     },
     {
       "doc": "Three consecutive stalls stop the scroll even if not at bottom.",
       "nodeid": "tests/test_runner.py::TestScrollAllContacts::test_three_consecutive_stalls_stops",
       "outcome": "passed",
-      "duration": 0.001137,
+      "duration": 0.000904,
       "longrepr": null
     },
     {
       "doc": "list_contacts() with no assets_dir returns contacts, screenshot=None.",
       "nodeid": "tests/test_runner.py::TestListContacts::test_list_contacts_returns_contacts",
       "outcome": "passed",
-      "duration": 0.001026,
+      "duration": 0.001023,
       "longrepr": null
     },
     {
       "doc": "list_contacts() saves screenshot.png + contacts_list.json to assets_dir.",
       "nodeid": "tests/test_runner.py::TestListContacts::test_list_contacts_with_assets_dir",
       "outcome": "passed",
-      "duration": 0.002174,
+      "duration": 0.001611,
       "longrepr": null
     },
     {
       "doc": "list_contacts() calls session.close() even if _scroll_all_contacts fails.",
       "nodeid": "tests/test_runner.py::TestListContacts::test_list_contacts_closes_on_error",
       "outcome": "passed",
-      "duration": 0.000968,
+      "duration": 0.001067,
       "longrepr": null
     },
     {
       "doc": "list_contacts() raises RuntimeError when session is not authenticated.",
       "nodeid": "tests/test_runner.py::TestListContacts::test_list_contacts_raises_if_not_authenticated",
       "outcome": "passed",
-      "duration": 0.00072,
+      "duration": 0.000689,
       "longrepr": null
     },
     {
       "doc": "Si no hay burbujas de audio, devuelve lista vacía.",
       "nodeid": "tests/test_runner.py::TestDownloadAudioForBubbles::test_returns_empty_for_no_audio_bubbles",
       "outcome": "passed",
-      "duration": 0.000489,
+      "duration": 0.000437,
       "longrepr": null
     },
     {
       "doc": "Procesa solo audio_bubbles, ignora text y file.",
       "nodeid": "tests/test_runner.py::TestDownloadAudioForBubbles::test_filters_out_non_audio_bubbles",
       "outcome": "passed",
-      "duration": 0.001075,
+      "duration": 0.000735,
       "longrepr": null
     },
     {
       "doc": "Bubble with dom_id already in downloaded_ids is skipped.",
       "nodeid": "tests/test_runner.py::TestDownloadAudioForBubbles::test_skips_already_downloaded_dom_id",
       "outcome": "passed",
-      "duration": 0.000791,
+      "duration": 0.0009,
       "longrepr": null
     },
     {
       "doc": "Given existing JSON with some bubbles, newest=True stops at first duplicate.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistoryNewest::test_newest_stops_at_first_duplicate",
       "outcome": "passed",
-      "duration": 0.00273,
+      "duration": 0.002069,
       "longrepr": null
     },
     {
       "doc": "If no history_bubbles.json exists, newest=True falls back to normal full capture.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistoryNewest::test_newest_falls_back_when_no_json",
       "outcome": "passed",
-      "duration": 0.002177,
+      "duration": 0.002136,
       "longrepr": null
     },
     {
       "doc": "After merge, id=1 should be newest; ids should be sequential 1..N.",
       "nodeid": "tests/test_runner.py::TestCaptureFullHistoryNewest::test_newest_merges_and_renumbers",
       "outcome": "passed",
-      "duration": 0.002411,
+      "duration": 0.002944,
       "longrepr": null
     },
     {
       "doc": "Regression test for the bug where fast-forward reached scrollTop<20 WITHOUT finding the anchor (because WA recycled the DOM id), and incorrectly returned [] with completed=True — skipping messages that were actually visible at the top. Fix: when scrollTop<20 is hit before anchor is found, break (don't return []) and fall through to dedup scan from that position.",
       "nodeid": "tests/test_runner.py::TestGrowFastForwardAnchorRecycled::test_captures_old_messages_when_anchor_dom_id_recycled",
       "outcome": "passed",
-      "duration": 0.004428,
+      "duration": 0.002783,
       "longrepr": null
     },
     {
       "doc": "No updates.json → status first_run regardless of sidebar content.",
       "nodeid": "tests/test_runner.py::TestCheckUpdates::test_first_run_no_previous_state",
       "outcome": "passed",
-      "duration": 0.001611,
+      "duration": 0.001352,
       "longrepr": null
     },
     {
       "doc": "reset=True → first_run even when updates.json exists.",
       "nodeid": "tests/test_runner.py::TestCheckUpdates::test_reset_forces_first_run",
       "outcome": "passed",
-      "duration": 0.002314,
+      "duration": 0.001693,
       "longrepr": null
     },
     {
       "doc": "Same last_message on every row → no_updates.",
       "nodeid": "tests/test_runner.py::TestCheckUpdates::test_no_updates_when_sidebar_unchanged",
       "outcome": "passed",
-      "duration": 0.001848,
+      "duration": 0.001735,
       "longrepr": null
     },
     {
       "doc": "One inbound last_message change → updates with that contact.",
       "nodeid": "tests/test_runner.py::TestCheckUpdates::test_detects_single_new_inbound",
       "outcome": "passed",
-      "duration": 0.001853,
+      "duration": 0.001554,
       "longrepr": null
     },
     {
@@ -669,287 +669,287 @@ window.WAVI_TEST_RESULTS = {
       "doc": "A changed last_message with direction=outbound is NOT an update.",
       "nodeid": "tests/test_runner.py::TestCheckUpdates::test_outbound_change_not_reported",
       "outcome": "passed",
-      "duration": 0.002376,
+      "duration": 0.001544,
       "longrepr": null
     },
     {
       "doc": "Mixed sidebar: only inbound changes reported, outbound silently ignored.",
       "nodeid": "tests/test_runner.py::TestCheckUpdates::test_only_inbound_reported_among_mixed",
       "outcome": "passed",
-      "duration": 0.002772,
+      "duration": 0.001495,
       "longrepr": null
     },
     {
       "doc": "A contact not in previous state with inbound direction → reported.",
       "nodeid": "tests/test_runner.py::TestCheckUpdates::test_new_contact_inbound_reported",
       "outcome": "passed",
-      "duration": 0.00261,
+      "duration": 0.001748,
       "longrepr": null
     },
     {
       "doc": "search_contacts() owns the actual search-box interaction — clicking, clearing, typing — that navigate_to_contact used to do inline before ADR-010 added disambiguation.",
       "nodeid": "tests/test_session.py::TestSearchContacts::test_clicks_search_box_by_coordinate",
       "outcome": "passed",
-      "duration": 0.001787,
+      "duration": 0.001477,
       "longrepr": null
     },
     {
       "doc": "search_contacts() owns the actual search-box interaction — clicking, clearing, typing — that navigate_to_contact used to do inline before ADR-010 added disambiguation.",
       "nodeid": "tests/test_session.py::TestSearchContacts::test_clears_with_keyboard_not_dom",
       "outcome": "passed",
-      "duration": 0.002023,
+      "duration": 0.001425,
       "longrepr": null
     },
     {
       "doc": "search_contacts() owns the actual search-box interaction — clicking, clearing, typing — that navigate_to_contact used to do inline before ADR-010 added disambiguation.",
       "nodeid": "tests/test_session.py::TestSearchContacts::test_types_contact_name",
       "outcome": "passed",
-      "duration": 0.001679,
+      "duration": 0.001423,
       "longrepr": null
     },
     {
       "doc": "search_contacts() owns the actual search-box interaction — clicking, clearing, typing — that navigate_to_contact used to do inline before ADR-010 added disambiguation.",
       "nodeid": "tests/test_session.py::TestSearchContacts::test_never_uses_locator",
       "outcome": "passed",
-      "duration": 0.001667,
+      "duration": 0.001425,
       "longrepr": null
     },
     {
       "doc": "search_contacts() owns the actual search-box interaction — clicking, clearing, typing — that navigate_to_contact used to do inline before ADR-010 added disambiguation.",
       "nodeid": "tests/test_session.py::TestSearchContacts::test_returns_empty_list_when_no_results_appear",
       "outcome": "passed",
-      "duration": 0.001805,
+      "duration": 0.001429,
       "longrepr": null
     },
     {
       "doc": "search_contacts() owns the actual search-box interaction — clicking, clearing, typing — that navigate_to_contact used to do inline before ADR-010 added disambiguation.",
       "nodeid": "tests/test_session.py::TestSearchContacts::test_returns_candidates_from_page_evaluate",
       "outcome": "passed",
-      "duration": 0.001697,
+      "duration": 0.001476,
       "longrepr": null
     },
     {
       "doc": "ADR-010: navigate_to_contact must never guess which contact was meant when the display name is ambiguous — a human decides, or it refuses outright when there's no TTY to ask.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_single_match_auto_resolves_without_prompting",
       "outcome": "passed",
-      "duration": 0.001359,
+      "duration": 0.000614,
       "longrepr": null
     },
     {
       "doc": "ADR-010: navigate_to_contact must never guess which contact was meant when the display name is ambiguous — a human decides, or it refuses outright when there's no TTY to ask.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_dedupes_identical_name_and_subtitle_pairs",
       "outcome": "passed",
-      "duration": 0.000816,
+      "duration": 0.000639,
       "longrepr": null
     },
     {
       "doc": "Justo después de vincular por QR, la lista de chats puede seguir sincronizando desde el teléfono — la primera búsqueda puede no encontrar resultados todavía.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_refreshes_contact_list_when_nothing_found",
       "outcome": "passed",
-      "duration": 0.001123,
+      "duration": 0.00084,
       "longrepr": null
     },
     {
       "doc": "ADR-010: navigate_to_contact must never guess which contact was meant when the display name is ambiguous — a human decides, or it refuses outright when there's no TTY to ask.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_raises_if_nothing_found_even_after_refresh",
       "outcome": "passed",
-      "duration": 0.002257,
+      "duration": 0.002003,
       "longrepr": null
     },
     {
       "doc": "El bug real (2026-08-26): 'Rodolfo Prado' coincidía con un chat existente Y con 4 contactos distintos. Sin una terminal para preguntar, nunca debe elegir uno arbitrariamente.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_multiple_matches_without_tty_raises_instead_of_guessing",
       "outcome": "passed",
-      "duration": 0.000666,
+      "duration": 0.000632,
       "longrepr": null
     },
     {
       "doc": "ADR-010: navigate_to_contact must never guess which contact was meant when the display name is ambiguous — a human decides, or it refuses outright when there's no TTY to ask.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_multiple_matches_with_tty_prompts_and_uses_the_choice",
       "outcome": "passed",
-      "duration": 0.001263,
+      "duration": 0.000721,
       "longrepr": null
     },
     {
       "doc": "Real bug reported by Pulpo, 2026-08-26: searching 'Rodolfo Prado' also returned rows for groups they're merely a member of ('Blanca y sus pollitos', 'Grupo por mamá') — WA's own name-independent 'shared groups' search feature. Those must never be presented as if they were named 'Rodolfo Prado'.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_filters_out_unrelated_shared_groups",
       "outcome": "passed",
-      "duration": 0.000673,
+      "duration": 0.000538,
       "longrepr": null
     },
     {
       "doc": "ADR-010: navigate_to_contact must never guess which contact was meant when the display name is ambiguous — a human decides, or it refuses outright when there's no TTY to ask.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_raises_when_no_candidate_name_actually_matches",
       "outcome": "passed",
-      "duration": 0.001157,
+      "duration": 0.000952,
       "longrepr": null
     },
     {
       "doc": "ADR-010: navigate_to_contact must never guess which contact was meant when the display name is ambiguous — a human decides, or it refuses outright when there's no TTY to ask.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_accent_and_case_insensitive_match",
       "outcome": "passed",
-      "duration": 0.000577,
+      "duration": 0.000524,
       "longrepr": null
     },
     {
       "doc": "The user asked for matches to be ordered by last activity when several exist. WA already lists real chats by recency internally, so ranking 'has any activity at all' above 'never messaged' and keeping discovery order within each group achieves that without having to parse WA's date/time text ourselves.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_real_chats_ranked_above_bare_contacts",
       "outcome": "passed",
-      "duration": 0.000656,
+      "duration": 0.002394,
       "longrepr": null
     },
     {
       "doc": "--pick lets a script/agent resolve ambiguity non-interactively — no TTY required, no prompt.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_pick_selects_without_tty",
       "outcome": "passed",
-      "duration": 0.00054,
+      "duration": 0.000595,
       "longrepr": null
     },
     {
       "doc": "ADR-010: navigate_to_contact must never guess which contact was meant when the display name is ambiguous — a human decides, or it refuses outright when there's no TTY to ask.",
       "nodeid": "tests/test_session.py::TestResolveContact::test_pick_out_of_range_raises",
       "outcome": "passed",
-      "duration": 0.000535,
+      "duration": 0.000563,
       "longrepr": null
     },
     {
       "doc": "El resultado se abre haciendo clic en las coordenadas resueltas (ADR-010), nunca con ArrowDown/Enter a ciegas ni con page.click(selector).",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_opens_resolved_candidate_via_click_not_keyboard",
       "outcome": "passed",
-      "duration": 0.003294,
+      "duration": 0.001185,
       "longrepr": null
     },
     {
       "doc": "Después de cargar mensajes se ejecuta evaluate() para DOM scroll al fondo.",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_dom_scroll_to_bottom_called_after_load",
       "outcome": "passed",
-      "duration": 0.001674,
+      "duration": 0.001345,
       "longrepr": null
     },
     {
       "doc": "Si no hay botón de ir al fondo (evaluate devuelve False), el fallback hace evaluate con 999_999 para llevar scrollTop al máximo.",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_dom_scroll_fallback_uses_large_delta",
       "outcome": "passed",
-      "duration": 0.001761,
+      "duration": 0.001278,
       "longrepr": null
     },
     {
       "doc": "El scroll al fondo ocurre después de resolver y abrir el chat.",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_scroll_fires_after_resolution",
       "outcome": "passed",
-      "duration": 0.001846,
+      "duration": 0.001302,
       "longrepr": null
     },
     {
       "doc": "Si el clic no abrió el chat (p.ej. la fila se movió entre la búsqueda y el clic), se reintenta resolver + abrir una vez más antes de rendirse.",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_retries_resolution_once_if_click_did_not_open_a_chat",
       "outcome": "passed",
-      "duration": 0.001655,
+      "duration": 0.001251,
       "longrepr": null
     },
     {
       "doc": "Si nunca se pudo confirmar que el chat abrió, debe levantar RuntimeError y NUNCA intentar el scroll-to-bottom sobre un chat que no existe. Antes esto se tragaba en silencio y devolvía mensajes de la pantalla de bienvenida como si fueran del contacto (bug real, 2026-08-26: 'Rodolfo Prado' devolvió el banner de 'Llamadas y videollamadas ya están disponibles').",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_raises_and_never_scrolls_if_chat_never_opened",
       "outcome": "passed",
-      "duration": 0.002124,
+      "duration": 0.001725,
       "longrepr": null
     },
     {
       "doc": "Si get_chat_scroll_state muestra slack > 50px, el loop vuelve a intentar scroll-to-bottom. Simula la situación post-full-sync-enhanced donde el virtualizer restaura la posición anterior (top) en vez del fondo.",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_scroll_retries_if_not_at_bottom",
       "outcome": "passed",
-      "duration": 0.001469,
+      "duration": 0.001161,
       "longrepr": null
     },
     {
       "doc": "Si ya está en el fondo desde el primer check, no hace retries innecesarios.",
       "nodeid": "tests/test_session.py::TestNavigateToContact::test_scroll_no_extra_retries_when_already_at_bottom",
       "outcome": "passed",
-      "duration": 0.001297,
+      "duration": 0.001338,
       "longrepr": null
     },
     {
       "doc": "Headless + about:blank: set_viewport_size fires first, then goto.",
       "nodeid": "tests/test_session.py::TestSetupPageViewport::test_headless_blank_calls_set_viewport_before_goto",
       "outcome": "passed",
-      "duration": 0.000995,
+      "duration": 0.001089,
       "longrepr": null
     },
     {
       "doc": "Viewport is set to exactly WINDOW_W × WINDOW_H.",
       "nodeid": "tests/test_session.py::TestSetupPageViewport::test_headless_blank_viewport_dimensions",
       "outcome": "passed",
-      "duration": 0.001221,
+      "duration": 0.001069,
       "longrepr": null
     },
     {
       "doc": "Headful mode (QR scan window) must not call set_viewport_size.",
       "nodeid": "tests/test_session.py::TestSetupPageViewport::test_headful_never_sets_viewport",
       "outcome": "passed",
-      "duration": 0.000969,
+      "duration": 0.000896,
       "longrepr": null
     },
     {
       "doc": "Daemon reconnect (WA already at WA_URL): no viewport change, no navigation.",
       "nodeid": "tests/test_session.py::TestSetupPageViewport::test_wa_already_loaded_skips_viewport_and_goto",
       "outcome": "passed",
-      "duration": 0.001004,
+      "duration": 0.001058,
       "longrepr": null
     },
     {
       "doc": "WINDOW_W debe ser 1280 — base calibrada de la fórmula del sidebar.",
       "nodeid": "tests/test_session.py::TestViewportRegression::test_window_w_is_1280",
       "outcome": "passed",
-      "duration": 0.000134,
+      "duration": 0.000152,
       "longrepr": null
     },
     {
       "doc": "WINDOW_H debe ser 1920 — maximiza mensajes por screenshot (ADR-002).",
       "nodeid": "tests/test_session.py::TestViewportRegression::test_window_h_is_1920",
       "outcome": "passed",
-      "duration": 0.00012,
+      "duration": 0.00013,
       "longrepr": null
     },
     {
       "doc": "--force-device-scale-factor=1 debe estar en los args de wavi connect. Sin este flag, macOS Retina (DPR=2) produce viewport de ~640×960 CSS en lugar de 1280×1920, dando imágenes 'enanas'.",
       "nodeid": "tests/test_session.py::TestViewportRegression::test_cli_headless_args_include_force_dpr",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.00013,
       "longrepr": null
     },
     {
       "doc": "--window-size=1280,1920 debe estar en los args de wavi connect.",
       "nodeid": "tests/test_session.py::TestViewportRegression::test_cli_headless_args_include_window_size",
       "outcome": "passed",
-      "duration": 0.000116,
+      "duration": 0.000117,
       "longrepr": null
     },
     {
       "doc": "El fallback de WASession.connect() también debe tener --force-device-scale-factor=1. Este fallback se usa cuando 'wavi status' inicia Chrome sin un daemon previo. Si falta aquí, el daemon iniciado por 'wavi status' produce imágenes enanas.",
       "nodeid": "tests/test_session.py::TestViewportRegression::test_session_fallback_args_include_force_dpr",
       "outcome": "passed",
-      "duration": 0.001104,
+      "duration": 0.001153,
       "longrepr": null
     },
     {
       "doc": "El fallback de WASession.connect() debe lanzar Chrome con --window-size usando las constantes WINDOW_W y WINDOW_H (verificado por su presencia en el source).",
       "nodeid": "tests/test_session.py::TestViewportRegression::test_session_fallback_args_include_window_size",
       "outcome": "passed",
-      "duration": 0.0004,
+      "duration": 0.000409,
       "longrepr": null
     },
     {
       "doc": "Con DPR=1 y viewport correcto, screenshot debe ser WINDOW_W × WINDOW_H. Este test verifica que si alguien toma un screenshot mockeado, las dimensiones son las esperadas por el pipeline de visión.",
       "nodeid": "tests/test_session.py::TestViewportRegression::test_screenshot_dimensions_match_window_constants",
       "outcome": "passed",
-      "duration": 0.000131,
+      "duration": 0.00013,
       "longrepr": null
     },
     {
       "doc": "DPR=1: screenshot_w == WINDOW_W → sidebar_x == SIDEBAR_PX exactly.",
       "nodeid": "tests/test_session.py::TestWindowConstants::test_sidebar_formula_exact_at_dpr1",
       "outcome": "passed",
-      "duration": 0.000128,
+      "duration": 0.000118,
       "longrepr": null
     },
     {
@@ -963,196 +963,196 @@ window.WAVI_TEST_RESULTS = {
       "doc": "navigate_to_new_chat() clicks button, waits for list, no error.",
       "nodeid": "tests/test_session.py::TestNewChatPanel::test_navigate_to_new_chat_success",
       "outcome": "passed",
-      "duration": 0.001636,
+      "duration": 0.001509,
       "longrepr": null
     },
     {
       "doc": "Real bug, 2026-08-26: _resolve_contact's refresh path calls this right after search_contacts() leaves text in the sidebar search box — with search active WA hides the pencil/new-chat button. Must clear that state before looking for the button.",
       "nodeid": "tests/test_session.py::TestNewChatPanel::test_navigate_to_new_chat_ensures_clean_sidebar_first",
       "outcome": "passed",
-      "duration": 0.001563,
+      "duration": 0.001409,
       "longrepr": null
     },
     {
       "doc": "navigate_to_new_chat() raises RuntimeError if button not found.",
       "nodeid": "tests/test_session.py::TestNewChatPanel::test_navigate_to_new_chat_not_found",
       "outcome": "passed",
-      "duration": 0.001406,
+      "duration": 0.002948,
       "longrepr": null
     },
     {
       "doc": "extract_contacts() evaluates JS and returns list of contact dicts.",
       "nodeid": "tests/test_session.py::TestNewChatPanel::test_extract_contacts_returns_list",
       "outcome": "passed",
-      "duration": 0.002911,
+      "duration": 0.001033,
       "longrepr": null
     },
     {
       "doc": "close_new_chat() uses back button when available.",
       "nodeid": "tests/test_session.py::TestNewChatPanel::test_close_new_chat_via_back_button",
       "outcome": "passed",
-      "duration": 0.001145,
+      "duration": 0.001253,
       "longrepr": null
     },
     {
       "doc": "close_new_chat() falls back to Escape if back button not found.",
       "nodeid": "tests/test_session.py::TestNewChatPanel::test_close_new_chat_fallback_escape",
       "outcome": "passed",
-      "duration": 0.00144,
+      "duration": 0.001254,
       "longrepr": null
     },
     {
       "doc": "navigate_to_new_chat() propagates wait_for_selector timeout (no swallowing).",
       "nodeid": "tests/test_session.py::TestNewChatPanel::test_navigate_to_new_chat_selector_timeout_propagates",
       "outcome": "passed",
-      "duration": 0.001577,
+      "duration": 0.001344,
       "longrepr": null
     },
     {
       "doc": "connect() no debe llamar shutil.rmtree bajo ninguna rama — la sesión existente se archiva (.rename), nunca se borra.",
       "nodeid": "tests/test_session.py::TestNeverDeleteSessionProfile::test_connect_source_never_calls_rmtree",
       "outcome": "passed",
-      "duration": 0.001151,
+      "duration": 0.001115,
       "longrepr": null
     },
     {
       "doc": "Cuando --new detecta un teléfono que ya tiene perfil, el perfil viejo debe seguir existiendo en disco después (archivado), nunca desaparecer.",
       "nodeid": "tests/test_session.py::TestNeverDeleteSessionProfile::test_connect_archives_existing_profile_on_collision",
       "outcome": "passed",
-      "duration": 0.001115,
+      "duration": 0.001108,
       "longrepr": null
     },
     {
       "doc": "_cleanup_crash_files() solo debe tocar metadata de recuperación de pestañas de Chrome, nunca IndexedDB (donde vive el auth de WA).",
       "nodeid": "tests/test_session.py::TestNeverDeleteSessionProfile::test_cleanup_crash_files_never_touches_indexeddb",
       "outcome": "passed",
-      "duration": 0.00021,
+      "duration": 0.000207,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestBubbleTranscript::test_transcript_default_is_none",
       "outcome": "passed",
-      "duration": 0.000143,
+      "duration": 0.000127,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestBubbleTranscript::test_transcript_absent_from_as_dict_when_none",
       "outcome": "passed",
-      "duration": 0.000132,
+      "duration": 0.000126,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestBubbleTranscript::test_transcript_present_in_as_dict_when_set",
       "outcome": "passed",
-      "duration": 0.000129,
+      "duration": 0.000119,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestBubbleTranscript::test_transcript_not_added_to_non_audio_bubble",
       "outcome": "passed",
-      "duration": 0.000275,
+      "duration": 0.000119,
       "longrepr": null
     },
     {
       "doc": "Empty string is a valid transcript (silence), must be included.",
       "nodeid": "tests/test_transcription.py::TestBubbleTranscript::test_as_dict_does_not_include_empty_string_as_none",
       "outcome": "passed",
-      "duration": 0.000152,
+      "duration": 0.000124,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeGroqSuccess::test_returns_groq_text_on_success",
       "outcome": "passed",
-      "duration": 0.104765,
+      "duration": 0.0949,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeGroqSuccess::test_groq_called_with_correct_model_and_language",
       "outcome": "passed",
-      "duration": 0.001658,
+      "duration": 0.001478,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeFallback::test_returns_none_when_no_key_and_no_pywhispercpp",
       "outcome": "passed",
-      "duration": 0.001614,
+      "duration": 0.00118,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeFallback::test_falls_back_to_local_when_groq_fails",
       "outcome": "passed",
-      "duration": 0.001376,
+      "duration": 0.001529,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeFallback::test_returns_none_when_both_methods_fail",
       "outcome": "passed",
-      "duration": 0.001217,
+      "duration": 0.00122,
       "longrepr": null
     },
     {
       "doc": "Without GROQ_API_KEY, Groq must not be called at all (ValueError raised early).",
       "nodeid": "tests/test_transcription.py::TestTranscribeFallback::test_no_key_skips_groq_directly",
       "outcome": "passed",
-      "duration": 0.001447,
+      "duration": 0.001167,
       "longrepr": null
     },
     {
       "doc": "Transcription is deferred to a second pass after browser close. _download_audio_for_bubbles must NOT set bubble.transcript.",
       "nodeid": "tests/test_transcription.py::TestRunnerDownloadNoInlineTranscription::test_download_does_not_set_transcript",
       "outcome": "passed",
-      "duration": 0.002546,
+      "duration": 0.002011,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeHistoryAudios::test_adds_transcript_to_audio_bubbles",
       "outcome": "passed",
-      "duration": 0.001509,
+      "duration": 0.001367,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeHistoryAudios::test_skips_already_transcribed_bubbles",
       "outcome": "passed",
-      "duration": 0.001309,
+      "duration": 0.001095,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_transcription.py::TestTranscribeHistoryAudios::test_raises_if_json_missing",
       "outcome": "passed",
-      "duration": 0.000771,
+      "duration": 0.00074,
       "longrepr": null
     },
     {
       "doc": "Bubble without audio_path (never downloaded) stays without transcript.",
       "nodeid": "tests/test_transcription.py::TestTranscribeHistoryAudios::test_skips_bubble_without_audio_path",
       "outcome": "passed",
-      "duration": 0.001136,
+      "duration": 0.00107,
       "longrepr": null
     },
     {
       "doc": "audio_path points directly to the file regardless of screen_id vs global_id.",
       "nodeid": "tests/test_transcription.py::TestTranscribeHistoryAudios::test_ogg_found_via_audio_path",
       "outcome": "passed",
-      "duration": 0.001303,
+      "duration": 0.001232,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_plain_text",
       "outcome": "passed",
-      "duration": 0.000183,
+      "duration": 0.000149,
       "longrepr": null
     },
     {
@@ -1166,56 +1166,56 @@ window.WAVI_TEST_RESULTS = {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_audio_duration_not_confused_with_time",
       "outcome": "passed",
-      "duration": 0.000131,
+      "duration": 0.000128,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_audio_by_waveform_garbage",
       "outcome": "passed",
-      "duration": 0.000137,
+      "duration": 0.000126,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_file_by_extension",
       "outcome": "passed",
-      "duration": 0.000126,
+      "duration": 0.000129,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_file_by_size",
       "outcome": "passed",
-      "duration": 0.000128,
+      "duration": 0.00012,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_file_takes_priority_over_audio",
       "outcome": "passed",
-      "duration": 0.000133,
+      "duration": 0.000123,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_media_empty_text",
       "outcome": "passed",
-      "duration": 0.000128,
+      "duration": 0.000125,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_media_blank_blocks",
       "outcome": "passed",
-      "duration": 0.000126,
+      "duration": 0.000123,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestClassifyMsgType::test_multiline_text",
       "outcome": "passed",
-      "duration": 0.000143,
+      "duration": 0.000125,
       "longrepr": null
     },
     {
@@ -1236,133 +1236,133 @@ window.WAVI_TEST_RESULTS = {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsWaveformGarbage::test_normal_text",
       "outcome": "passed",
-      "duration": 0.000125,
+      "duration": 0.000124,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsWaveformGarbage::test_too_short",
       "outcome": "passed",
-      "duration": 0.000119,
+      "duration": 0.000148,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsWaveformGarbage::test_mixed_but_below_threshold",
       "outcome": "passed",
-      "duration": 0.000128,
+      "duration": 0.00013,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_standalone_block",
       "outcome": "passed",
-      "duration": 0.000139,
+      "duration": 0.000133,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_embedded_at_end",
       "outcome": "passed",
-      "duration": 0.000121,
+      "duration": 0.000125,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_am_time",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.000117,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_no_timestamp",
       "outcome": "passed",
-      "duration": 0.000128,
+      "duration": 0.000116,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_duration_not_matched_as_timestamp",
       "outcome": "passed",
-      "duration": 0.000124,
+      "duration": 0.000125,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_prefers_standalone_over_embedded",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.000117,
       "longrepr": null
     },
     {
       "doc": "'р.' es OCR de 'p.' — el tiempo que precede a 'р.' es el timestamp.",
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_cyrillic_ocr_artifact_single_block",
       "outcome": "passed",
-      "duration": 0.000128,
+      "duration": 0.000117,
       "longrepr": null
     },
     {
       "doc": "Timestamp cirílico en bloque separado del duration.",
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_cyrillic_ocr_artifact_separate_block",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.000151,
       "longrepr": null
     },
     {
       "doc": "'0:19 р.' no matchea: el patrón requiere [1-9] como primer dígito.",
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_cyrillic_does_not_match_zero_duration",
       "outcome": "passed",
-      "duration": 0.00012,
+      "duration": 0.000142,
       "longrepr": null
     },
     {
       "doc": "Texto ruso normal sin 'X:YY р.' no dispara el fallback.",
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_cyrillic_does_not_match_plain_russian_text",
       "outcome": "passed",
-      "duration": 0.000125,
+      "duration": 0.000131,
       "longrepr": null
     },
     {
       "doc": "Audio de 1:30 min cuyo bloque OCR funde duration+timestamp como '1:30 р.': retorna '1:30' (best-effort). Caso raro en práctica ya que duration y timestamp están separados espacialmente en WA y suelen quedar en bloques distintos.",
       "nodeid": "tests/test_vision.py::TestExtractTimestamp::test_cyrillic_long_duration_ambiguous_edge_case",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.000136,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsNoise::test_empty",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.00012,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsNoise::test_single_char",
       "outcome": "passed",
-      "duration": 0.000129,
+      "duration": 0.000122,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsNoise::test_plus_sign",
       "outcome": "passed",
-      "duration": 0.000116,
+      "duration": 0.000125,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsNoise::test_real_text",
       "outcome": "passed",
-      "duration": 0.000281,
+      "duration": 0.000279,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestIsNoise::test_audio_duration_kept",
       "outcome": "passed",
-      "duration": 0.000252,
+      "duration": 0.000234,
       "longrepr": null
     },
     {
@@ -1376,98 +1376,98 @@ window.WAVI_TEST_RESULTS = {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_creates_file",
       "outcome": "passed",
-      "duration": 0.021557,
+      "duration": 0.016318,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_output_is_valid_image",
       "outcome": "passed",
-      "duration": 0.002232,
+      "duration": 0.001959,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_empty_bubbles",
       "outcome": "passed",
-      "duration": 0.001271,
+      "duration": 0.001228,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_box_drawn_changes_pixels",
       "outcome": "passed",
-      "duration": 0.004374,
+      "duration": 0.004345,
       "longrepr": null
     },
     {
       "doc": "Cross appears on audio/file bubbles; absent on text/media.",
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_cross_drawn_only_on_audio_and_file",
       "outcome": "passed",
-      "duration": 0.008009,
+      "duration": 0.006765,
       "longrepr": null
     },
     {
       "doc": "'me' cross must be at x+93 (play btn position, calibrated from DOM 2026-05-30). 'other' cross must be at x+38 (play btn near left edge, calibrated from DOM). Old uncalibrated values (x+188, x+78) were Δx=95 and Δx=40 off respectively.",
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_cross_me_vs_other_x_offset",
       "outcome": "passed",
-      "duration": 0.004812,
+      "duration": 0.00494,
       "longrepr": null
     },
     {
       "doc": "For tall bubbles (quoted reply on top + audio at bottom), the cross must land in the audio player row at the bottom — not at the vertical center of the whole bubble. h=136 is a standard audio-only bubble; h=261 simulates a quoted reply above it. Both must yield a cross 37px from the bottom edge (calibrated from DOM 2026-05-30).",
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_cross_tall_bubble_bottom_anchored",
       "outcome": "passed",
-      "duration": 0.006865,
+      "duration": 0.006866,
       "longrepr": null
     },
     {
       "doc": "When play_positions are given, the cross is drawn at those coords, not estimated.",
       "nodeid": "tests/test_vision.py::TestSaveDebugImage::test_cross_uses_exact_play_position_when_provided",
       "outcome": "passed",
-      "duration": 0.002052,
+      "duration": 0.002146,
       "longrepr": null
     },
     {
       "doc": "Simulates a message with embedded image: - Green bubble body (y=10, h=60) - Image zone (y=70, h=100, non-uniform colors) - Green footer with timestamp (y=170, h=28) Should merge footer into bubble, resulting in single bubble with h=188.",
       "nodeid": "tests/test_vision.py::TestEmbeddedImageFooters::test_footer_below_image_is_merged",
       "outcome": "passed",
-      "duration": 0.009449,
+      "duration": 0.006355,
       "longrepr": null
     },
     {
       "doc": "Similar to above but with white bubble (received message).",
       "nodeid": "tests/test_vision.py::TestEmbeddedImageFooters::test_white_footer_below_image_is_merged",
       "outcome": "passed",
-      "duration": 0.005655,
+      "duration": 0.00533,
       "longrepr": null
     },
     {
       "doc": "Two bubbles with separate images should NOT be merged.",
       "nodeid": "tests/test_vision.py::TestEmbeddedImageFooters::test_two_bubbles_separate_images",
       "outcome": "passed",
-      "duration": 0.008375,
+      "duration": 0.007938,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractReaction::test_no_reaction_returns_text_unchanged",
       "outcome": "passed",
-      "duration": 0.000137,
+      "duration": 0.000131,
       "longrepr": null
     },
     {
       "doc": "Real capture: an audio bubble's own OCR text ('1:01' duration + stray digits) had a reaction badge mixed into it.",
       "nodeid": "tests/test_vision.py::TestExtractReaction::test_extracts_reaction_with_count_from_audio_duration_text",
       "outcome": "passed",
-      "duration": 0.000184,
+      "duration": 0.000176,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractReaction::test_extracts_plural_reacciones",
       "outcome": "passed",
-      "duration": 0.000131,
+      "duration": 0.000129,
       "longrepr": null
     },
     {
@@ -1481,210 +1481,224 @@ window.WAVI_TEST_RESULTS = {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractReaction::test_collapses_extra_whitespace_after_removal",
       "outcome": "passed",
-      "duration": 0.000116,
+      "duration": 0.000123,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestExtractReaction::test_case_insensitive_and_accent_insensitive",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.000123,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestBubbleReactionField::test_reaction_omitted_when_none",
       "outcome": "passed",
-      "duration": 0.000119,
+      "duration": 0.000122,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestBubbleReactionField::test_reaction_included_when_present",
       "outcome": "passed",
-      "duration": 0.000121,
+      "duration": 0.00012,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestBubbleReactionField::test_has_reaction_omitted_when_false",
       "outcome": "passed",
-      "duration": 0.000128,
+      "duration": 0.000123,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestBubbleReactionField::test_has_reaction_and_image_included_when_present",
       "outcome": "passed",
-      "duration": 0.000116,
+      "duration": 0.000124,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestFindReactionBadge::test_no_badge_on_plain_wallpaper",
       "outcome": "passed",
-      "duration": 0.000934,
+      "duration": 0.000456,
       "longrepr": null
     },
     {
       "doc": "Mirrors the real case: a red heart badge just below-right of an outgoing ('me') bubble's bottom edge.",
       "nodeid": "tests/test_vision.py::TestFindReactionBadge::test_detects_saturated_blob_near_outgoing_bubble_corner",
       "outcome": "passed",
-      "duration": 0.000556,
+      "duration": 0.000434,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestFindReactionBadge::test_detects_badge_near_incoming_bubble_left_edge",
       "outcome": "passed",
-      "duration": 0.000453,
+      "duration": 0.000423,
       "longrepr": null
     },
     {
       "doc": "A big colorful region (e.g. a media thumbnail poking into the search strip) must not be mistaken for a small reaction badge.",
       "nodeid": "tests/test_vision.py::TestFindReactionBadge::test_ignores_large_saturated_area_as_false_positive",
       "outcome": "passed",
-      "duration": 0.000487,
+      "duration": 0.000432,
       "longrepr": null
     },
     {
       "doc": "Real bug: WA's own UI chrome (blue double-check 'read' mark, audio playback-position dot) is saturated and sits right at a bubble's edge — it must not be mistaken for a reaction badge.",
       "nodeid": "tests/test_vision.py::TestFindReactionBadge::test_ignores_wa_accent_blue_as_false_positive",
       "outcome": "passed",
-      "duration": 0.000461,
+      "duration": 0.000405,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision.py::TestFindReactionBadge::test_ignores_badge_too_far_from_bubble_edge",
       "outcome": "passed",
-      "duration": 0.000442,
+      "duration": 0.000409,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestClusterByYOverlap::test_single_line_stays_together",
       "outcome": "passed",
-      "duration": 0.000184,
+      "duration": 0.000127,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestClusterByYOverlap::test_two_vertically_separate_lines",
       "outcome": "passed",
-      "duration": 0.00014,
+      "duration": 0.000124,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestClusterByYOverlap::test_empty_input",
       "outcome": "passed",
-      "duration": 0.00012,
+      "duration": 0.000122,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_name_and_timestamp_on_top_line_message_below",
       "outcome": "passed",
-      "duration": 0.000134,
+      "duration": 0.000132,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_no_timestamp_on_top_line",
       "outcome": "passed",
-      "duration": 0.000132,
+      "duration": 0.000126,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_single_line_row_has_no_preview",
       "outcome": "passed",
-      "duration": 0.000127,
+      "duration": 0.000119,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_empty_row",
       "outcome": "passed",
-      "duration": 0.000114,
+      "duration": 0.000113,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_wrapped_preview_across_two_lines_both_join_last_message",
       "outcome": "passed",
-      "duration": 0.000133,
+      "duration": 0.000125,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_rightmost_timestamp_match_wins",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.000121,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_period_separated_timestamp_with_meridiem",
       "outcome": "passed",
-      "duration": 0.00012,
+      "duration": 0.000118,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_bare_time_with_dropped_meridiem",
       "outcome": "passed",
-      "duration": 0.000125,
+      "duration": 0.000122,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_positional_fallback_for_relative_day_label",
       "outcome": "passed",
-      "duration": 0.000116,
+      "duration": 0.000122,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitRowFields::test_positional_fallback_does_not_split_a_wrapped_multiword_name",
       "outcome": "passed",
-      "duration": 0.000126,
+      "duration": 0.00012,
       "longrepr": null
     },
     {
       "doc": null,
-      "nodeid": "tests/test_vision_grounding.py::TestSplitContactFields::test_name_and_subtitle",
+      "nodeid": "tests/test_vision_grounding.py::TestChatAppProfile::test_split_row_fields_defaults_to_whatsapp_web",
       "outcome": "passed",
       "duration": 0.000127,
       "longrepr": null
     },
     {
       "doc": null,
+      "nodeid": "tests/test_vision_grounding.py::TestChatAppProfile::test_custom_profile_timestamp_regex_and_gap_override_defaults",
+      "outcome": "passed",
+      "duration": 0.000165,
+      "longrepr": null
+    },
+    {
+      "doc": null,
+      "nodeid": "tests/test_vision_grounding.py::TestSplitContactFields::test_name_and_subtitle",
+      "outcome": "passed",
+      "duration": 0.000123,
+      "longrepr": null
+    },
+    {
+      "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitContactFields::test_name_split_across_words_joins_left_to_right",
       "outcome": "passed",
-      "duration": 0.000119,
+      "duration": 0.000126,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitContactFields::test_single_line_row_has_no_subtitle",
       "outcome": "passed",
-      "duration": 0.000118,
+      "duration": 0.000123,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitContactFields::test_empty_row",
       "outcome": "passed",
-      "duration": 0.000122,
+      "duration": 0.000114,
       "longrepr": null
     },
     {
       "doc": null,
       "nodeid": "tests/test_vision_grounding.py::TestSplitContactFields::test_no_timestamp_regex_applied_to_contact_rows",
       "outcome": "passed",
-      "duration": 0.00067,
+      "duration": 0.00065,
       "longrepr": null
     }
   ]

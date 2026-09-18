@@ -288,6 +288,29 @@ de resultados de búsqueda con secciones "Contactos"/"Mensajes" donde la mayorí
 de filas legítimamente no llevan timestamp). 5 tests unitarios nuevos en
 `tests/test_vision_grounding.py`.
 
+`locate_compose_area()` también se validó contra un screenshot real y fresco
+(`wavi get default "Javier Lurgo" --max-iter 2`, solo lectura): acertó el
+`input_box` sobre el placeholder "Escribe un mensaje" y el `send_button` sobre
+el ícono de micrófono (correcto — sin texto escrito, WA muestra mic en vez de
+flecha de enviar; es el fallback #2 documentado, funcionando como se espera).
+`check-updates`/`status`/`queue`/`events` (código DOM preexistente, no de esta
+migración) también se confirmaron sanos contra la sesión real. `list-contacts`
+falló — ver debajo.
+
+**Refactor de portabilidad — `ChatAppProfile` (2026-09-18):** las seis
+constantes específicas de WhatsApp Web (`SIDEBAR_PX`, `SIDEBAR_ROW_GAP_PX`,
+`FOOTER_BAND_FRAC`, `_COMPOSE_PLACEHOLDER_RE`, `_RE_TIMESTAMP`,
+`_TIMESTAMP_GAP_PX`) se agruparon en un dataclass `ChatAppProfile` (frozen),
+con una única instancia `WHATSAPP_WEB` que todas las funciones públicas usan
+como default. No es soporte real a un segundo chat todavía — es la costura
+para que agregarlo después sea escribir un nuevo `ChatAppProfile` y pasarlo,
+no reescribir la lógica de detección (ver Fase 5 abajo, "generalización...
+Telegram/Slack"). Cero cambio de comportamiento por defecto: validado con la
+suite completa (227 passed) y `make corpus-grounding` (10/10) dando resultados
+idénticos a antes del refactor. 2 tests nuevos prueban que el parámetro
+`profile` realmente cambia el comportamiento (no es decorativo) con un perfil
+sintético.
+
 **Fix de rendimiento encontrado en el camino:** el captioning de Florence-2
 crasheaba en MPS (Metal, GPU de Apple Silicon) con un `RuntimeError` de dtype
 mismatch — bug real de upstream (solo castean los inputs a float16 para
