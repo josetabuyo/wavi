@@ -218,6 +218,73 @@ sigue siendo CV clásico de milisegundos; el VLM es el paracaídas semántico.
 tocar `scrollTop`. Menos preciso (se compensa con el ancla, que ya existe), pero
 elimina otra dependencia del DOM y es indistinguible de un usuario real.
 
+### 4.8 Migración DOM→vision con OmniParser (2026-09-18, en curso)
+
+Objetivo estratégico: wavi hoy depende de dos cosas frágiles — el framework Vision
+de Apple (solo macOS, cubre §4.1) y los selectores DOM de WhatsApp Web en
+`wavi/session.py` (frágiles ante cambios del proveedor). `wavi/session.py` líneas
+~76-108 ya documentaba, por cada señal DOM, qué "vision fallback" implementar si
+el selector se rompe — este ítem es la ejecución de ese roadmap, empezando por
+**microsoft/OmniParser-v2.0** (YOLO icon detector + Florence-2 captioner + EasyOCR),
+cross-platform, no depende de Apple Vision.
+
+**Pasos implementados (2026-09-18):**
+1. `wavi/vision_grounding.py::locate_compose_area()` — localiza el compose input
+   box y el botón de enviar sobre un screenshot estático, cubriendo el fallback de
+   `_FIND_COMPOSE_INPUT_JS` / `_CHECK_COMPOSE_EMPTY_JS` / `_CLICK_SEND_BTN_JS`.
+2. `wavi/vision_grounding.py::parse_sidebar_rows()` — clusteriza el OCR del
+   sidebar en filas (una por chat), cubriendo el fallback de
+   `_EXTRACT_SIDEBAR_UPDATES_JS`. Solo EasyOCR (sin YOLO/Florence — las filas del
+   sidebar son texto plano), mucho más rápido que `locate_compose_area()`. Todavía
+   **no** separa name/last_message/timestamp/direction dentro de cada fila — eso
+   es el próximo corte natural, más chico y de menor riesgo que encontrar los
+   límites de fila en primer lugar.
+
+Ambos validados con smoke tests contra `tests/corpus/cases/` (`make
+corpus-grounding`, 10/10 casos). Deliberadamente **no** cableados a `session.py`
+todavía — solo detección sobre imágenes estáticas, cero riesgo sobre la sesión de
+WA viva.
+
+**Fix de rendimiento encontrado en el camino:** el captioning de Florence-2
+crasheaba en MPS (Metal, GPU de Apple Silicon) con un `RuntimeError` de dtype
+mismatch — bug real de upstream (solo castean los inputs a float16 para
+`device.type == 'cuda'`, nunca contemplaron MPS). Arreglado generalizando el cast
+en `wavi/_vendor/omniparser_utils.py`: **585s → 118s corriendo el corpus completo
+(~5x)**, ahora usa la GPU en vez de caer a CPU.
+
+**Decisiones de esta iteración:**
+- Dependencias pesadas (torch + transformers + ultralytics, ~1.5GB) como extra
+  opcional `vision-omniparser` en `pyproject.toml`, nunca core — la mayoría de
+  usuarios de wavi en Mac no lo necesitan mientras Swift/Vision siga cubriendo OCR.
+- Pesos (`make omniparser-weights`) gitignorados, se bajan de Hugging Face.
+- Código de OmniParser vendorizado (no como dependencia pip) en
+  `wavi/_vendor/omniparser_utils.py` y `box_annotator.py`, con tres fixes de
+  compatibilidad encontrados empíricamente (pin exacto de `transformers==4.49.0`,
+  fix de dtype para MPS, naming exacto `icon_caption_florence`) — documentados
+  en el docstring de ese archivo.
+- **Licencia — atención antes de exponer esto como servicio:** el código de
+  OmniParser es CC-BY-4.0 (no MIT). Los pesos del captioner (Florence-2) son MIT,
+  pero el **detector de íconos (YOLO) es AGPLv3**, con cláusula de uso en red. Para
+  uso local/CLI (lo que es wavi hoy) no se dispara esa cláusula; si algún día
+  `wavi/server.py` o `wavi/qr_server.py` exponen esta funcionalidad como servicio
+  de red a terceros, hay que revisar la licencia de nuevo antes de shippear.
+
+**Pendiente (próximos pasos, uno a la vez):**
+1. Cablear `locate_compose_area()` y `parse_sidebar_rows()` a `session.py` como
+   fallback real detrás de un flag, con pruebas contra una sesión de staging
+   antes de default-on.
+2. Dentro de cada fila de `parse_sidebar_rows()`: separar name / last_message /
+   timestamp / direction (tick icon → necesita YOLO, no solo OCR). Corte chico,
+   bajo riesgo, ya con los límites de fila resueltos.
+3. Cubrir el resto de la tabla de inventario DOM: scroll-bottom button
+   (§`_CLICK_SCROLL_BOTTOM_BTN_JS`), new-chat/back icons, reacciones, lista de
+   contactos del panel "Nuevo chat" — mismo patrón (detección primero sobre
+   corpus estático, cableado a `session.py` después, por separado).
+4. Evaluar si conviene sumar un VLM (Qwen-VL u otro) como capa de *razonamiento*
+   sobre lo que OmniParser detecta — ver §4.6. Mantiene la filosofía de wavi como
+   harness: OmniParser/vision aporta los "ojos" (detección estructurada), el
+   agente que invoca wavi (humano o AI) sigue siendo el "cerebro" que decide.
+
 ---
 
 ## 5. Documentación

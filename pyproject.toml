@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wavi-lib"
-version = "0.3.3"
+version = "0.4.0"
 description = "WhatsApp automation via vision: screenshot → OCR → click"
 readme = "README.md"
 license = {text = "MIT"}
@@ -55,6 +55,31 @@ dev = [
 server = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
+]
+# Cross-platform vision grounding (OmniParser-v2.0) — first step of the DOM→vision
+# migration tracked in docs/plan-mejoras.md. Heavy (torch + transformers), so it
+# stays opt-in: most wavi users on macOS don't need it while swift/ocr_vision.swift
+# still covers OCR.
+vision-omniparser = [
+    "torch",
+    "torchvision",
+    "ultralytics==8.3.70",
+    # Pinned exact: transformers>=5 breaks Florence-2's custom remote code with
+    # `AttributeError: 'Florence2LanguageConfig' object has no attribute
+    # 'forced_bos_token_id'`. Do not bump without re-validating against the corpus.
+    "transformers==4.49.0",
+    "huggingface_hub",
+    "easyocr",
+    "opencv-python-headless",
+    # NOTE: do not pin numpy here — an exact pin forces that version across
+    # uv's whole-project lock resolution (even for installs that skip this
+    # extra) and breaks the base install on Pythons without a prebuilt wheel
+    # for that exact version. numpy>=1.24 (the core dependency's own bound)
+    # has been fine for OmniParser in testing.
+    "einops==0.8.0",
+    "timm",
+    "supervision==0.18.0",
+    "accelerate",
 ]
 
 [tool.hatch.build.targets.wheel]

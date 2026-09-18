@@ -1,0 +1,360 @@
+"""
+vision_grounding.py — Cross-platform UI element grounding via OmniParser-v2.0.
+
+First step of the DOM→vision migration tracked in docs/plan-mejoras.md (see
+"DOM scraping inventory" table in wavi/session.py lines ~76-108 for the full
+list of DOM signals this line of work is meant to eventually replace).
+
+Unlike wavi/vision.py (Apple Vision OCR, macOS-only, text-only), this module
+locates *UI elements* — icons and controls, not just text — from a plain
+screenshot, using microsoft/OmniParser-v2.0 (YOLO icon detector + Florence-2
+icon captioner + EasyOCR for text seeding). It works on any OS.
+
+## Why this isn't wired into session.py yet
+
+This module only reads static screenshot files. It never opens a live
+WhatsApp Web session or touches Playwright — on purpose. Wiring vision-based
+element location into session.py's actual click/type actions is a separate,
+higher-risk follow-up (touches an authenticated live session) and is out of
+scope here. See tests/test_corpus_grounding.py for how this is validated
+today: sanity-checked against static screenshots in tests/corpus/cases/.
+
+## Dependencies — opt-in, heavy
+
+Needs the `vision-omniparser` extra (torch, transformers, ultralytics —
+~1.5GB installed): `uv sync --extra vision-omniparser`. wavi's core install
+stays light; everything in this module is imported lazily inside functions
+so importing wavi/vision_grounding.py itself never requires torch to be
+installed. If the extra isn't installed, `locate_compose_area()` returns
+None instead of raising.
+
+Also needs the model weights (~1.5GB, not installed by the extra — see
+`make omniparser-weights`), downloaded from
+https://huggingface.co/microsoft/OmniParser-v2.0 into weights/ (gitignored).
+
+## Licensing — read before shipping this anywhere beyond local/CLI use
+
+This is NOT a clean MIT dependency like the rest of wavi:
+  - wavi/_vendor/omniparser_utils.py and wavi/_vendor/box_annotator.py are
+    vendored from the microsoft/OmniParser GitHub repo, licensed CC-BY-4.0
+    (attribution required; not OSI-approved for software but permits reuse).
+  - weights/icon_caption_florence (Florence-2) is MIT — clean.
+  - weights/icon_detect (YOLO icon detector) is **AGPLv3**. AGPL's network-use
+    clause can require releasing the combined work's source to any user who
+    interacts with it over a network. wavi runs this locally as a CLI/harness
+    today, which does not trigger that clause. If wavi/server.py or
+    wavi/qr_server.py is ever used to expose this functionality as a network
+    service to other users, this needs a fresh license review before that
+    ships — do not assume the current "local use only" analysis still holds.
+
+## Compatibility pins — do not bump casually
+
+`transformers==4.49.0` is pinned exactly. `transformers>=5` breaks
+Florence-2's custom remote code (`AttributeError: 'Florence2LanguageConfig'
+object has no attribute 'forced_bos_token_id'`). Captioning auto-detects MPS
+(Apple Silicon Metal GPU) and falls back to CPU otherwise — see
+wavi/_vendor/omniparser_utils.py docstring for why the original OmniParser
+code crashed on MPS (`RuntimeError: Input type (float) and bias type
+(c10::Half) should be the same`) and how it's fixed here, plus the third pin
+(the icon_caption_florence directory naming requirement).
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import TypedDict
+
+WEIGHTS_DIR = Path(__file__).parent.parent / "weights"
+
+# Footer band where the compose input + send button live, as a fraction of
+# image height from the bottom. WA Web's compose bar is consistently short
+# (~70-90px on the corpus's 1280x1920 screenshots, ~5% of height); 15% gives
+# headroom across window sizes without reaching into the message list.
+FOOTER_BAND_FRAC = 0.15
+
+# Tolerant on purpose: EasyOCR frequently drops short low-confidence words
+# entirely rather than misreading them (confirmed on the corpus — "un" in
+# "Escribe un mensaje" isn't merely split off, it's missing from the OCR
+# output altogether), so this must not require an exact phrase match. ".*"
+# between the anchor words absorbs whatever EasyOCR did or didn't catch
+# between them, including nothing.
+_COMPOSE_PLACEHOLDER_RE = re.compile(r"(escribe.*mensaj|type.*a.*messag)", re.I)
+
+
+class ElementBox(TypedDict):
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class ComposeArea(TypedDict):
+    input_box: ElementBox | None
+    send_button: ElementBox | None
+
+
+_yolo_model = None
+_caption_model_processor = None
+
+
+def _models_available() -> bool:
+    return (WEIGHTS_DIR / "icon_detect" / "model.pt").exists() and (
+        WEIGHTS_DIR / "icon_caption_florence"
+    ).exists()
+
+
+def _load_models():
+    """Lazily loads + caches the YOLO detector and Florence-2 captioner.
+    Raises ImportError if the vision-omniparser extra isn't installed."""
+    global _yolo_model, _caption_model_processor
+    if _yolo_model is not None:
+        return _yolo_model, _caption_model_processor
+
+    from wavi._vendor.omniparser_utils import get_caption_model_processor, get_yolo_model
+
+    _yolo_model = get_yolo_model(str(WEIGHTS_DIR / "icon_detect" / "model.pt"))
+    _caption_model_processor = get_caption_model_processor(str(WEIGHTS_DIR / "icon_caption_florence"))
+    return _yolo_model, _caption_model_processor
+
+
+def _to_pixel_bbox(bbox_ratio: list[float], img_w: int, img_h: int) -> ElementBox:
+    x0, y0, x1, y1 = bbox_ratio
+    return {
+        "x": int(x0 * img_w),
+        "y": int(y0 * img_h),
+        "w": int((x1 - x0) * img_w),
+        "h": int((y1 - y0) * img_h),
+    }
+
+
+def parse_screen(screenshot_path: Path) -> list[dict] | None:
+    """Runs the full OmniParser pipeline (OCR seed + YOLO icons + Florence-2
+    captions) against a screenshot. Returns the raw element list (bbox in
+    0-1 ratio coords, as OmniParser produces it) or None if the optional
+    dependencies/weights aren't installed."""
+    if not _models_available():
+        return None
+    try:
+        from PIL import Image
+
+        from wavi._vendor.omniparser_utils import check_ocr_box, get_som_labeled_img
+    except ImportError:
+        return None
+
+    yolo_model, caption_model_processor = _load_models()
+
+    image = Image.open(screenshot_path)
+    text, ocr_bbox = check_ocr_box(
+        image, output_bb_format="xyxy", easyocr_args={"paragraph": False, "text_threshold": 0.9}
+    )
+    _annotated_png_b64, parsed_content_list = get_som_labeled_img(
+        image,
+        yolo_model,
+        BOX_TRESHOLD=0.05,
+        ocr_bbox=ocr_bbox,
+        caption_model_processor=caption_model_processor,
+        ocr_text=text,
+        iou_threshold=0.1,
+        imgsz=640,
+    )
+    return parsed_content_list
+
+
+def _group_text_lines(text_elements: list[dict]) -> list[dict]:
+    """Merges OCR text elements into lines by y-overlap, sorted left-to-right.
+
+    EasyOCR frequently splits a single UI string into separate per-word
+    boxes (e.g. "Escribe un mensaje" → "Escribe" + "mensaje", dropping short
+    words like "un" entirely) — a single-element regex match against
+    `content` misses these. Each returned line has a `content` (joined text)
+    and a `bbox` (union of its members' bboxes, same [x0,y0,x1,y1] ratio
+    format OmniParser uses elsewhere in this module).
+    """
+    remaining = sorted(text_elements, key=lambda el: el["bbox"][0])
+    lines: list[list[dict]] = []
+    for el in remaining:
+        _x0, y0, _x1, y1 = el["bbox"]
+        placed = False
+        for line in lines:
+            _lx0, ly0, _lx1, ly1 = line[-1]["bbox"]
+            overlap = min(y1, ly1) - max(y0, ly0)
+            if overlap > 0.5 * min(y1 - y0, ly1 - ly0):
+                line.append(el)
+                placed = True
+                break
+        if not placed:
+            lines.append([el])
+
+    result = []
+    for line in lines:
+        xs0 = [el["bbox"][0] for el in line]
+        ys0 = [el["bbox"][1] for el in line]
+        xs1 = [el["bbox"][2] for el in line]
+        ys1 = [el["bbox"][3] for el in line]
+        result.append({
+            "content": " ".join(el.get("content") or "" for el in line),
+            "bbox": [min(xs0), min(ys0), max(xs1), max(ys1)],
+        })
+    return result
+
+
+def locate_compose_area(screenshot_path: Path) -> ComposeArea | None:
+    """Locates the WhatsApp Web compose input box and send button in a
+    screenshot via OmniParser, replacing the DOM signals documented for
+    _FIND_COMPOSE_INPUT_JS / _CHECK_COMPOSE_EMPTY_JS / _CLICK_SEND_BTN_JS in
+    wavi/session.py's DOM scraping inventory.
+
+    Returns None if the vision-omniparser extra or weights aren't installed
+    (never raises for that reason — callers should treat this as "vision
+    grounding unavailable", not an error).
+    """
+    from PIL import Image
+
+    elements = parse_screen(screenshot_path)
+    if elements is None:
+        return None
+
+    with Image.open(screenshot_path) as img:
+        img_w, img_h = img.size
+
+    footer_y0 = img_h * (1 - FOOTER_BAND_FRAC)
+    footer_elements = []
+    for el in elements:
+        _x0, y0, _x1, y1 = el["bbox"]
+        cy = (y0 + y1) / 2 * img_h
+        if cy >= footer_y0:
+            footer_elements.append(el)
+
+    input_box: ElementBox | None = None
+    send_button: ElementBox | None = None
+    # Narrow y-band (ratio coords) actually occupied by the compose row,
+    # once we know it — set below when the placeholder text is found.
+    row_y0: float | None = None
+    row_y1: float | None = None
+
+    # 1. Prefer matching the compose placeholder text ("Escribe un mensaje" /
+    #    "Type a message"). Grouped into lines first because EasyOCR often
+    #    splits this string across multiple word-level boxes.
+    text_lines = _group_text_lines([el for el in footer_elements if el["type"] == "text"])
+    for line in text_lines:
+        if _COMPOSE_PLACEHOLDER_RE.search(line["content"]):
+            input_box = _to_pixel_bbox(line["bbox"], img_w, img_h)
+            row_y0, row_y1 = line["bbox"][1], line["bbox"][3]
+            break
+
+    # Once we've located the actual compose row, re-narrow the footer band
+    # to it (+ padding) so unrelated floating UI in the generic 15% band —
+    # e.g. a reaction-reactions popover overlapping the footer — can't be
+    # picked up as the send button.
+    if row_y0 is not None:
+        pad = (row_y1 - row_y0) * 1.5
+        band_elements = [
+            el for el in footer_elements
+            if row_y0 - pad <= (el["bbox"][1] + el["bbox"][3]) / 2 <= row_y1 + pad
+        ]
+    else:
+        band_elements = footer_elements
+
+    # 2. Fallback (no placeholder text found, e.g. compose box isn't empty):
+    #    widest icon-typed element in the footer band.
+    if input_box is None:
+        icons = [el for el in band_elements if el["type"] == "icon"]
+        if icons:
+            widest = max(icons, key=lambda el: el["bbox"][2] - el["bbox"][0])
+            input_box = _to_pixel_bbox(widest["bbox"], img_w, img_h)
+
+    # Send button: icon-typed element in the (now-narrowed) band closest to
+    # the right edge, excluding whatever we picked as the input box.
+    icon_candidates = [
+        el for el in band_elements
+        if el["type"] == "icon" and _to_pixel_bbox(el["bbox"], img_w, img_h) != input_box
+    ]
+    if icon_candidates:
+        rightmost = max(icon_candidates, key=lambda el: el["bbox"][2])
+        send_button = _to_pixel_bbox(rightmost["bbox"], img_w, img_h)
+
+    return {"input_box": input_box, "send_button": send_button}
+
+
+# ── Sidebar chat list ─────────────────────────────────────────────────────────
+# Replaces the DOM signal documented for _EXTRACT_SIDEBAR_UPDATES_JS in
+# wavi/session.py's DOM scraping inventory. Text-only (EasyOCR via
+# check_ocr_box) — sidebar rows are plain text, so this skips the YOLO +
+# Florence-2 icon pipeline entirely and is correspondingly much faster than
+# locate_compose_area() (no captioning pass).
+
+SIDEBAR_PX = 580  # matches wavi/vision.py's SIDEBAR_PX — kept independent
+# on purpose (this module has no import-time dependency on wavi.vision) but
+# should be updated alongside it if WA's sidebar width ever changes.
+
+# Vertical gap (px) above which two OCR text lines are considered different
+# sidebar rows rather than two lines of the same chat cell (name + preview).
+# WA Web's cell height is ~72-90px with lines close together within a cell
+# and a clearer gap between cells; 20px was picked empirically against the
+# corpus and isn't first-principles derived — revisit if it misclusters on
+# new screenshots (e.g. very long contact names that wrap to 3 lines).
+SIDEBAR_ROW_GAP_PX = 20
+
+
+class SidebarRow(TypedDict):
+    bbox: ElementBox
+    text: str  # every OCR line in the row, left-to-right, joined with " | ".
+    # Not yet split into name / last_message / timestamp / direction — see
+    # docs/plan-mejoras.md §4.8 for why that's deferred.
+
+
+def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
+    """OCR-clusters the WA Web sidebar (chat list) into rows.
+
+    Each returned row is the union of every text line OmniParser's OCR pass
+    found within one vertical cluster — not yet split into semantic fields
+    (contact name vs. last-message preview vs. timestamp vs. read/delivered
+    ticks). That's the natural next slice of this migration: the row
+    boundaries are the hard part (arbitrary text layout, no DOM structure to
+    lean on); splitting fields within an already-isolated row is a much
+    smaller, lower-risk follow-up.
+
+    Returns None if the vision-omniparser extra isn't installed (never
+    raises for that reason).
+    """
+    try:
+        from PIL import Image
+
+        from wavi._vendor.omniparser_utils import check_ocr_box
+    except ImportError:
+        return None
+
+    image = Image.open(screenshot_path)
+    img_w, _img_h = image.size
+    sidebar = image.crop((0, 0, min(SIDEBAR_PX, img_w), image.size[1]))
+
+    text, bboxes = check_ocr_box(
+        sidebar, output_bb_format="xyxy", easyocr_args={"paragraph": False, "text_threshold": 0.7}
+    )
+    elements = sorted(zip(text, bboxes, strict=False), key=lambda item: item[1][1])
+
+    rows: list[list[tuple[str, tuple[int, int, int, int]]]] = []
+    current: list[tuple[str, tuple[int, int, int, int]]] = []
+    current_y1: int | None = None
+    for content, bbox in elements:
+        y0 = bbox[1]
+        if current and current_y1 is not None and y0 - current_y1 > SIDEBAR_ROW_GAP_PX:
+            rows.append(current)
+            current = []
+        current.append((content, bbox))
+        current_y1 = max(current_y1 or bbox[3], bbox[3])
+    if current:
+        rows.append(current)
+
+    result: list[SidebarRow] = []
+    for row in rows:
+        xs0 = [b[0] for _c, b in row]
+        ys0 = [b[1] for _c, b in row]
+        xs1 = [b[2] for _c, b in row]
+        ys1 = [b[3] for _c, b in row]
+        line = " | ".join(c for c, _b in sorted(row, key=lambda item: item[1][0]))
+        result.append({
+            "bbox": {"x": min(xs0), "y": min(ys0), "w": max(xs1) - min(xs0), "h": max(ys1) - min(ys0)},
+            "text": line,
+        })
+    return result

@@ -1,4 +1,4 @@
-.PHONY: install install-dev uninstall test report boarding lint ocr corpus-baseline hooks
+.PHONY: install install-dev uninstall test report boarding lint ocr corpus-baseline hooks omniparser-weights corpus-grounding
 
 # Enable versioned git hooks: lint on commit, lint+tests on push.
 # Bypass per-invocation with --no-verify.
@@ -35,6 +35,21 @@ test:
 # Vision eval on the golden corpus (real OCR, macOS only, ~5-10s per case)
 corpus: ocr
 	WAVI_CORPUS=1 pytest tests/test_corpus.py -v
+
+# Download OmniParser-v2.0 weights (icon detector + Florence-2 captioner) from
+# Hugging Face into weights/ (gitignored, ~1.5GB). Requires the vision-omniparser
+# extra installed (`uv sync --extra vision-omniparser`, Python <3.12).
+# The captioning dir MUST be named icon_caption_florence, not icon_caption — see
+# wavi/vision_grounding.py module docstring for why.
+omniparser-weights:
+	mkdir -p weights
+	uv run --extra vision-omniparser hf download microsoft/OmniParser-v2.0 --local-dir weights
+	@if [ -d weights/icon_caption ]; then mv weights/icon_caption weights/icon_caption_florence; fi
+	@echo "OK → weights/icon_detect, weights/icon_caption_florence"
+
+# Vision-grounding eval on the golden corpus (OmniParser, cross-platform, slow — CPU inference)
+corpus-grounding:
+	WAVI_CORPUS=1 uv run --extra vision-omniparser pytest tests/test_corpus_grounding.py -v
 
 # Run tests and open boarding page to inspect results
 report:
