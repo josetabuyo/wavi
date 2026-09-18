@@ -249,6 +249,16 @@ cross-platform, no depende de Apple Vision.
    Validado con 9 tests unitarios síncronos (`tests/test_vision_grounding.py`,
    sin gate — no requieren pesos ni el extra `vision-omniparser`) más el smoke
    check ampliado del corpus real (`tests/test_corpus_grounding.py`, 10/10).
+4. `wavi/vision_grounding.py::parse_contacts_panel_rows()` — cubre el fallback
+   de `_EXTRACT_CONTACTS_JS` / `_EXTRACT_VISIBLE_CONTACTS_JS` (panel "Nuevo
+   chat"). Reutiliza el mismo crop de columna izquierda y clustering de filas
+   que `parse_sidebar_rows` (extraídos a `_ocr_cell_rows()`, compartido entre
+   ambas) — solo cambia el split por fila: sin timestamp, primera línea =
+   nombre completo, resto = subtítulo (`_split_contact_fields()`). **Sin caso
+   de corpus real todavía** — ningún screenshot en `tests/corpus/cases/` tiene
+   el panel "Nuevo chat" abierto; validado solo con 5 tests unitarios
+   sintéticos. Agregar un caso real antes de confiar en esto más allá de smoke
+   use.
 
 Ambos validados con smoke tests contra `tests/corpus/cases/` (`make
 corpus-grounding`, 10/10 casos). Deliberadamente **no** cableados a `session.py`
@@ -288,11 +298,14 @@ en `wavi/_vendor/omniparser_utils.py`: **585s → 118s corriendo el corpus compl
    `wavi/_vendor/omniparser_utils.py` (boxes de YOLO sin pasar por Florence-2),
    acotado a la región de cada fila ya resuelta. name/last_message/timestamp ya
    están resueltos (2026-09-18).
-3. Cubrir el resto de la tabla de inventario DOM: scroll-bottom button
-   (§`_CLICK_SCROLL_BOTTOM_BTN_JS`), new-chat/back icons, reacciones, lista de
-   contactos del panel "Nuevo chat" — mismo patrón (detección primero sobre
+3. Sembrar un caso de corpus con el panel "Nuevo chat" abierto y correr
+   `parse_contacts_panel_rows()` contra él (2026-09-18: implementado, solo
+   validado sintéticamente).
+4. Cubrir el resto de la tabla de inventario DOM (íconos, necesitan YOLO/template,
+   no solo OCR): scroll-bottom button (§`_CLICK_SCROLL_BOTTOM_BTN_JS`),
+   new-chat/back icons, reacciones — mismo patrón (detección primero sobre
    corpus estático, cableado a `session.py` después, por separado).
-4. Evaluar si conviene sumar un VLM (Qwen-VL u otro) como capa de *razonamiento*
+5. Evaluar si conviene sumar un VLM (Qwen-VL u otro) como capa de *razonamiento*
    sobre lo que OmniParser detecta — ver §4.6. Mantiene la filosofía de wavi como
    harness: OmniParser/vision aporta los "ojos" (detección estructurada), el
    agente que invoca wavi (humano o AI) sigue siendo el "cerebro" que decide.

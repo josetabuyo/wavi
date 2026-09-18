@@ -367,15 +367,13 @@ def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
     return name, last_message, timestamp
 
 
-def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
-    """OCR-clusters the WA Web sidebar (chat list) into rows, then splits
-    each row into name / last_message / timestamp (see `_split_row_fields`).
-    `direction` is always None here — see the SidebarRow docstring for why.
-
-    Row boundaries (one row per chat cell) are the hard part of this
-    function — arbitrary text layout, no DOM structure to lean on. Field
-    splitting within an already-isolated row is comparatively cheap, since
-    WA's two-line-per-cell layout and timestamp shape are consistent.
+def _ocr_cell_rows(screenshot_path: Path) -> list[list[tuple[str, tuple[int, int, int, int]]]] | None:
+    """OCR-clusters the left column (width SIDEBAR_PX) of a WA Web
+    screenshot into rows by vertical gap (SIDEBAR_ROW_GAP_PX) — one row per
+    list cell. Shared by `parse_sidebar_rows` (chat list) and
+    `parse_contacts_panel_rows` (the "Nuevo chat" contact list), which use
+    the same left-column crop and the same row-boundary heuristic; they only
+    differ in how they split fields *within* an already-isolated row.
 
     Returns None if the vision-omniparser extra isn't installed (never
     raises for that reason).
@@ -389,10 +387,10 @@ def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
 
     image = Image.open(screenshot_path)
     img_w, _img_h = image.size
-    sidebar = image.crop((0, 0, min(SIDEBAR_PX, img_w), image.size[1]))
+    column = image.crop((0, 0, min(SIDEBAR_PX, img_w), image.size[1]))
 
     text, bboxes = check_ocr_box(
-        sidebar, output_bb_format="xyxy", easyocr_args={"paragraph": False, "text_threshold": 0.7}
+        column, output_bb_format="xyxy", easyocr_args={"paragraph": False, "text_threshold": 0.7}
     )
     elements = sorted(zip(text, bboxes, strict=False), key=lambda item: item[1][1])
 
@@ -408,23 +406,112 @@ def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
         current_y1 = max(current_y1 or bbox[3], bbox[3])
     if current:
         rows.append(current)
+    return rows
+
+
+def _row_bbox(row: list[tuple[str, tuple[int, int, int, int]]]) -> ElementBox:
+    xs0 = [b[0] for _c, b in row]
+    ys0 = [b[1] for _c, b in row]
+    xs1 = [b[2] for _c, b in row]
+    ys1 = [b[3] for _c, b in row]
+    return {"x": min(xs0), "y": min(ys0), "w": max(xs1) - min(xs0), "h": max(ys1) - min(ys0)}
+
+
+def _row_elements(row: list[tuple[str, tuple[int, int, int, int]]]) -> list[dict]:
+    return [{"content": content, "bbox": list(bbox)} for content, bbox in row]
+
+
+def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
+    """OCR-clusters the WA Web sidebar (chat list) into rows, then splits
+    each row into name / last_message / timestamp (see `_split_row_fields`).
+    `direction` is always None here — see the SidebarRow docstring for why.
+
+    Row boundaries (one row per chat cell) are the hard part of this
+    function — arbitrary text layout, no DOM structure to lean on. Field
+    splitting within an already-isolated row is comparatively cheap, since
+    WA's two-line-per-cell layout and timestamp shape are consistent.
+
+    Returns None if the vision-omniparser extra isn't installed (never
+    raises for that reason).
+    """
+    rows = _ocr_cell_rows(screenshot_path)
+    if rows is None:
+        return None
 
     result: list[SidebarRow] = []
     for row in rows:
-        xs0 = [b[0] for _c, b in row]
-        ys0 = [b[1] for _c, b in row]
-        xs1 = [b[2] for _c, b in row]
-        ys1 = [b[3] for _c, b in row]
-        line = " | ".join(c for c, _b in sorted(row, key=lambda item: item[1][0]))
-        name, last_message, timestamp = _split_row_fields(
-            [{"content": content, "bbox": list(bbox)} for content, bbox in row]
-        )
+        text = " | ".join(c for c, _b in sorted(row, key=lambda item: item[1][0]))
+        name, last_message, timestamp = _split_row_fields(_row_elements(row))
         result.append({
-            "bbox": {"x": min(xs0), "y": min(ys0), "w": max(xs1) - min(xs0), "h": max(ys1) - min(ys0)},
-            "text": line,
+            "bbox": _row_bbox(row),
+            "text": text,
             "name": name,
             "last_message": last_message,
             "timestamp": timestamp,
             "direction": None,
         })
+    return result
+
+
+# ── "Nuevo chat" contacts panel ─────────────────────────────────────────────
+# Replaces the DOM signal documented for _EXTRACT_CONTACTS_JS /
+# _EXTRACT_VISIBLE_CONTACTS_JS in wavi/session.py's DOM scraping inventory.
+# Same left-column crop and row-clustering as parse_sidebar_rows (the panel
+# occupies the same left column, replacing the chat list) — only the
+# per-row field split differs: no timestamp, so the top line is the whole
+# contact name and everything below it is the subtitle (phone number or
+# WhatsApp "about" status), not a message preview.
+#
+# NOTE: no corpus case currently captures this panel open (see
+# tests/corpus/cases/) — this function is validated by
+# tests/test_vision_grounding.py against synthetic OCR output only. Add a
+# real "Nuevo chat" screenshot case before relying on this beyond smoke use.
+
+
+class ContactRow(TypedDict):
+    bbox: ElementBox
+    name: str
+    subtitle: str
+
+
+def _split_contact_fields(elements: list[dict]) -> tuple[str, str]:
+    """Splits one contacts-panel row's OCR elements into (name, subtitle).
+
+    Unlike sidebar chat rows, contact rows carry no timestamp — the top
+    line is the full contact name, any line(s) below it are the subtitle.
+    """
+    lines = sorted(
+        _cluster_by_y_overlap(elements),
+        key=lambda line: min(el["bbox"][1] for el in line),
+    )
+    if not lines:
+        return "", ""
+
+    name = " ".join(
+        el.get("content") or "" for el in sorted(lines[0], key=lambda e: e["bbox"][0])
+    ).strip()
+    subtitle_words = [
+        el.get("content") or ""
+        for line in lines[1:]
+        for el in sorted(line, key=lambda e: e["bbox"][0])
+    ]
+    subtitle = " ".join(subtitle_words).strip()
+    return name, subtitle
+
+
+def parse_contacts_panel_rows(screenshot_path: Path) -> list[ContactRow] | None:
+    """OCR-clusters the WA Web "Nuevo chat" contacts panel into rows, then
+    splits each row into name / subtitle (see `_split_contact_fields`).
+
+    Returns None if the vision-omniparser extra isn't installed (never
+    raises for that reason).
+    """
+    rows = _ocr_cell_rows(screenshot_path)
+    if rows is None:
+        return None
+
+    result: list[ContactRow] = []
+    for row in rows:
+        name, subtitle = _split_contact_fields(_row_elements(row))
+        result.append({"bbox": _row_bbox(row), "name": name, "subtitle": subtitle})
     return result
