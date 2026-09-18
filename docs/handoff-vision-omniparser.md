@@ -1,13 +1,14 @@
 # Handoff — migración DOM→vision con OmniParser
 
 **Fecha:** 2026-09-18
-**Estado:** v0.4.0 publicado (PyPI + git push a `main`, commit `38ed2be`), más
-el split de campos de `parse_sidebar_rows()` (commit `4bee0d4`),
-`parse_contacts_panel_rows()` (commit `991f286`), un fix de timestamp
-encontrado validando contra una sesión real (commit `e6181b4`), y un refactor
-de portabilidad (`ChatAppProfile`, ver abajo — sin commitear todavía al cierre
-de esta nota). Suite base verde (227 passed, 15 skipped), suite de grounding
-verde (10/10 sobre el corpus).
+**Estado:** **v0.5.0 publicado en PyPI** (commit `b848e7f`, `main` al día).
+Desde v0.4.0 (`38ed2be`) se sumaron, en orden: split de campos de
+`parse_sidebar_rows()` (`4bee0d4`), `parse_contacts_panel_rows()` (`991f286`),
+fix de timestamp validado contra sesión real (`e6181b4`), refactor de
+portabilidad `ChatAppProfile` (`9dab6c8`), bump a v0.5.0 (`b848e7f`). Suite
+base verde (227 passed, 15 skipped), suite de grounding verde (10/10 sobre el
+corpus). Todo commiteado, pusheado y publicado — nada pendiente en el working
+tree al cierre de esta sesión.
 
 **Sesión real conectada:** `wavi qr default` (22793010001200) escaneado y
 autenticado este mismo día — primera vez que este trabajo se validó contra
@@ -24,17 +25,24 @@ manuales sobre la tab). Encontró y confirmó:
    "nuevo chat". `wavi list-contacts` falla en vivo. Confirma en la práctica
    por qué existe esta migración.
 
-**Sobre el tamaño de `data/` (~17GB, llamó la atención de System@ba-mac):**
-esperado, no es basura — `data/sessions/` guarda perfiles de Chrome por sesión
-de WA (varios GB cada uno, IndexedDB/caché de WA incluido) más variantes
-archivadas nunca borradas por diseño (ver `docs/adr/ADR-009-never-delete-session-profiles.md`
-— archivar y renombrar, jamás borrar, porque una sesión perdida cuesta un
-nuevo QR scan penalizado por WA). `weights/` son los ~1GB de pesos de
-OmniParser. `output/` son screenshots/historiales de pruebas acumulados. Hay
-~15 carpetas `_tmp_*` de ~80MB cada una en `data/sessions/` que parecen
-perfiles de Chrome de desarrollo/testing viejos — candidatas a revisar en
-algún momento, pero **no tocadas** (el usuario pidió explícitamente no borrar
-nada en esta sesión).
+**Sobre el tamaño de `data/` (llamó la atención de System@ba-mac):** llegó a
+~17GB por perfiles de Chrome viejos/rotos (pulpo-bot en 4 variantes, mateo
+desconectada, ~16 carpetas `_tmp_*` de testing) — **limpiado el mismo día**,
+con confirmación explícita del usuario ítem por ítem (`wa-session-guard`).
+Quedó solo `data/sessions/22793010001200` (`default`, ~940MB). `weights/`
+(~1GB, pesos de OmniParser) y `output/` (screenshots/historiales de pruebas)
+sin tocar. Política del proyecto (`docs/adr/ADR-009-never-delete-session-profiles.md`):
+wavi mismo nunca borra un perfil automáticamente (solo archiva); borrar a
+mano, con confirmación explícita, sigue siendo decisión del usuario — eso es
+lo que pasó acá. Si se reconectan `pulpo-bot` o `mateo` más adelante, piden
+QR nuevo (perfil desde cero, esperado).
+
+**Gotcha nuevo:** `wavi status <session>` **no es garantizado de solo
+lectura** — si no hay daemon corriendo para esa sesión, lanza Chrome headless
+como fallback para poder chequear el auth. Confirmado en vivo: correr `status`
+sobre dos sesiones inactivas las encendió sin querer. Si solo hace falta un
+dato informativo (qué sesiones existen), leer `data/sessions/aliases.json` en
+vez de correr `status` sobre sesiones que no se van a usar.
 
 ## Dónde está la sustancia
 
@@ -92,21 +100,48 @@ de tick icons (✓/✓✓) vía `predict_yolo()` de
 perder la ventaja de velocidad de esta función frente a
 `locate_compose_area()`), acotado a la región de cada fila ya resuelta.
 
+## Estado completo del inventario DOM (`wavi/session.py` líneas ~76-108)
+
+De las 16 señales documentadas ahí, este es el estado real a 2026-09-18:
+
+| Señal DOM | Estado |
+|---|---|
+| `_FIND_COMPOSE_INPUT_JS` / `_CHECK_COMPOSE_EMPTY_JS` / `_CLICK_SEND_BTN_JS` | ✅ `locate_compose_area()` |
+| `_EXTRACT_SIDEBAR_UPDATES_JS` | ✅ `parse_sidebar_rows()` — salvo `direction` |
+| `_EXTRACT_CONTACTS_JS` / `_EXTRACT_VISIBLE_CONTACTS_JS` | ✅ `parse_contacts_panel_rows()` — sin caso de corpus real |
+| `_FETCH_BLOB_JS` / `_DRAIN_JS` | N/A — API de browser pura, nunca necesita visión |
+| `direction` (tick ✓/✓✓ en sidebar) | ❌ Pendiente — necesita detección de íconos (YOLO sin captioning) |
+| `_CLICK_SCROLL_BOTTOM_BTN_JS` | ❌ Pendiente — ícono, sin fallback |
+| `_OPEN_NEW_CHAT_JS` | ❌ Pendiente — **confirmado roto en la sesión real** (WA cambió el ícono) |
+| `_CLOSE_NEW_CHAT_JS` | ❌ Pendiente — ícono |
+| `_CLEAR_SIDEBAR_SEARCH_JS` | ❌ Pendiente — ícono (ya tiene fallback no-visual: click + Escape) |
+| `_GET_VISIBLE_MSG_IDS_JS` | ⚠️ Ya tiene fallback OCR pre-existente en `runner.get()` (no de esta migración) |
+| Scroll state/control (`_CHAT_SCROLL_JS`, `_SCROLL_UP/DOWN_JS`, `_CONTACTS_SCROLL_STATE_JS`, `_SCROLL_CONTACTS_DOWN_JS`) | N/A — solo control de scroll |
+
+**En criollo:** todo lo que queda son señales de **íconos**, ninguna es
+texto — no alcanza con el OCR usado hasta ahora, necesitan detección de
+íconos vía YOLO (sin el captioning de Florence-2, para no perder la ventaja
+de velocidad). Ese es el próximo bloque de trabajo real, no una simple
+continuación del patrón OCR-only usado hasta acá.
+
 ## Después de eso, en orden sugerido (ver plan-mejoras.md §4.8 para el resto)
 
-1. Cablear `locate_compose_area()` + `parse_sidebar_rows()` +
+1. `direction` vía detección de íconos — el corte más chico de los que
+   quedan (la fila ya está resuelta, solo falta el tick).
+2. Sembrar un caso de corpus real con el panel "Nuevo chat" abierto.
+3. Resto de señales de íconos (`_CLICK_SCROLL_BOTTOM_BTN_JS`,
+   `_OPEN_NEW_CHAT_JS` — priorizar, ya confirmado roto —, `_CLOSE_NEW_CHAT_JS`,
+   `_CLEAR_SIDEBAR_SEARCH_JS`) — mismo patrón: detección sobre corpus estático
+   primero, cableado después, por separado.
+4. Cablear `locate_compose_area()` + `parse_sidebar_rows()` +
    `parse_contacts_panel_rows()` a `session.py` como fallback real detrás de
    un flag — con pruebas contra una sesión de staging antes de default-on.
    Primera vez que esto toca código de sesión en vivo.
-2. Resto de la tabla de inventario DOM (todos requieren detección de íconos,
-   no solo OCR): scroll-bottom button, new-chat/back icons, reacciones —
-   mismo patrón: detección sobre corpus estático primero, cableado después,
-   por separado.
-3. Evaluar sumar un VLM (Qwen-VL u otro) como capa de *razonamiento* sobre lo
+5. Evaluar sumar un VLM (Qwen-VL u otro) como capa de *razonamiento* sobre lo
    que OmniParser detecta (§4.6 de plan-mejoras.md) — mantiene la filosofía de
    wavi como harness: vision aporta los "ojos", el agente que invoca wavi sigue
    siendo el "cerebro".
-4. Optimización pendiente, no bloqueante: `parse_screen()` (usado por
+6. Optimización pendiente, no bloqueante: `parse_screen()` (usado por
    `locate_compose_area`) sigue corriendo YOLO en CPU — solo el captioning de
    Florence-2 se movió a MPS. Si el detector de íconos se vuelve el cuello de
    botella, ahí hay margen.
@@ -134,8 +169,9 @@ y `wavi/vision_grounding.py`, pero el resumen rápido:
 
 ```bash
 cd /Users/josetabuyo/Development/wavi
-git log --oneline -5                 # confirmar que seguís en 38ed2be o más nuevo
+git log --oneline -5                 # confirmar que seguís en b848e7f o más nuevo
 make corpus-grounding                # confirmar que el corpus sigue verde
+uv run wavi status default           # confirmar que la sesión real sigue autenticada
 ```
 
 Leer `docs/plan-mejoras.md` §4.8 completo antes de tocar nada — tiene el
