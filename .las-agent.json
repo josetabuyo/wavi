@@ -1,0 +1,47 @@
+{
+  "name": "Wavi",
+  "voice": "Flo (English (US))",
+  "pronunciation": "Wavi",
+  "created": "2026-05-27",
+  "ports": [
+    {
+      "port": 9200,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9201,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9202,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9203,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9204,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9205,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9206,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9207,
+      "app": "WhatsApp CDP daemon"
+    },
+    {
+      "port": 9209,
+      "app": "WhatsApp CDP daemon"
+    }
+  ],
+  "response_length_hint": 40,
+  "short_description": "",
+  "long_description": ""
+}
