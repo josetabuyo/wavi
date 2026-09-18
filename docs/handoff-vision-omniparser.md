@@ -1,10 +1,9 @@
 # Handoff — migración DOM→vision con OmniParser
 
 **Fecha:** 2026-09-18
-**Estado:** working tree con cambios sin commitear al cierre de esta sesión
-(ver "Cómo retomar" para el hash exacto). Suite base verde (241 passed, 26
-skipped), suite de grounding verde (15/15 sobre el corpus incluyendo 3 casos
-nuevos). ruff limpio.
+**Estado:** commit `564bfb8`, `main` al día, working tree limpio. Suite base
+verde (241 passed, 26 skipped), suite de grounding verde (21/21 sobre el
+corpus). ruff limpio.
 
 **Política del proyecto — leer esto antes de tocar cualquier señal DOM rota
 (confirmado explícitamente por el usuario, 2026-09-18):** un fix DOM
@@ -207,7 +206,7 @@ resumen rápido:
 
 ```bash
 cd /Users/josetabuyo/Development/wavi
-git log --oneline -5                 # confirmar el commit de cierre de esta sesión
+git log --oneline -5                 # confirmar que seguís en 564bfb8 o más nuevo
 make corpus-grounding                # confirmar que el corpus sigue verde
 uv run wavi status default           # confirmar que la sesión real sigue autenticada
 ```
