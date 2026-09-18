@@ -228,6 +228,18 @@ el selector se rompe — este ítem es la ejecución de ese roadmap, empezando p
 **microsoft/OmniParser-v2.0** (YOLO icon detector + Florence-2 captioner + EasyOCR),
 cross-platform, no depende de Apple Vision.
 
+El destino de esto no es "un fallback más" por señal — es salir de depender del
+DOM de WhatsApp Web por completo, y hacerlo con el núcleo de detección
+(YOLO + OCR + calibración de layout) suficientemente desacoplado de WA
+específicamente como para que otro chat (Telegram, Slack) se sume escribiendo
+un `ChatAppProfile` nuevo, no reescribiendo la lógica — mucho más robusto a
+largo plazo que web scraping con Playwright sobre un DOM que el proveedor
+cambia sin aviso. Confirmado en la práctica dos veces solo en la sesión del
+2026-09-18: el separador de timestamp (`:` → `.`) y el selector del botón
+"nuevo chat" (ícono → `aria-label`) — ninguno de los dos rompió nada del lado
+de vision. Ver Fase 5 (§6) para el resto de esa visión; §4.8 es la ejecución
+paso a paso, no el destino final.
+
 **Pasos implementados (2026-09-18):**
 1. `wavi/vision_grounding.py::locate_compose_area()` — localiza el compose input
    box y el botón de enviar sobre un screenshot estático, cubriendo el fallback de
