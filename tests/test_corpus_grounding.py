@@ -17,6 +17,7 @@ to be installed; skips cleanly otherwise instead of failing.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -94,8 +95,10 @@ def test_parse_sidebar_rows(case_dir: Path):
     # Field splitting (name/last_message/timestamp) is a heuristic over real
     # OCR output — not every row is guaranteed to yield a non-empty name
     # (e.g. an icon-only cell), so this is a majority smoke check, not an
-    # exact assertion per row. `direction` isn't checked here: it's always
-    # None in this pipeline (see SidebarRow docstring in vision_grounding.py).
+    # exact assertion per row. `direction` has its own dedicated, narrower
+    # test below (test_sidebar_direction_matches_ground_truth) — it's a
+    # noisier heuristic than name/timestamp (see _detect_row_direction's
+    # docstring), so it doesn't get a corpus-wide smoke check here.
     named = sum(1 for row in rows if row["name"].strip())
     assert named >= len(rows) * 0.8, (
         f"{case_dir.name}: only {named}/{len(rows)} rows got a non-empty name"
@@ -113,3 +116,36 @@ def test_parse_sidebar_rows(case_dir: Path):
     # that failure mode without being brittle to sparse, legitimate cases.
     timestamped = sum(1 for row in rows if row["timestamp"].strip())
     assert timestamped >= 1, f"{case_dir.name}: no row got a non-empty timestamp"
+
+
+_DIRECTION_CASES = [d for d in CASES if (d / "expected_direction.json").exists()]
+
+
+@pytest.mark.skipif(not _DIRECTION_CASES, reason="no corpus case has expected_direction.json")
+@pytest.mark.parametrize("case_dir", _DIRECTION_CASES, ids=lambda d: d.name)
+def test_sidebar_direction_matches_ground_truth(case_dir: Path):
+    """`direction` validated against real OCR + real tick icons, not just
+    the synthetic mocks in tests/test_vision_grounding.py. Only asserts the
+    rows a human hand-reviewed and marked unambiguous in
+    expected_direction.json (`outbound_rows`) — this heuristic has known
+    false positives/negatives (see _detect_row_direction's docstring), so
+    this deliberately does NOT assert on every row like test_parse_sidebar_rows
+    does for name/timestamp; existence of ground truth beats broad but noisy
+    coverage here.
+    """
+    from wavi.vision_grounding import parse_sidebar_rows
+
+    rows = parse_sidebar_rows(case_dir / "screenshot.png")
+    if rows is None:
+        pytest.skip("vision-omniparser extra not installed")
+
+    expected = json.loads((case_dir / "expected_direction.json").read_text())
+    by_name = {row["name"].strip(): row for row in rows}
+
+    for entry in expected["outbound_rows"]:
+        name = entry["name"]
+        assert name in by_name, f"{case_dir.name}: expected row {name!r} not found among parsed rows"
+        assert by_name[name]["direction"] == "outbound", (
+            f"{case_dir.name}: row {name!r} ({entry['reason']}) expected outbound, "
+            f"got {by_name[name]['direction']!r}"
+        )

@@ -172,6 +172,7 @@ class TestChatAppProfile:
             row_gap_px=WHATSAPP_WEB.row_gap_px,
             timestamp_re=re.compile(r"^TS-\d+$"),
             timestamp_gap_px=200,  # deliberately large: positional fallback must NOT fire
+            direction_icon_band_px=WHATSAPP_WEB.direction_icon_band_px,
         )
         # Small gap (10px), well under either profile's threshold — only a
         # matching regex can identify "TS-42" as a timestamp here, never the

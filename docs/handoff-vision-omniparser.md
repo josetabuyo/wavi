@@ -2,30 +2,53 @@
 
 **Fecha:** 2026-09-18
 **Estado:** v0.5.0 publicado en PyPI (commit `b848e7f`) + `direction` en
-`parse_sidebar_rows()` implementado en esta sesión (working tree, sin
-commitear/versionar todavía al momento de escribir esto — ver "Cómo retomar").
-Desde v0.4.0 (`38ed2be`) se sumaron, en orden: split de campos de
-`parse_sidebar_rows()` (`4bee0d4`), `parse_contacts_panel_rows()` (`991f286`),
-fix de timestamp validado contra sesión real (`e6181b4`), refactor de
-portabilidad `ChatAppProfile` (`9dab6c8`), bump a v0.5.0 (`b848e7f`),
-`direction` vía YOLO sin captioning (esta sesión, ver abajo). Suite base
-verde (233 passed, 15 skipped — 6 tests nuevos), suite de grounding verde
-(10/10 sobre el corpus, sin regresiones). ruff limpio.
+`parse_sidebar_rows()` implementado y validado contra sesión real en esta
+sesión (ver "Cómo retomar" para el estado del working tree). Desde v0.4.0
+(`38ed2be`) se sumaron, en orden: split de campos de `parse_sidebar_rows()`
+(`4bee0d4`), `parse_contacts_panel_rows()` (`991f286`), fix de timestamp
+validado contra sesión real (`e6181b4`), refactor de portabilidad
+`ChatAppProfile` (`9dab6c8`), bump a v0.5.0 (`b848e7f`), `direction` vía YOLO
+sin captioning + calibración contra sesión real (esta sesión, ver abajo).
+Suite base verde (233 passed, 18 skipped), suite de grounding verde (12/12
+sobre el corpus incluyendo el caso nuevo, sin regresiones). ruff limpio.
 
 **`direction` en `parse_sidebar_rows()` (2026-09-18, esta sesión):** el
-próximo paso recomendado por el handoff anterior. Nuevo helper
-`_detect_row_direction()` en `wavi/vision_grounding.py` — recorta la región a
-la izquierda de la línea de preview de cada fila (ya resuelta por el
-clustering existente) y corre `predict_yolo()` (YOLO puro, sin Florence-2)
-sobre ese recorte acotado: si detecta algún ícono ahí, WA solo dibuja eso para
-mensajes salientes, así que es `"outbound"`; si no, `"inbound"`. `None` si no
-hay línea de preview para anclar la búsqueda, o si faltan los pesos de
-`icon_detect` (nuevo `_yolo_available()`, no exige también el captioner de
-Florence-2 como `_models_available()`). `_load_models()` se separó en
-`_load_yolo_model()` + carga del captioner para que esta función no pague el
-costo de cargar Florence-2. 6 tests unitarios nuevos (mocks, sin pesos). **Sin
-validar todavía contra un caso de corpus real con mensajes salientes** — ver
-"Próximo paso recomendado" abajo, es el hueco más obvio que queda.
+próximo paso recomendado por el handoff anterior, implementado y luego
+calibrado contra sesión real en la misma sesión. Nuevo helper
+`_detect_row_direction()` en `wavi/vision_grounding.py` — recorta una banda
+acotada (`profile.direction_icon_band_px`, 40px) inmediatamente a la
+izquierda de la línea de preview de cada fila y corre `predict_yolo()` (YOLO
+puro, sin Florence-2) sobre ese recorte: si detecta algún ícono ahí, WA solo
+dibuja eso para mensajes salientes, así que es `"outbound"`; si no,
+`"inbound"`. `None` si no hay línea de preview para anclar la búsqueda, o si
+faltan los pesos de `icon_detect` (nuevo `_yolo_available()`, no exige
+también el captioner de Florence-2 como `_models_available()`).
+`_load_models()` se separó en `_load_yolo_model()` + carga del captioner para
+que esta función no pague el costo de cargar Florence-2.
+
+**Calibración contra sesión real, mismo día:** la primera versión recortaba
+todo el hueco entre `x=0` y el texto de preview (no solo una banda) — el
+detector marcaba la foto de perfil circular de cada fila como "ícono" casi
+siempre, dando `"outbound"` en ~95% de las filas. Detectado corriendo contra
+un screenshot fresco del sidebar **sin filtro de búsqueda** (`wavi
+check-updates default`, solo lectura — los 5 casos de corpus previos son
+resultados de búsqueda filtrados a 1 contacto, ninguno servía para esto).
+Con la banda acotada a 40px: 1/1 fila confirmada visualmente como saliente
+detectada bien, 18/21 correctamente `"inbound"`, 2 falsos positivos
+residuales (ícono de adjunto —cámara— antes de "Foto" en mensajes
+*entrantes*, indistinguible de un tick sin captioning). Encontró además un
+**falso negativo real**: EasyOCR a veces lee el tick (✓✓) como caracteres
+sueltos dentro del propio texto de preview (`"✓✓ Jll18 DE 21"` → OCR:
+`"V/ JII18 DE 21"`), con lo cual el tick queda *dentro* del bbox al que esta
+función ancla el recorte, no a la izquierda — un caso conocido pendiente, no
+arreglado. Todo esto documentado en el docstring de `_detect_row_direction`
+como limitación conocida — el resultado es una señal best-effort, no verdad
+de referencia. Nuevo caso de corpus real (gitignorado)
+`tests/corpus/cases/sidebar_full_000/` +
+`expected_direction.json` (solo la fila sin ambigüedad visual) +
+`test_sidebar_direction_matches_ground_truth()` en
+`tests/test_corpus_grounding.py`. 6 tests unitarios nuevos en
+`tests/test_vision_grounding.py` (mocks, sin pesos).
 
 **Sesión real conectada:** `wavi qr default` (22793010001200) escaneado y
 autenticado este mismo día — primera vez que este trabajo se validó contra
@@ -79,9 +102,11 @@ vez de correr `status` sobre sesiones que no se van a usar.
    / `_CLICK_SEND_BTN_JS` (tabla de inventario DOM en `wavi/session.py` líneas ~76-108).
 2. `parse_sidebar_rows(screenshot_path)` → lista de filas
    `{"bbox": {...}, "text": str, "name": str, "last_message": str, "timestamp": str,
-   "direction": None}` o `None`. Cubre el fallback de `_EXTRACT_SIDEBAR_UPDATES_JS`.
-   Ya separa name/last_message/timestamp (helper `_split_row_fields()` en
-   `vision_grounding.py`). `direction` queda siempre `None` — ver abajo.
+   "direction": "inbound" | "outbound" | None}` o `None`. Cubre el fallback de
+   `_EXTRACT_SIDEBAR_UPDATES_JS`. name/last_message/timestamp via
+   `_split_row_fields()`; `direction` via `_detect_row_direction()` (YOLO sin
+   captioning, calibrado contra sesión real, falsos +/- conocidos — ver
+   docstring y "Próximo paso recomendado" abajo).
 3. `parse_contacts_panel_rows(screenshot_path)` → lista de filas
    `{"bbox": {...}, "name": str, "subtitle": str}` o `None`. Cubre el fallback
    de `_EXTRACT_CONTACTS_JS` / `_EXTRACT_VISIBLE_CONTACTS_JS` (panel "Nuevo
@@ -105,18 +130,26 @@ generalización en sí (ver Fase 5 de plan-mejoras.md).
 
 ## Próximo paso recomendado (el más chico, más obvio)
 
-Validar `_detect_row_direction()` (implementado esta sesión) contra un caso
-de corpus real: un screenshot del sidebar con al menos una fila saliente
-(mensaje propio, tick visible) y un `expected.json` que marque qué filas son
-`"outbound"` vs. `"inbound"` — hoy la función solo tiene cobertura unitaria
-sintética (mocks de `predict_yolo`), nunca corrió contra un ícono de tick
-real. Mismo patrón que faltó documentar para `parse_contacts_panel_rows` en
-su momento; no repetir ese hueco acá.
+Sembrar un caso de corpus real con el panel "Nuevo chat" abierto (screenshot +
+`expected.json`, mismo formato que `tests/corpus/cases/`) y correr
+`parse_contacts_panel_rows()` contra él — sigue siendo la única de las tres
+funciones sin ningún caso de corpus real (ver tabla abajo). Mismo patrón ya
+usado dos veces esta sesión: `wavi check-updates default` da un screenshot
+del sidebar, pero el panel "Nuevo chat" no tiene un comando CLI de solo
+lectura equivalente hoy — hay que revisar si algún comando existente lo abre
+de paso, o si hace falta un click manual (mayor riesgo, ver
+`wa-session-guard`) para capturarlo.
 
-Alternativa igual de chica: sembrar un caso de corpus real con el panel
-"Nuevo chat" abierto (screenshot + `expected.json`, mismo formato que
-`tests/corpus/cases/`) y correr `parse_contacts_panel_rows()` contra él —
-sigue sin caso real, ver tabla abajo.
+Alternativa igual de chica: mejorar la precisión de `_detect_row_direction()`
+(implementada y calibrada esta sesión, ver abajo) — tiene falsos
+positivos/negativos conocidos y documentados, no bloqueante hoy porque nada
+la consume todavía, pero sería el paso obvio si `direction` se vuelve crítico
+para algún caller. Dos ideas concretas ya identificadas: filtrar por
+tamaño/aspect-ratio del box detectado (un tick es chico y ~cuadrado, un
+ícono de adjunto tiende a ser más grande) para reducir falsos positivos; y
+para el falso negativo (OCR mete el tick dentro del texto), buscar patrones
+como `"V/ "` o `"✓✓ "` al inicio de la línea de preview además de la
+detección de ícono.
 
 ## Estado completo del inventario DOM (`wavi/session.py` líneas ~76-108)
 
@@ -128,7 +161,7 @@ De las 16 señales documentadas ahí, este es el estado real a 2026-09-18:
 | `_EXTRACT_SIDEBAR_UPDATES_JS` | ✅ `parse_sidebar_rows()`, incluido `direction` |
 | `_EXTRACT_CONTACTS_JS` / `_EXTRACT_VISIBLE_CONTACTS_JS` | ✅ `parse_contacts_panel_rows()` — sin caso de corpus real |
 | `_FETCH_BLOB_JS` / `_DRAIN_JS` | N/A — API de browser pura, nunca necesita visión |
-| `direction` (tick ✓/✓✓ en sidebar) | ✅ `_detect_row_direction()` (YOLO sin captioning) — sin caso de corpus real todavía |
+| `direction` (tick ✓/✓✓ en sidebar) | ✅ `_detect_row_direction()` (YOLO sin captioning) — validado contra 1 caso de corpus real, falsos +/- conocidos y documentados |
 | `_CLICK_SCROLL_BOTTOM_BTN_JS` | ❌ Pendiente — ícono, sin fallback |
 | `_OPEN_NEW_CHAT_JS` | ❌ Pendiente — **confirmado roto en la sesión real** (WA cambió el ícono) |
 | `_CLOSE_NEW_CHAT_JS` | ❌ Pendiente — ícono |
@@ -144,10 +177,11 @@ continuación del patrón OCR-only usado hasta acá.
 
 ## Después de eso, en orden sugerido (ver plan-mejoras.md §4.8 para el resto)
 
-1. ~~`direction` vía detección de íconos~~ ✅ implementado esta sesión
-   (2026-09-18) — falta validarlo contra un caso de corpus real (ver "Próximo
-   paso recomendado" arriba).
-2. Sembrar un caso de corpus real con el panel "Nuevo chat" abierto.
+1. ~~`direction` vía detección de íconos~~ ✅ implementado y calibrado contra
+   sesión real esta sesión (2026-09-18) — falsos +/- conocidos, ver detalle
+   arriba.
+2. Sembrar un caso de corpus real con el panel "Nuevo chat" abierto — ver
+   "Próximo paso recomendado" arriba.
 3. Resto de señales de íconos (`_CLICK_SCROLL_BOTTOM_BTN_JS`,
    `_OPEN_NEW_CHAT_JS` — priorizar, ya confirmado roto —, `_CLOSE_NEW_CHAT_JS`,
    `_CLEAR_SIDEBAR_SEARCH_JS`) — mismo patrón: detección sobre corpus estático

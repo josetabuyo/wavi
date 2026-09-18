@@ -339,31 +339,66 @@ en `wavi/_vendor/omniparser_utils.py`: **585s → 118s corriendo el corpus compl
 ahora detecta `direction` con `_detect_row_direction()` — usa `predict_yolo()`
 de `wavi/_vendor/omniparser_utils.py` **sin** Florence-2 (mantiene la ventaja
 de velocidad frente a `locate_compose_area()`). No identifica *qué* ícono es
-(single/double tick, leído/no leído) — solo si WA dibujó alguno inmediatamente
-a la izquierda del texto de preview del mensaje, algo que WA solo hace para
-mensajes salientes. Recorta la región entre el borde izquierdo de la columna y
-el inicio de la línea de preview (usando el bbox de esa línea, ya resuelto por
-`_cluster_by_y_overlap`), corre `predict_yolo()` sobre ese recorte acotado
-(no la imagen completa) y devuelve `"outbound"` si detecta algo, `"inbound"`
-si no. Devuelve `None` si la fila no tiene línea de preview (nada para anclar
-la búsqueda) o si faltan los pesos de `icon_detect` (nuevo helper
-`_yolo_available()`, separado de `_models_available()` que exige también el
-captioner). `_load_models()` se refactorizó en dos pasos (`_load_yolo_model()`
-+ captioner) para que esta función cargue solo YOLO, no el pipeline completo.
-6 tests unitarios nuevos en `tests/test_vision_grounding.py` (mockean
+(single/double tick, leído/no leído) — solo si WA dibujó alguno en una banda
+acotada inmediatamente a la izquierda del texto de preview del mensaje, algo
+que WA solo hace para mensajes salientes. Devuelve `None` si la fila no tiene
+línea de preview (nada para anclar la búsqueda) o si faltan los pesos de
+`icon_detect` (nuevo helper `_yolo_available()`, separado de
+`_models_available()` que exige también el captioner). `_load_models()` se
+refactorizó en dos pasos (`_load_yolo_model()` + captioner) para que esta
+función cargue solo YOLO, no el pipeline completo.
+
+**Validado contra sesión real (2026-09-18, mismo día):** se capturó un
+screenshot fresco del sidebar **sin filtro de búsqueda** con `wavi
+check-updates default` (solo lectura, mismo patrón que la validación anterior
+de `parse_sidebar_rows`) — los 5 casos de corpus previos son todos resultados
+de búsqueda filtrados a 1 contacto, ninguno mostraba una fila con tick real.
+Nuevo caso `tests/corpus/cases/sidebar_full_000/` (gitignorado, igual que el
+resto). Esto expuso dos bugs reales que la cobertura sintética no podía
+atrapar:
+1. **Primera versión recortaba de x=0 hasta el texto de preview** (todo el
+   hueco a la izquierda) — el detector de íconos marca la foto de perfil
+   circular de cada fila como "ícono" casi siempre, dando `"outbound"` en
+   ~95% de las filas (falso positivo masivo). Fix: acotar el recorte a
+   `profile.direction_icon_band_px` (40px, nuevo campo de `ChatAppProfile`,
+   calibrado contra este screenshot — el tick real está ~15-20px del texto,
+   el avatar arranca ~60-70px más a la izquierda, 40px separa ambos con
+   margen). Con el fix: 1/1 fila confirmada visualmente como saliente
+   (Javier Lurgo, doble tick azul) detectada correctamente, 18/21 filas
+   correctamente `"inbound"`, 2 falsos positivos residuales (íconos de
+   adjunto —cámara— antes de "Foto" en mensajes entrantes, indistinguibles
+   de un tick sin captioning).
+2. **Falso negativo encontrado en el mismo screenshot:** EasyOCR a veces lee
+   el propio tick (✓✓) como caracteres sueltos al principio de la línea de
+   preview (`"✓✓ Jll18 DE 21"` → OCR devolvió `"V/ JII18 DE 21"`) — cuando
+   pasa esto, los píxeles del tick quedan *dentro* del bbox de OCR al que
+   esta función ancla el recorte, no a la izquierda, así que una fila
+   realmente saliente puede seguir dando `"inbound"`.
+Documentado explícitamente en el docstring de `_detect_row_direction` como
+limitación conocida, no oculto — el resultado es una señal best-effort, no
+verdad de referencia; un caller que necesite certeza debería caer a
+captioning Florence-2 (pagando el costo de velocidad) u otra señal. Nuevo
+`tests/corpus/cases/sidebar_full_000/expected_direction.json` con la única
+fila confirmada sin ambigüedad visual (Javier Lurgo → outbound) y
+`test_sidebar_direction_matches_ground_truth()` en
+`tests/test_corpus_grounding.py` que la valida — deliberadamente no exige
+que todas las filas del corpus acierten (a diferencia de name/timestamp),
+dado lo ruidoso del heurístico. 6 tests unitarios nuevos en
+`tests/test_vision_grounding.py` (mockean
 `_yolo_available`/`_load_yolo_model`/`predict_yolo`, no requieren pesos).
-**Sin validar todavía contra un caso de corpus real con mensajes salientes**
-— el corpus existente no tiene certeza de qué filas son outbound (no hay
-`expected.json` con esa verdad de referencia); ver pendiente #2 abajo.
 
 **Pendiente (próximos pasos, uno a la vez):**
 1. Cablear `locate_compose_area()` y `parse_sidebar_rows()` a `session.py` como
    fallback real detrás de un flag, con pruebas contra una sesión de staging
    antes de default-on.
-2. Validar `direction` contra un caso de corpus real con `expected.json` que
-   marque qué filas son outbound (mensaje propio) vs. inbound — hoy solo hay
-   cobertura unitaria sintética, igual que `parse_contacts_panel_rows` cuando
-   se implementó.
+2. ~~Validar `direction` contra un caso de corpus real~~ ✅ hecho
+   (2026-09-18, `sidebar_full_000`) — pero solo cubre 1 fila sin ambigüedad;
+   mejorar precisión sigue abierto: reducir falsos positivos (filtrar por
+   tamaño/aspect-ratio del box detectado para descartar íconos de adjunto,
+   que suelen ser más grandes/cuadrados que un tick) y falsos negativos
+   (cuando OCR mete el tick dentro del bbox de texto) sería la continuación
+   natural si `direction` termina siendo crítico para algún caller; no
+   bloqueante hoy porque nada lo consume todavía (pendiente #1 de esta lista).
 3. Sembrar un caso de corpus con el panel "Nuevo chat" abierto y correr
    `parse_contacts_panel_rows()` contra él (2026-09-18: implementado, solo
    validado sintéticamente).

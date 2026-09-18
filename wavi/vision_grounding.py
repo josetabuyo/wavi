@@ -100,6 +100,7 @@ class ChatAppProfile:
     row_gap_px: int
     timestamp_re: re.Pattern[str]
     timestamp_gap_px: int
+    direction_icon_band_px: int
 
 
 # Footer band where the compose input + send button live, as a fraction of
@@ -150,6 +151,22 @@ _RE_TIMESTAMP = re.compile(r'\d{1,2}[:.]\d{2}(?:\s*(a|p)\.?\s*m\.?)?', re.I)
 # comfortably between the two, not derived from first principles.
 _TIMESTAMP_GAP_PX = 60
 
+# Width (px) of the icon-search crop in _detect_row_direction, measured
+# leftward from the message-preview text's left edge. Calibrated against a
+# real, unfiltered sidebar screenshot (2026-09-18, tests/corpus/cases/
+# sidebar_full_000): the delivery-tick icon sits ~15-20px left of the
+# preview text, while each row's avatar image sits much further left
+# (roughly x=8-64px in a 580px-wide column, vs. preview text starting
+# ~150-170px in). A too-wide band (tried 0..x0, i.e. unbounded) caught the
+# avatar itself, which OmniParser's icon detector reliably flags as an
+# icon — false-"outbound" on nearly every row. 40px clears the avatar with
+# comfortable margin while still covering the tick. Not perfectly precise
+# even at this width: other small icons WA draws in roughly the same spot
+# for reasons unrelated to direction (e.g. an attachment-type glyph before
+# "Foto"/"video" on a received media message) occasionally trigger a false
+# "outbound" too — see _detect_row_direction's docstring.
+_DIRECTION_ICON_BAND_PX = 40
+
 # The only profile in use today — see ChatAppProfile's docstring. Every
 # function below defaults to this, so passing no `profile` argument keeps
 # today's exact WA Web behavior.
@@ -161,6 +178,7 @@ WHATSAPP_WEB = ChatAppProfile(
     row_gap_px=SIDEBAR_ROW_GAP_PX,
     timestamp_re=_RE_TIMESTAMP,
     timestamp_gap_px=_TIMESTAMP_GAP_PX,
+    direction_icon_band_px=_DIRECTION_ICON_BAND_PX,
 )
 
 
@@ -524,6 +542,32 @@ def _detect_row_direction(
     would otherwise erase parse_sidebar_rows' speed advantage over
     locate_compose_area() for no benefit (see docs/plan-mejoras.md §4.8).
 
+    The search crop is `profile.direction_icon_band_px` wide, measured
+    leftward from the preview text's left edge — NOT the whole gap back to
+    the row's left edge. An earlier version used the full gap and got a
+    false "outbound" on nearly every row: each row's avatar image sits in
+    that same gap, further left, and OmniParser's icon detector reliably
+    flags a circular avatar as an icon too. Narrowing to just the band next
+    to the text clears the avatar (see `_DIRECTION_ICON_BAND_PX`'s comment
+    for the real screenshot this was calibrated against).
+
+    **Known limitations, confirmed against a real sidebar screenshot
+    (2026-09-18, tests/corpus/cases/sidebar_full_000):**
+    - **False positives:** even narrowed, this is icon *presence*, not
+      identity — WA occasionally draws a different small icon in roughly the
+      same spot for reasons unrelated to direction (e.g. an attachment-type
+      glyph before "Foto"/"video" on a *received* media message), which this
+      function cannot tell apart from a tick without captioning.
+    - **False negatives:** EasyOCR sometimes misreads the tick glyph(s)
+      themselves as stray leading characters of the preview line (observed:
+      "✓✓" read as "V/", giving `"V/ JII18 DE 21"`) — when that happens the
+      tick's pixels fall *inside* the OCR text bbox this function anchors to,
+      not in the crop band to its left, so a real outbound row can still
+      come back "inbound".
+    Treat the result as a best-effort signal, not ground truth — a caller
+    that needs certainty should fall back to Florence-2 captioning
+    (accepting the speed cost) or another signal.
+
     `image` is a PIL Image already opened by the caller (parse_sidebar_rows
     opens it once and reuses it across every row, rather than reopening the
     file per row). `elements` are one row's OCR elements in full-image pixel
@@ -547,10 +591,11 @@ def _detect_row_direction(
     x0 = min(el["bbox"][0] for el in preview_line)
     y0 = min(el["bbox"][1] for el in preview_line)
     y1 = max(el["bbox"][3] for el in preview_line)
-    if x0 < 4:
+    band_x0 = x0 - profile.direction_icon_band_px
+    if band_x0 < 0:
         return "inbound"  # no room left of the preview text for a tick icon
 
-    region = image.crop((0, max(0, y0 - 4), x0, y1 + 4))
+    region = image.crop((band_x0, max(0, y0 - 4), x0, y1 + 4))
     if region.width < 4 or region.height < 4:
         return "inbound"
 
