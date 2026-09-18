@@ -1,14 +1,31 @@
 # Handoff — migración DOM→vision con OmniParser
 
 **Fecha:** 2026-09-18
-**Estado:** **v0.5.0 publicado en PyPI** (commit `b848e7f`, `main` al día).
+**Estado:** v0.5.0 publicado en PyPI (commit `b848e7f`) + `direction` en
+`parse_sidebar_rows()` implementado en esta sesión (working tree, sin
+commitear/versionar todavía al momento de escribir esto — ver "Cómo retomar").
 Desde v0.4.0 (`38ed2be`) se sumaron, en orden: split de campos de
 `parse_sidebar_rows()` (`4bee0d4`), `parse_contacts_panel_rows()` (`991f286`),
 fix de timestamp validado contra sesión real (`e6181b4`), refactor de
-portabilidad `ChatAppProfile` (`9dab6c8`), bump a v0.5.0 (`b848e7f`). Suite
-base verde (227 passed, 15 skipped), suite de grounding verde (10/10 sobre el
-corpus). Todo commiteado, pusheado y publicado — nada pendiente en el working
-tree al cierre de esta sesión.
+portabilidad `ChatAppProfile` (`9dab6c8`), bump a v0.5.0 (`b848e7f`),
+`direction` vía YOLO sin captioning (esta sesión, ver abajo). Suite base
+verde (233 passed, 15 skipped — 6 tests nuevos), suite de grounding verde
+(10/10 sobre el corpus, sin regresiones). ruff limpio.
+
+**`direction` en `parse_sidebar_rows()` (2026-09-18, esta sesión):** el
+próximo paso recomendado por el handoff anterior. Nuevo helper
+`_detect_row_direction()` en `wavi/vision_grounding.py` — recorta la región a
+la izquierda de la línea de preview de cada fila (ya resuelta por el
+clustering existente) y corre `predict_yolo()` (YOLO puro, sin Florence-2)
+sobre ese recorte acotado: si detecta algún ícono ahí, WA solo dibuja eso para
+mensajes salientes, así que es `"outbound"`; si no, `"inbound"`. `None` si no
+hay línea de preview para anclar la búsqueda, o si faltan los pesos de
+`icon_detect` (nuevo `_yolo_available()`, no exige también el captioner de
+Florence-2 como `_models_available()`). `_load_models()` se separó en
+`_load_yolo_model()` + carga del captioner para que esta función no pague el
+costo de cargar Florence-2. 6 tests unitarios nuevos (mocks, sin pesos). **Sin
+validar todavía contra un caso de corpus real con mensajes salientes** — ver
+"Próximo paso recomendado" abajo, es el hueco más obvio que queda.
 
 **Sesión real conectada:** `wavi qr default` (22793010001200) escaneado y
 autenticado este mismo día — primera vez que este trabajo se validó contra
@@ -88,17 +105,18 @@ generalización en sí (ver Fase 5 de plan-mejoras.md).
 
 ## Próximo paso recomendado (el más chico, más obvio)
 
-Sembrar un caso de corpus real con el panel "Nuevo chat" abierto (screenshot +
-`expected.json`, mismo formato que `tests/corpus/cases/`) y correr
-`parse_contacts_panel_rows()` contra él, igual que se hizo para
-`parse_sidebar_rows` — hoy esa función solo tiene cobertura sintética, no
-validación contra OCR real de WhatsApp Web.
+Validar `_detect_row_direction()` (implementado esta sesión) contra un caso
+de corpus real: un screenshot del sidebar con al menos una fila saliente
+(mensaje propio, tick visible) y un `expected.json` que marque qué filas son
+`"outbound"` vs. `"inbound"` — hoy la función solo tiene cobertura unitaria
+sintética (mocks de `predict_yolo`), nunca corrió contra un ícono de tick
+real. Mismo patrón que faltó documentar para `parse_contacts_panel_rows` en
+su momento; no repetir ese hueco acá.
 
-Alternativa igual de chica: `direction` en `parse_sidebar_rows()` — detección
-de tick icons (✓/✓✓) vía `predict_yolo()` de
-`wavi/_vendor/omniparser_utils.py` (boxes de YOLO sin captioning, para no
-perder la ventaja de velocidad de esta función frente a
-`locate_compose_area()`), acotado a la región de cada fila ya resuelta.
+Alternativa igual de chica: sembrar un caso de corpus real con el panel
+"Nuevo chat" abierto (screenshot + `expected.json`, mismo formato que
+`tests/corpus/cases/`) y correr `parse_contacts_panel_rows()` contra él —
+sigue sin caso real, ver tabla abajo.
 
 ## Estado completo del inventario DOM (`wavi/session.py` líneas ~76-108)
 
@@ -107,10 +125,10 @@ De las 16 señales documentadas ahí, este es el estado real a 2026-09-18:
 | Señal DOM | Estado |
 |---|---|
 | `_FIND_COMPOSE_INPUT_JS` / `_CHECK_COMPOSE_EMPTY_JS` / `_CLICK_SEND_BTN_JS` | ✅ `locate_compose_area()` |
-| `_EXTRACT_SIDEBAR_UPDATES_JS` | ✅ `parse_sidebar_rows()` — salvo `direction` |
+| `_EXTRACT_SIDEBAR_UPDATES_JS` | ✅ `parse_sidebar_rows()`, incluido `direction` |
 | `_EXTRACT_CONTACTS_JS` / `_EXTRACT_VISIBLE_CONTACTS_JS` | ✅ `parse_contacts_panel_rows()` — sin caso de corpus real |
 | `_FETCH_BLOB_JS` / `_DRAIN_JS` | N/A — API de browser pura, nunca necesita visión |
-| `direction` (tick ✓/✓✓ en sidebar) | ❌ Pendiente — necesita detección de íconos (YOLO sin captioning) |
+| `direction` (tick ✓/✓✓ en sidebar) | ✅ `_detect_row_direction()` (YOLO sin captioning) — sin caso de corpus real todavía |
 | `_CLICK_SCROLL_BOTTOM_BTN_JS` | ❌ Pendiente — ícono, sin fallback |
 | `_OPEN_NEW_CHAT_JS` | ❌ Pendiente — **confirmado roto en la sesión real** (WA cambió el ícono) |
 | `_CLOSE_NEW_CHAT_JS` | ❌ Pendiente — ícono |
@@ -126,8 +144,9 @@ continuación del patrón OCR-only usado hasta acá.
 
 ## Después de eso, en orden sugerido (ver plan-mejoras.md §4.8 para el resto)
 
-1. `direction` vía detección de íconos — el corte más chico de los que
-   quedan (la fila ya está resuelta, solo falta el tick).
+1. ~~`direction` vía detección de íconos~~ ✅ implementado esta sesión
+   (2026-09-18) — falta validarlo contra un caso de corpus real (ver "Próximo
+   paso recomendado" arriba).
 2. Sembrar un caso de corpus real con el panel "Nuevo chat" abierto.
 3. Resto de señales de íconos (`_CLICK_SCROLL_BOTTOM_BTN_JS`,
    `_OPEN_NEW_CHAT_JS` — priorizar, ya confirmado roto —, `_CLOSE_NEW_CHAT_JS`,

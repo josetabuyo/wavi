@@ -180,24 +180,36 @@ _yolo_model = None
 _caption_model_processor = None
 
 
+def _yolo_available() -> bool:
+    return (WEIGHTS_DIR / "icon_detect" / "model.pt").exists()
+
+
 def _models_available() -> bool:
-    return (WEIGHTS_DIR / "icon_detect" / "model.pt").exists() and (
-        WEIGHTS_DIR / "icon_caption_florence"
-    ).exists()
+    return _yolo_available() and (WEIGHTS_DIR / "icon_caption_florence").exists()
+
+
+def _load_yolo_model():
+    """Lazily loads + caches just the YOLO icon detector — no Florence-2
+    captioner. Shared by `_load_models` (full pipeline) and
+    `_detect_row_direction` (icon presence only, no captioning cost)."""
+    global _yolo_model
+    if _yolo_model is None:
+        from wavi._vendor.omniparser_utils import get_yolo_model
+
+        _yolo_model = get_yolo_model(str(WEIGHTS_DIR / "icon_detect" / "model.pt"))
+    return _yolo_model
 
 
 def _load_models():
     """Lazily loads + caches the YOLO detector and Florence-2 captioner.
     Raises ImportError if the vision-omniparser extra isn't installed."""
-    global _yolo_model, _caption_model_processor
-    if _yolo_model is not None:
-        return _yolo_model, _caption_model_processor
+    global _caption_model_processor
+    yolo_model = _load_yolo_model()
+    if _caption_model_processor is None:
+        from wavi._vendor.omniparser_utils import get_caption_model_processor
 
-    from wavi._vendor.omniparser_utils import get_caption_model_processor, get_yolo_model
-
-    _yolo_model = get_yolo_model(str(WEIGHTS_DIR / "icon_detect" / "model.pt"))
-    _caption_model_processor = get_caption_model_processor(str(WEIGHTS_DIR / "icon_caption_florence"))
-    return _yolo_model, _caption_model_processor
+        _caption_model_processor = get_caption_model_processor(str(WEIGHTS_DIR / "icon_caption_florence"))
+    return yolo_model, _caption_model_processor
 
 
 def _to_pixel_bbox(bbox_ratio: list[float], img_w: int, img_h: int) -> ElementBox:
@@ -387,13 +399,10 @@ class SidebarRow(TypedDict):
     name: str
     last_message: str
     timestamp: str
-    # Always None in this cut: telling inbound from outbound needs the
-    # delivery-tick icon (✓/✓✓), which this OCR-only pipeline can't see —
-    # detecting it needs icon detection (YOLO), not just text. Deliberately
-    # not adding Florence-2 captioning to get it, since that would erase this
-    # function's speed advantage over locate_compose_area(). See
-    # docs/plan-mejoras.md §4.8 for the planned follow-up (likely
-    # predict_yolo() without captioning).
+    # Detected via _detect_row_direction() — presence of a delivery-tick icon
+    # (✓/✓✓, YOLO-only, no Florence-2 captioning) immediately left of the
+    # message preview text. None if the row has no preview line to anchor the
+    # search to, or if the vision-omniparser extra/weights aren't installed.
     direction: Literal["inbound", "outbound"] | None
 
 
@@ -503,12 +512,66 @@ def _row_elements(row: list[tuple[str, tuple[int, int, int, int]]]) -> list[dict
     return [{"content": content, "bbox": list(bbox)} for content, bbox in row]
 
 
+def _detect_row_direction(
+    image, elements: list[dict], profile: ChatAppProfile = WHATSAPP_WEB
+) -> Literal["inbound", "outbound"] | None:
+    """Detects whether a sidebar row's last message was sent (outbound) or
+    received (inbound) by looking for a delivery-tick icon (✓/✓✓) WA Web
+    draws immediately to the left of the message preview text — only for
+    messages the user sent, never for received ones. We only need to know
+    *that* WA drew an icon there, not *which* icon — so this uses
+    `predict_yolo()` alone, skipping Florence-2 captioning entirely, which
+    would otherwise erase parse_sidebar_rows' speed advantage over
+    locate_compose_area() for no benefit (see docs/plan-mejoras.md §4.8).
+
+    `image` is a PIL Image already opened by the caller (parse_sidebar_rows
+    opens it once and reuses it across every row, rather than reopening the
+    file per row). `elements` are one row's OCR elements in full-image pixel
+    coordinates, same as `_split_row_fields` takes.
+
+    Returns None if the row has no preview line to anchor the search region
+    to, or if the vision-omniparser extra/weights aren't installed (never
+    raises for either reason).
+    """
+    if not _yolo_available():
+        return None
+
+    lines = sorted(
+        _cluster_by_y_overlap(elements),
+        key=lambda line: min(el["bbox"][1] for el in line),
+    )
+    if len(lines) < 2:
+        return None  # no preview line — nothing to anchor the icon search to
+
+    preview_line = lines[1]
+    x0 = min(el["bbox"][0] for el in preview_line)
+    y0 = min(el["bbox"][1] for el in preview_line)
+    y1 = max(el["bbox"][3] for el in preview_line)
+    if x0 < 4:
+        return "inbound"  # no room left of the preview text for a tick icon
+
+    region = image.crop((0, max(0, y0 - 4), x0, y1 + 4))
+    if region.width < 4 or region.height < 4:
+        return "inbound"
+
+    try:
+        from wavi._vendor.omniparser_utils import predict_yolo
+    except ImportError:
+        return None
+
+    yolo_model = _load_yolo_model()
+    boxes, _conf = predict_yolo(
+        model=yolo_model, image=region, box_threshold=0.15, imgsz=640, iou_threshold=0.1
+    )
+    return "outbound" if len(boxes) > 0 else "inbound"
+
+
 def parse_sidebar_rows(
     screenshot_path: Path, profile: ChatAppProfile = WHATSAPP_WEB
 ) -> list[SidebarRow] | None:
     """OCR-clusters the WA Web sidebar (chat list) into rows, then splits
-    each row into name / last_message / timestamp (see `_split_row_fields`).
-    `direction` is always None here — see the SidebarRow docstring for why.
+    each row into name / last_message / timestamp (see `_split_row_fields`)
+    and detects `direction` (see `_detect_row_direction`).
 
     Row boundaries (one row per chat cell) are the hard part of this
     function — arbitrary text layout, no DOM structure to lean on. Field
@@ -522,18 +585,23 @@ def parse_sidebar_rows(
     if rows is None:
         return None
 
-    result: list[SidebarRow] = []
-    for row in rows:
-        text = " | ".join(c for c, _b in sorted(row, key=lambda item: item[1][0]))
-        name, last_message, timestamp = _split_row_fields(_row_elements(row), profile)
-        result.append({
-            "bbox": _row_bbox(row),
-            "text": text,
-            "name": name,
-            "last_message": last_message,
-            "timestamp": timestamp,
-            "direction": None,
-        })
+    from PIL import Image
+
+    with Image.open(screenshot_path) as image:
+        result: list[SidebarRow] = []
+        for row in rows:
+            text = " | ".join(c for c, _b in sorted(row, key=lambda item: item[1][0]))
+            elements = _row_elements(row)
+            name, last_message, timestamp = _split_row_fields(elements, profile)
+            direction = _detect_row_direction(image, elements, profile)
+            result.append({
+                "bbox": _row_bbox(row),
+                "text": text,
+                "name": name,
+                "last_message": last_message,
+                "timestamp": timestamp,
+                "direction": direction,
+            })
     return result
 
 

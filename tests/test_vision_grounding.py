@@ -10,10 +10,14 @@ por WAVI_CORPUS=1).
 """
 import re
 
+from PIL import Image
+
+from wavi import vision_grounding as vg
 from wavi.vision_grounding import (
     WHATSAPP_WEB,
     ChatAppProfile,
     _cluster_by_y_overlap,
+    _detect_row_direction,
     _split_contact_fields,
     _split_row_fields,
 )
@@ -231,3 +235,67 @@ class TestSplitContactFields:
         name, subtitle = _split_contact_fields(elements)
         assert name == "Ana"
         assert subtitle == "últ. vez hoy a las 10:17 a. m."
+
+
+# ── _detect_row_direction ────────────────────────────────────────────────────
+# Mocks _yolo_available/_load_yolo_model/predict_yolo — no weights or torch
+# behavior actually exercised here, just the crop-region + presence logic.
+# End-to-end validation against real icons belongs in test_corpus_grounding.py
+# once a corpus case captures both directions (see docs/plan-mejoras.md §4.8).
+
+class TestDetectRowDirection:
+    def _image(self, w=300, h=100):
+        return Image.new("RGB", (w, h))
+
+    def test_no_preview_line_returns_none(self, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        elements = [_el("Solo nombre", 0, 10, 100, 30)]
+        assert _detect_row_direction(self._image(), elements) is None
+
+    def test_empty_row_returns_none(self, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        assert _detect_row_direction(self._image(), []) is None
+
+    def test_weights_missing_returns_none(self, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: False)
+        elements = [
+            _el("Ana", 0, 10, 40, 30),
+            _el("Nos vemos mañana", 40, 50, 150, 70),
+        ]
+        assert _detect_row_direction(self._image(), elements) is None
+
+    def test_no_room_left_of_preview_text_is_inbound(self, monkeypatch):
+        # Preview text starts at x=0 — nowhere for WA to have drawn a tick
+        # icon, so this short-circuits without even calling predict_yolo.
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        elements = [
+            _el("Ana", 0, 10, 40, 30),
+            _el("Nos vemos mañana", 0, 50, 150, 70),
+        ]
+        assert _detect_row_direction(self._image(), elements) == "inbound"
+
+    def test_icon_detected_left_of_preview_is_outbound(self, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        monkeypatch.setattr(vg, "_load_yolo_model", lambda: object())
+        monkeypatch.setattr(
+            "wavi._vendor.omniparser_utils.predict_yolo",
+            lambda **kwargs: ([[2, 2, 12, 12]], [0.91]),
+        )
+        elements = [
+            _el("Ana", 0, 10, 40, 30),
+            _el("Nos vemos mañana", 40, 50, 150, 70),
+        ]
+        assert _detect_row_direction(self._image(), elements) == "outbound"
+
+    def test_no_icon_detected_left_of_preview_is_inbound(self, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        monkeypatch.setattr(vg, "_load_yolo_model", lambda: object())
+        monkeypatch.setattr(
+            "wavi._vendor.omniparser_utils.predict_yolo",
+            lambda **kwargs: ([], []),
+        )
+        elements = [
+            _el("Ana", 0, 10, 40, 30),
+            _el("Nos vemos mañana", 40, 50, 150, 70),
+        ]
+        assert _detect_row_direction(self._image(), elements) == "inbound"

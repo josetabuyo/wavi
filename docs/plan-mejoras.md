@@ -335,15 +335,35 @@ en `wavi/_vendor/omniparser_utils.py`: **585s → 118s corriendo el corpus compl
   `wavi/server.py` o `wavi/qr_server.py` exponen esta funcionalidad como servicio
   de red a terceros, hay que revisar la licencia de nuevo antes de shippear.
 
+**`direction` vía detección de íconos (2026-09-18):** `parse_sidebar_rows()`
+ahora detecta `direction` con `_detect_row_direction()` — usa `predict_yolo()`
+de `wavi/_vendor/omniparser_utils.py` **sin** Florence-2 (mantiene la ventaja
+de velocidad frente a `locate_compose_area()`). No identifica *qué* ícono es
+(single/double tick, leído/no leído) — solo si WA dibujó alguno inmediatamente
+a la izquierda del texto de preview del mensaje, algo que WA solo hace para
+mensajes salientes. Recorta la región entre el borde izquierdo de la columna y
+el inicio de la línea de preview (usando el bbox de esa línea, ya resuelto por
+`_cluster_by_y_overlap`), corre `predict_yolo()` sobre ese recorte acotado
+(no la imagen completa) y devuelve `"outbound"` si detecta algo, `"inbound"`
+si no. Devuelve `None` si la fila no tiene línea de preview (nada para anclar
+la búsqueda) o si faltan los pesos de `icon_detect` (nuevo helper
+`_yolo_available()`, separado de `_models_available()` que exige también el
+captioner). `_load_models()` se refactorizó en dos pasos (`_load_yolo_model()`
++ captioner) para que esta función cargue solo YOLO, no el pipeline completo.
+6 tests unitarios nuevos en `tests/test_vision_grounding.py` (mockean
+`_yolo_available`/`_load_yolo_model`/`predict_yolo`, no requieren pesos).
+**Sin validar todavía contra un caso de corpus real con mensajes salientes**
+— el corpus existente no tiene certeza de qué filas son outbound (no hay
+`expected.json` con esa verdad de referencia); ver pendiente #2 abajo.
+
 **Pendiente (próximos pasos, uno a la vez):**
 1. Cablear `locate_compose_area()` y `parse_sidebar_rows()` a `session.py` como
    fallback real detrás de un flag, con pruebas contra una sesión de staging
    antes de default-on.
-2. `direction` en `parse_sidebar_rows()`: detectar el tick icon ✓/✓✓ sin pagar el
-   costo de captioning completo — evaluar `predict_yolo()` de
-   `wavi/_vendor/omniparser_utils.py` (boxes de YOLO sin pasar por Florence-2),
-   acotado a la región de cada fila ya resuelta. name/last_message/timestamp ya
-   están resueltos (2026-09-18).
+2. Validar `direction` contra un caso de corpus real con `expected.json` que
+   marque qué filas son outbound (mensaje propio) vs. inbound — hoy solo hay
+   cobertura unitaria sintética, igual que `parse_contacts_panel_rows` cuando
+   se implementó.
 3. Sembrar un caso de corpus con el panel "Nuevo chat" abierto y correr
    `parse_contacts_panel_rows()` contra él (2026-09-18: implementado, solo
    validado sintéticamente).
