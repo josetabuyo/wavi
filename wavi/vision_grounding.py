@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 WEIGHTS_DIR = Path(__file__).parent.parent / "weights"
 
@@ -160,17 +160,17 @@ def parse_screen(screenshot_path: Path) -> list[dict] | None:
     return parsed_content_list
 
 
-def _group_text_lines(text_elements: list[dict]) -> list[dict]:
-    """Merges OCR text elements into lines by y-overlap, sorted left-to-right.
+def _cluster_by_y_overlap(elements: list[dict]) -> list[list[dict]]:
+    """Groups elements into lines by y-overlap, each line's members sorted
+    left-to-right. `elements` need only a `bbox` key ([x0,y0,x1,y1] — ratio
+    or pixel, this is scale-agnostic since it only compares overlaps).
 
-    EasyOCR frequently splits a single UI string into separate per-word
-    boxes (e.g. "Escribe un mensaje" → "Escribe" + "mensaje", dropping short
-    words like "un" entirely) — a single-element regex match against
-    `content` misses these. Each returned line has a `content` (joined text)
-    and a `bbox` (union of its members' bboxes, same [x0,y0,x1,y1] ratio
-    format OmniParser uses elsewhere in this module).
+    Shared by `_group_text_lines` (compose-area OCR, ratio coords) and
+    `_split_row_fields` (sidebar-row OCR, pixel coords) — both need to
+    recover WA's actual line layout from OCR output that arrives as a flat,
+    unordered bag of word/phrase boxes.
     """
-    remaining = sorted(text_elements, key=lambda el: el["bbox"][0])
+    remaining = sorted(elements, key=lambda el: el["bbox"][0])
     lines: list[list[dict]] = []
     for el in remaining:
         _x0, y0, _x1, y1 = el["bbox"]
@@ -184,9 +184,21 @@ def _group_text_lines(text_elements: list[dict]) -> list[dict]:
                 break
         if not placed:
             lines.append([el])
+    return lines
 
+
+def _group_text_lines(text_elements: list[dict]) -> list[dict]:
+    """Merges OCR text elements into lines by y-overlap, sorted left-to-right.
+
+    EasyOCR frequently splits a single UI string into separate per-word
+    boxes (e.g. "Escribe un mensaje" → "Escribe" + "mensaje", dropping short
+    words like "un" entirely) — a single-element regex match against
+    `content` misses these. Each returned line has a `content` (joined text)
+    and a `bbox` (union of its members' bboxes, same [x0,y0,x1,y1] ratio
+    format OmniParser uses elsewhere in this module).
+    """
     result = []
-    for line in lines:
+    for line in _cluster_by_y_overlap(text_elements):
         xs0 = [el["bbox"][0] for el in line]
         ys0 = [el["bbox"][1] for el in line]
         xs1 = [el["bbox"][2] for el in line]
@@ -295,24 +307,75 @@ SIDEBAR_PX = 580  # matches wavi/vision.py's SIDEBAR_PX — kept independent
 # new screenshots (e.g. very long contact names that wrap to 3 lines).
 SIDEBAR_ROW_GAP_PX = 20
 
+# Duplicated from wavi/vision.py's RE_TIME — same reasoning as SIDEBAR_PX
+# above (no import-time dependency on wavi.vision, which is Apple/macOS
+# oriented; this module stays cross-platform).
+_RE_TIMESTAMP = re.compile(r'\d{1,2}:\d{2}\s*(a|p)\.?\s*m\.?', re.I)
+
 
 class SidebarRow(TypedDict):
     bbox: ElementBox
     text: str  # every OCR line in the row, left-to-right, joined with " | ".
-    # Not yet split into name / last_message / timestamp / direction — see
-    # docs/plan-mejoras.md §4.8 for why that's deferred.
+    name: str
+    last_message: str
+    timestamp: str
+    # Always None in this cut: telling inbound from outbound needs the
+    # delivery-tick icon (✓/✓✓), which this OCR-only pipeline can't see —
+    # detecting it needs icon detection (YOLO), not just text. Deliberately
+    # not adding Florence-2 captioning to get it, since that would erase this
+    # function's speed advantage over locate_compose_area(). See
+    # docs/plan-mejoras.md §4.8 for the planned follow-up (likely
+    # predict_yolo() without captioning).
+    direction: Literal["inbound", "outbound"] | None
+
+
+def _split_row_fields(elements: list[dict]) -> tuple[str, str, str]:
+    """Splits one sidebar row's OCR elements (already isolated to a single
+    chat cell by SIDEBAR_ROW_GAP_PX, but still a flat bag mixing every text
+    line in that cell) into (name, last_message, timestamp).
+
+    WA's cell layout is name + timestamp on the top line, message preview
+    below (documented in wavi/session.py:447-451) — re-clusters the row back
+    into visual lines by y-overlap, then pulls the timestamp out of the top
+    line by regex (right-aligned, so the rightmost regex match wins if more
+    than one element on that line happens to match — rare, but cheap to
+    handle correctly). There's no DOM structure to lean on here, so regex
+    shape is the only reliable signal.
+    """
+    lines = sorted(
+        _cluster_by_y_overlap(elements),
+        key=lambda line: min(el["bbox"][1] for el in line),
+    )
+    if not lines:
+        return "", "", ""
+
+    top = sorted(lines[0], key=lambda el: el["bbox"][0])
+    ts_idx: int | None = None
+    for i, el in enumerate(top):
+        if _RE_TIMESTAMP.search(el.get("content") or ""):
+            ts_idx = i  # keep overwriting: rightmost match wins
+    timestamp = (top[ts_idx].get("content") or "").strip() if ts_idx is not None else ""
+    name = " ".join(el.get("content") or "" for i, el in enumerate(top) if i != ts_idx).strip()
+
+    preview_words = [
+        el.get("content") or ""
+        for line in lines[1:]
+        for el in sorted(line, key=lambda e: e["bbox"][0])
+    ]
+    last_message = " ".join(preview_words).strip()
+
+    return name, last_message, timestamp
 
 
 def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
-    """OCR-clusters the WA Web sidebar (chat list) into rows.
+    """OCR-clusters the WA Web sidebar (chat list) into rows, then splits
+    each row into name / last_message / timestamp (see `_split_row_fields`).
+    `direction` is always None here — see the SidebarRow docstring for why.
 
-    Each returned row is the union of every text line OmniParser's OCR pass
-    found within one vertical cluster — not yet split into semantic fields
-    (contact name vs. last-message preview vs. timestamp vs. read/delivered
-    ticks). That's the natural next slice of this migration: the row
-    boundaries are the hard part (arbitrary text layout, no DOM structure to
-    lean on); splitting fields within an already-isolated row is a much
-    smaller, lower-risk follow-up.
+    Row boundaries (one row per chat cell) are the hard part of this
+    function — arbitrary text layout, no DOM structure to lean on. Field
+    splitting within an already-isolated row is comparatively cheap, since
+    WA's two-line-per-cell layout and timestamp shape are consistent.
 
     Returns None if the vision-omniparser extra isn't installed (never
     raises for that reason).
@@ -353,8 +416,15 @@ def parse_sidebar_rows(screenshot_path: Path) -> list[SidebarRow] | None:
         xs1 = [b[2] for _c, b in row]
         ys1 = [b[3] for _c, b in row]
         line = " | ".join(c for c, _b in sorted(row, key=lambda item: item[1][0]))
+        name, last_message, timestamp = _split_row_fields(
+            [{"content": content, "bbox": list(bbox)} for content, bbox in row]
+        )
         result.append({
             "bbox": {"x": min(xs0), "y": min(ys0), "w": max(xs1) - min(xs0), "h": max(ys1) - min(ys0)},
             "text": line,
+            "name": name,
+            "last_message": last_message,
+            "timestamp": timestamp,
+            "direction": None,
         })
     return result

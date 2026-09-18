@@ -90,3 +90,13 @@ def test_parse_sidebar_rows(case_dir: Path):
     for row in rows:
         assert row["bbox"]["x"] < SIDEBAR_PX, f"{case_dir.name}: row bbox extends outside the sidebar crop"
         assert row["text"].strip(), f"{case_dir.name}: row with empty text"
+
+    # Field splitting (name/last_message/timestamp) is a heuristic over real
+    # OCR output — not every row is guaranteed to yield a non-empty name
+    # (e.g. an icon-only cell), so this is a majority smoke check, not an
+    # exact assertion per row. `direction` isn't checked here: it's always
+    # None in this pipeline (see SidebarRow docstring in vision_grounding.py).
+    named = sum(1 for row in rows if row["name"].strip())
+    assert named >= len(rows) * 0.8, (
+        f"{case_dir.name}: only {named}/{len(rows)} rows got a non-empty name"
+    )

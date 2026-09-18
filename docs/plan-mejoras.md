@@ -235,10 +235,20 @@ cross-platform, no depende de Apple Vision.
 2. `wavi/vision_grounding.py::parse_sidebar_rows()` — clusteriza el OCR del
    sidebar en filas (una por chat), cubriendo el fallback de
    `_EXTRACT_SIDEBAR_UPDATES_JS`. Solo EasyOCR (sin YOLO/Florence — las filas del
-   sidebar son texto plano), mucho más rápido que `locate_compose_area()`. Todavía
-   **no** separa name/last_message/timestamp/direction dentro de cada fila — eso
-   es el próximo corte natural, más chico y de menor riesgo que encontrar los
-   límites de fila en primer lugar.
+   sidebar son texto plano), mucho más rápido que `locate_compose_area()`.
+3. Cada fila de `parse_sidebar_rows()` ahora separa `name` / `last_message` /
+   `timestamp` (nuevo helper `_split_row_fields()`, reutiliza el clustering por
+   y-overlap extraído a `_cluster_by_y_overlap()` — compartido con
+   `_group_text_lines()`, que antes duplicaba esa lógica inline). `direction`
+   queda **siempre `None`** en este corte: distinguir inbound/outbound requiere
+   detectar el tick icon ✓/✓✓, que este pipeline solo-OCR no puede ver — hace
+   falta detección de íconos (YOLO), y meter captioning Florence-2 para
+   conseguirlo anularía la ventaja de velocidad de esta función frente a
+   `locate_compose_area()`. Queda documentado como el próximo sub-paso (ver
+   pendiente #2 abajo), probablemente con `predict_yolo()` sin captioning.
+   Validado con 9 tests unitarios síncronos (`tests/test_vision_grounding.py`,
+   sin gate — no requieren pesos ni el extra `vision-omniparser`) más el smoke
+   check ampliado del corpus real (`tests/test_corpus_grounding.py`, 10/10).
 
 Ambos validados con smoke tests contra `tests/corpus/cases/` (`make
 corpus-grounding`, 10/10 casos). Deliberadamente **no** cableados a `session.py`
@@ -273,9 +283,11 @@ en `wavi/_vendor/omniparser_utils.py`: **585s → 118s corriendo el corpus compl
 1. Cablear `locate_compose_area()` y `parse_sidebar_rows()` a `session.py` como
    fallback real detrás de un flag, con pruebas contra una sesión de staging
    antes de default-on.
-2. Dentro de cada fila de `parse_sidebar_rows()`: separar name / last_message /
-   timestamp / direction (tick icon → necesita YOLO, no solo OCR). Corte chico,
-   bajo riesgo, ya con los límites de fila resueltos.
+2. `direction` en `parse_sidebar_rows()`: detectar el tick icon ✓/✓✓ sin pagar el
+   costo de captioning completo — evaluar `predict_yolo()` de
+   `wavi/_vendor/omniparser_utils.py` (boxes de YOLO sin pasar por Florence-2),
+   acotado a la región de cada fila ya resuelta. name/last_message/timestamp ya
+   están resueltos (2026-09-18).
 3. Cubrir el resto de la tabla de inventario DOM: scroll-bottom button
    (§`_CLICK_SCROLL_BOTTOM_BTN_JS`), new-chat/back icons, reacciones, lista de
    contactos del panel "Nuevo chat" — mismo patrón (detección primero sobre
