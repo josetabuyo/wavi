@@ -20,6 +20,7 @@ from wavi.vision_grounding import (
     _detect_row_direction,
     _split_contact_fields,
     _split_row_fields,
+    locate_new_chat_button,
 )
 
 
@@ -173,6 +174,8 @@ class TestChatAppProfile:
             timestamp_re=re.compile(r"^TS-\d+$"),
             timestamp_gap_px=200,  # deliberately large: positional fallback must NOT fire
             direction_icon_band_px=WHATSAPP_WEB.direction_icon_band_px,
+            header_band_px=WHATSAPP_WEB.header_band_px,
+            accent_min_green_delta=WHATSAPP_WEB.accent_min_green_delta,
         )
         # Small gap (10px), well under either profile's threshold — only a
         # matching regex can identify "TS-42" as a timestamp here, never the
@@ -300,3 +303,99 @@ class TestDetectRowDirection:
             _el("Nos vemos mañana", 40, 50, 150, 70),
         ]
         assert _detect_row_direction(self._image(), elements) == "inbound"
+
+
+# ── locate_new_chat_button ───────────────────────────────────────────────────
+# Mocks _yolo_available/_load_yolo_model/predict_yolo (no weights/torch
+# needed) but draws real pixels, so the green-fill color check runs for
+# real. End-to-end validation against real screenshots (including the
+# real button's calibrated RGB, and older corpus screenshots that predate
+# this WA redesign and correctly have no green button at all) lives in
+# test_corpus_grounding.py.
+
+class TestLocateNewChatButton:
+    def _screenshot_with_patch(self, tmp_path, box, color, size=(580, 60)):
+        from PIL import ImageDraw
+
+        img = Image.new("RGB", size, (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle(box, fill=color)
+        path = tmp_path / "screenshot.png"
+        img.save(path)
+        return path
+
+    def test_weights_missing_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: False)
+        path = self._screenshot_with_patch(tmp_path, (10, 10, 40, 40), (0, 180, 90))
+        assert locate_new_chat_button(path) is None
+
+    def test_no_boxes_detected_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        monkeypatch.setattr(vg, "_load_yolo_model", lambda: object())
+        monkeypatch.setattr(
+            "wavi._vendor.omniparser_utils.predict_yolo", lambda **kwargs: ([], [])
+        )
+        path = self._screenshot_with_patch(tmp_path, (10, 10, 40, 40), (0, 180, 90))
+        assert locate_new_chat_button(path) is None
+
+    def test_green_square_icon_is_detected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        monkeypatch.setattr(vg, "_load_yolo_model", lambda: object())
+        box = (500, 10, 540, 50)  # square-ish, matches the real button's aspect
+        monkeypatch.setattr(
+            "wavi._vendor.omniparser_utils.predict_yolo",
+            lambda **kwargs: ([box], [0.9]),
+        )
+        path = self._screenshot_with_patch(tmp_path, box, (0, 180, 90))
+        result = locate_new_chat_button(path)
+        assert result == {"x": 500, "y": 10, "w": 40, "h": 40}
+
+    def test_gray_icon_is_not_detected(self, tmp_path, monkeypatch):
+        # Same shape as the real button, but monochrome — like the "..."
+        # menu or the archive icon on older WA screenshots.
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        monkeypatch.setattr(vg, "_load_yolo_model", lambda: object())
+        box = (500, 10, 540, 50)
+        monkeypatch.setattr(
+            "wavi._vendor.omniparser_utils.predict_yolo",
+            lambda **kwargs: ([box], [0.9]),
+        )
+        path = self._screenshot_with_patch(tmp_path, box, (210, 210, 210))
+        assert locate_new_chat_button(path) is None
+
+    def test_wide_green_bar_rejected_by_aspect_ratio(self, tmp_path, monkeypatch):
+        # A green but non-square region (e.g. a wide banner) shouldn't be
+        # mistaken for the round button.
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        monkeypatch.setattr(vg, "_load_yolo_model", lambda: object())
+        box = (100, 10, 400, 30)  # 300x20, aspect 15 — way outside 0.6-1.6
+        monkeypatch.setattr(
+            "wavi._vendor.omniparser_utils.predict_yolo",
+            lambda **kwargs: ([box], [0.9]),
+        )
+        path = self._screenshot_with_patch(tmp_path, box, (0, 180, 90))
+        assert locate_new_chat_button(path) is None
+
+    def test_greenest_candidate_wins_among_several(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vg, "_yolo_available", lambda: True)
+        monkeypatch.setattr(vg, "_load_yolo_model", lambda: object())
+        gray_box = (10, 10, 40, 40)
+        pale_green_box = (200, 10, 230, 40)
+        strong_green_box = (500, 10, 540, 50)
+        monkeypatch.setattr(
+            "wavi._vendor.omniparser_utils.predict_yolo",
+            lambda **kwargs: ([gray_box, pale_green_box, strong_green_box], [0.9, 0.8, 0.85]),
+        )
+
+        from PIL import ImageDraw
+
+        img = Image.new("RGB", (580, 60), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle(gray_box, fill=(210, 210, 210))
+        draw.rectangle(pale_green_box, fill=(190, 220, 200))
+        draw.rectangle(strong_green_box, fill=(0, 180, 90))
+        path = tmp_path / "screenshot.png"
+        img.save(path)
+
+        result = locate_new_chat_button(path)
+        assert result == {"x": 500, "y": 10, "w": 40, "h": 40}

@@ -617,13 +617,49 @@ class TestNewChatPanel:
 
     @pytest.mark.asyncio
     async def test_navigate_to_new_chat_not_found(self):
-        """navigate_to_new_chat() raises RuntimeError if button not found."""
+        """navigate_to_new_chat() raises RuntimeError if the button isn't
+        found by either vision or the DOM fallback."""
         s = _make_session()
         s._page = _make_page(selector_found=False)
         s._page.evaluate = AsyncMock(return_value=False)  # button not clicked
 
-        with pytest.raises(RuntimeError, match="Could not find.*new-chat-outline"):
+        with pytest.raises(RuntimeError, match="Could not find the 'new chat' button"):
             await s.navigate_to_new_chat()
+
+    @pytest.mark.asyncio
+    async def test_navigate_to_new_chat_uses_vision_when_available(self, monkeypatch):
+        """When locate_new_chat_button() finds the button, navigate_to_new_chat()
+        clicks its center via Playwright and never falls back to the DOM
+        eval — vision is the primary path (see _click_new_chat_via_vision's
+        docstring), the DOM lookup (_OPEN_NEW_CHAT_JS) is only a fallback."""
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        monkeypatch.setattr(
+            "wavi.vision_grounding.locate_new_chat_button",
+            lambda *a, **k: {"x": 500, "y": 10, "w": 40, "h": 40},
+        )
+
+        await s.navigate_to_new_chat()
+
+        s._page.mouse.click.assert_any_call(520.0, 30.0)  # box center
+        # ensure_chat_list() itself calls evaluate() twice
+        # (_CLOSE_NEW_CHAT_JS, _CLEAR_SIDEBAR_SEARCH_JS) — exactly 2, not 3,
+        # confirms _OPEN_NEW_CHAT_JS's DOM lookup never ran: vision already
+        # handled it.
+        assert s._page.evaluate.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_navigate_to_new_chat_falls_back_to_dom_when_vision_unavailable(self, monkeypatch):
+        """locate_new_chat_button() returning None (button not found by
+        vision) must still fall back to the DOM lookup, not raise."""
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        s._page.evaluate = AsyncMock(return_value=True)
+        monkeypatch.setattr("wavi.vision_grounding.locate_new_chat_button", lambda *a, **k: None)
+
+        await s.navigate_to_new_chat()
+
+        assert s._page.evaluate.called  # DOM fallback ran
 
     @pytest.mark.asyncio
     async def test_extract_contacts_returns_list(self):

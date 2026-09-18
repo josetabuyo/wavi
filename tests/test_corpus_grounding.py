@@ -184,3 +184,31 @@ def test_sidebar_direction_matches_ground_truth(case_dir: Path):
             f"{case_dir.name}: row {name!r} ({entry['reason']}) expected outbound, "
             f"got {by_name[name]['direction']!r}"
         )
+
+
+_NEW_CHAT_BUTTON_CASES = [d for d in CASES if (d / "expected_new_chat_button.json").exists()]
+
+
+@pytest.mark.skipif(not _NEW_CHAT_BUTTON_CASES, reason="no corpus case has expected_new_chat_button.json")
+@pytest.mark.parametrize("case_dir", _NEW_CHAT_BUTTON_CASES, ids=lambda d: d.name)
+def test_locate_new_chat_button_matches_ground_truth(case_dir: Path):
+    """locate_new_chat_button() validated against real screenshots, both
+    positive (the button is there and green) and negative — including two
+    corpus cases (lurgo_000, tireless_000) that predate this exact WA
+    redesign and show the *old* header (a monochrome "archive" icon, no
+    green button at all), confirmed by eye while building this test. That
+    the function correctly returns None for those, not just for
+    nuevo_chat_panel_000 (a different screen entirely), is real evidence
+    for this migration's premise: WA's UI drifts under us, and a
+    color+shape vision signal tracks that drift better than a DOM selector
+    tied to one specific icon.
+    """
+    from wavi.vision_grounding import locate_new_chat_button
+
+    result = locate_new_chat_button(case_dir / "screenshot.png")
+    expected = json.loads((case_dir / "expected_new_chat_button.json").read_text())
+
+    if expected["has_new_chat_button"]:
+        assert result is not None, f"{case_dir.name}: expected to find the new-chat button, found none"
+    else:
+        assert result is None, f"{case_dir.name}: expected no new-chat button, found {result}"

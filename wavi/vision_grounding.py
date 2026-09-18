@@ -20,14 +20,24 @@ second chat app, just the seam that lets one be added later (a new
 ChatAppProfile instance) without rewriting the detection functions, per
 docs/plan-mejoras.md Fase 5.
 
-## Why this isn't wired into session.py yet
+## Wiring into session.py — vision-first, not a last resort
 
-This module only reads static screenshot files. It never opens a live
-WhatsApp Web session or touches Playwright — on purpose. Wiring vision-based
-element location into session.py's actual click/type actions is a separate,
-higher-risk follow-up (touches an authenticated live session) and is out of
-scope here. See tests/test_corpus_grounding.py for how this is validated
-today: sanity-checked against static screenshots in tests/corpus/cases/.
+Every function here only reads static screenshot files; none of them ever
+opens a live WhatsApp Web session or touches Playwright directly — session.py
+takes a screenshot, calls into this module, and does the actual click/type
+itself via Playwright. That split is deliberate and permanent: this module
+never becomes session-aware, but it IS meant to be wired into session.py's
+live click/type paths, function by function, as the primary way each DOM
+signal in session.py's inventory table gets resolved. A DOM selector fix
+(`aria-label` fallback, updated `data-icon`, whatever) is only ever a
+temporary bridge while a given function here doesn't exist yet — never the
+permanent resolution, even when the patch is correct (explicit project
+policy, confirmed 2026-09-18, see docs/plan-mejoras.md §4.8). First real
+case: `locate_new_chat_button()` + `WASession._click_new_chat_via_vision()`
+— see that function's docstring for the click-via-Playwright pattern to
+follow for the rest. See tests/test_corpus_grounding.py for how each
+function is validated before it gets wired: sanity-checked against static
+screenshots in tests/corpus/cases/ first, live session second.
 
 ## Dependencies — opt-in, heavy
 
@@ -101,6 +111,8 @@ class ChatAppProfile:
     timestamp_re: re.Pattern[str]
     timestamp_gap_px: int
     direction_icon_band_px: int
+    header_band_px: int
+    accent_min_green_delta: int
 
 
 # Footer band where the compose input + send button live, as a fraction of
@@ -167,6 +179,25 @@ _TIMESTAMP_GAP_PX = 60
 # "outbound" too — see _detect_row_direction's docstring.
 _DIRECTION_ICON_BAND_PX = 40
 
+# Height (px) of the sidebar header row (logo, "WhatsApp" wordmark, filter
+# tabs / "..." menu, the "new chat" action button) from the top of the
+# screenshot. Calibrated against the same real, unfiltered sidebar
+# screenshot as _DIRECTION_ICON_BAND_PX — the header is consistently ~55px
+# tall on the corpus's 1280x1920 screenshots; 60px gives a little headroom
+# without reaching into the chat list below it.
+_HEADER_BAND_PX = 60
+
+# Minimum amount by which an icon's average green channel must exceed both
+# its red and blue channels for locate_new_chat_button to treat it as WA's
+# brand-green action button, rather than one of the header's other
+# monochrome/outline icons (logo, "..." menu). Calibrated against the same
+# screenshot: the real button's crop averaged RGB(105, 198, 150) — green
+# ~50-90 above red/blue after anti-aliasing against the white background —
+# while every other header icon's crop averaged near-white or light gray
+# (R/G/B within ~5 of each other). 30 sits comfortably below the real
+# button's margin and above the monochrome icons' near-zero one.
+_ACCENT_MIN_GREEN_DELTA = 30
+
 # The only profile in use today — see ChatAppProfile's docstring. Every
 # function below defaults to this, so passing no `profile` argument keeps
 # today's exact WA Web behavior.
@@ -179,6 +210,8 @@ WHATSAPP_WEB = ChatAppProfile(
     timestamp_re=_RE_TIMESTAMP,
     timestamp_gap_px=_TIMESTAMP_GAP_PX,
     direction_icon_band_px=_DIRECTION_ICON_BAND_PX,
+    header_band_px=_HEADER_BAND_PX,
+    accent_min_green_delta=_ACCENT_MIN_GREEN_DELTA,
 )
 
 
@@ -714,3 +747,73 @@ def parse_contacts_panel_rows(
         name, subtitle = _split_contact_fields(_row_elements(row))
         result.append({"bbox": _row_bbox(row), "name": name, "subtitle": subtitle})
     return result
+
+
+# ── Sidebar header — "new chat" button ──────────────────────────────────────
+# Replaces the DOM signal documented for _OPEN_NEW_CHAT_JS in wavi/session.py's
+# DOM scraping inventory. This is the intended permanent fix, not the
+# aria-label fallback _OPEN_NEW_CHAT_JS currently uses — see that constant's
+# comment in session.py and docs/plan-mejoras.md §4.8: a DOM patch is only
+# ever a temporary bridge in this migration, never the resolution, even when
+# it's quick and correct. WA has already changed what's *inside* this button
+# once (pencil icon -> "+"), which is exactly the kind of change vision
+# tolerates and a DOM selector doesn't.
+
+
+def locate_new_chat_button(
+    screenshot_path: Path, profile: ChatAppProfile = WHATSAPP_WEB
+) -> ElementBox | None:
+    """Locates WA Web's "new chat" button by vision: the sidebar header's one
+    WA-green, filled, roughly-circular action button — everything else in
+    that row (logo, "WhatsApp" wordmark, "..." menu, filter tabs) is
+    monochrome/outline. Detects by icon presence (`predict_yolo()`, no
+    Florence-2 captioning — same speed-conscious pattern as
+    `_detect_row_direction`) plus average fill color, deliberately NOT by
+    the icon's shape/content: WA already swapped the SVG inside this exact
+    button once (a pencil, then a "+"), and the brand-green fill is the one
+    visual invariant that survived that change. A future redesign that also
+    changes the color would need this recalibrated — but that class of
+    change is rarer and more visible than an icon swap.
+
+    Returns None if the vision-omniparser extra/weights aren't installed, or
+    if no icon in the header band's fill color clears
+    `profile.accent_min_green_delta` (never raises for either reason).
+    """
+    if not _yolo_available():
+        return None
+
+    from PIL import Image
+
+    try:
+        from wavi._vendor.omniparser_utils import predict_yolo
+    except ImportError:
+        return None
+
+    with Image.open(screenshot_path) as img:
+        header = img.crop((0, 0, profile.sidebar_px, profile.header_band_px)).convert("RGB")
+
+    yolo_model = _load_yolo_model()
+    boxes, _conf = predict_yolo(
+        model=yolo_model, image=header, box_threshold=0.1, imgsz=640, iou_threshold=0.1
+    )
+
+    import numpy as np
+
+    best: ElementBox | None = None
+    best_green_delta = 0.0
+    for box in boxes:
+        x0, y0, x1, y1 = (int(v) for v in box)
+        w, h = x1 - x0, y1 - y0
+        if w <= 0 or h <= 0:
+            continue
+        aspect = w / h
+        if not (0.6 <= aspect <= 1.6):
+            continue  # not roughly square/circular — rules out text/wide rows
+        region_arr = np.asarray(header.crop((x0, y0, x1, y1)))
+        r, g, b = (float(region_arr[..., i].mean()) for i in range(3))
+        green_delta = g - max(r, b)
+        if green_delta > profile.accent_min_green_delta and green_delta > best_green_delta:
+            best_green_delta = green_delta
+            best = {"x": x0, "y": y0, "w": w, "h": h}
+
+    return best

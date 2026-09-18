@@ -287,17 +287,25 @@ _CLICK_SEND_BTN_JS = """
 }
 """
 
+# NOT the primary path anymore — see navigate_to_new_chat() below, which
+# tries vision first (locate_new_chat_button() in wavi/vision_grounding.py)
+# and only falls back to this DOM lookup if vision can't find anything
+# (missing extra/weights, or a screen this function isn't calibrated for).
+# Kept only as a temporary, strategic bridge for that fallback case — per
+# project policy (docs/plan-mejoras.md §4.8), a DOM patch is never treated
+# as the permanent resolution for a signal vision can locate instead, even
+# when the patch itself is correct. This is that patch:
+#
 # DOM signal: span[data-icon="new-chat-outline"] (left sidebar compose button).
-# Confirmed broken against a live session, 2026-09-18 (see docs/plan-mejoras.md
-# §4.8): WA replaced the pencil icon with a green "+" button that carries no
-# data-icon attribute at all anymore — inspected live via 'wavi debug-open',
-# the only remaining anchor is aria-label="Nuevo chat" (its SVG <title> is
-# "ic-add", shared with an unrelated "Nueva lista" button elsewhere in the
-# DOM, so the icon alone is ambiguous; aria-label is the one attribute that
-# picks out this specific button). Kept the old data-icon lookups first in
-# case a future WA build reverts, same locale-agnostic-first, aria-label-
-# fallback pattern as _CLICK_SEND_BTN_JS above.
-# Vision fallback: locate the pencil/compose icon in the left icon bar via screenshot.
+# Confirmed broken against a live session, 2026-09-18: WA replaced the
+# pencil icon with a green "+" button that carries no data-icon attribute
+# at all anymore — inspected live via 'wavi debug-open', the only remaining
+# anchor is aria-label="Nuevo chat" (its SVG <title> is "ic-add", shared
+# with an unrelated "Nueva lista" button elsewhere in the DOM, so the icon
+# alone is ambiguous; aria-label is the one attribute that picks out this
+# specific button). Kept the old data-icon lookups first in case a future
+# WA build reverts, same locale-agnostic-first, aria-label-fallback pattern
+# as _CLICK_SEND_BTN_JS above.
 _OPEN_NEW_CHAT_JS = """
 () => {
     const icon = document.querySelector('span[data-icon="new-chat-outline"]') ||
@@ -1165,20 +1173,62 @@ class WASession:
 
         return {"selector": info.get("selector"), "x": info["x"], "y": info["y"]}
 
+    async def _click_new_chat_via_vision(self) -> bool:
+        """Locates the "new chat" button via vision
+        (wavi/vision_grounding.py::locate_new_chat_button — the WA-green
+        filled circular button, detected by icon presence + fill color, not
+        by which SVG WA happens to draw inside it) and clicks its center
+        with Playwright. This is the intended permanent path — see
+        _OPEN_NEW_CHAT_JS's comment above: a DOM lookup is only ever this
+        migration's temporary bridge, never treated as done.
+
+        Returns False (never raises) if the vision-omniparser extra/weights
+        aren't installed, or the button isn't found in the current
+        screenshot — callers fall back to the DOM path in that case.
+        """
+        try:
+            from wavi.vision_grounding import locate_new_chat_button
+        except ImportError:
+            return False
+
+        import tempfile
+
+        # Broad catch is deliberate: any failure to screenshot/locate means
+        # "vision couldn't do this right now" (a mocked/fake page in tests,
+        # a mid-navigation screenshot glitch live, an unreadable temp file)
+        # — same "not an error, just unavailable" contract as the rest of
+        # vision_grounding.py. Only the click below, once we HAVE a box,
+        # is allowed to raise for real.
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                shot_path = Path(tmp) / "header.png"
+                await self._page.screenshot(path=str(shot_path))
+                box = locate_new_chat_button(shot_path)
+        except Exception:
+            return False
+
+        if box is None:
+            return False
+
+        await self._page.mouse.click(box["x"] + box["w"] / 2, box["y"] + box["h"] / 2)
+        return True
+
     async def navigate_to_new_chat(self) -> None:
         """Open the WhatsApp 'New chat' panel and wait for the contact list to appear.
 
         Real bug, 2026-08-26: _resolve_contact's refresh-on-no-match path
         calls this right after search_contacts() leaves text typed in the
         sidebar search box (never cleared) — with search active, WA hides
-        the pencil/new-chat button, so it couldn't be found. Ensuring a
-        clean sidebar state first fixes it for every caller, not just that
-        one.
+        the pencil/new-chat button, so it couldn't be found (true for vision
+        too: the button just isn't rendered). Ensuring a clean sidebar state
+        first fixes it for every caller, not just that one.
         """
         await self.ensure_chat_list()
-        clicked = await self._page.evaluate(_OPEN_NEW_CHAT_JS)
+        clicked = await self._click_new_chat_via_vision()
         if not clicked:
-            raise RuntimeError("Could not find 'new-chat-outline' button in WA Web")
+            clicked = await self._page.evaluate(_OPEN_NEW_CHAT_JS)
+        if not clicked:
+            raise RuntimeError("Could not find the 'new chat' button in WA Web (vision + DOM both failed)")
         # Wait for the contact list items to render
         await self._page.wait_for_selector('[role="listitem"]', timeout=8_000)
         await self._page.wait_for_timeout(500)

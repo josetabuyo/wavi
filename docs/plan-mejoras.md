@@ -234,11 +234,26 @@ DOM de WhatsApp Web por completo, y hacerlo con el núcleo de detección
 específicamente como para que otro chat (Telegram, Slack) se sume escribiendo
 un `ChatAppProfile` nuevo, no reescribiendo la lógica — mucho más robusto a
 largo plazo que web scraping con Playwright sobre un DOM que el proveedor
-cambia sin aviso. Confirmado en la práctica dos veces solo en la sesión del
-2026-09-18: el separador de timestamp (`:` → `.`) y el selector del botón
-"nuevo chat" (ícono → `aria-label`) — ninguno de los dos rompió nada del lado
-de vision. Ver Fase 5 (§6) para el resto de esa visión; §4.8 es la ejecución
-paso a paso, no el destino final.
+cambia sin aviso.
+
+**Política explícita del usuario (2026-09-18):** un fix DOM (selector
+parcheado, `aria-label` de fallback, etc.) **nunca es la resolución final**
+de una señal rota, aunque sea correcto y rápido de escribir — es, como
+mucho, un puente temporal y estratégico para no bloquear el trabajo mientras
+el detector de visión real no existe todavía. La resolución permanente
+siempre es un detector de visión en `vision_grounding.py`. Playwright/DOM
+quedan reservados para lo genérico de verdad — click en una coordenada,
+tipear texto — nunca para *encontrar* dónde está algo en la pantalla. Esto
+pasó en la práctica el mismo día: `_OPEN_NEW_CHAT_JS` se parchó primero con
+un fallback `aria-label` (rápido, correcto, pero rechazado como solución
+final), y unas horas más tarde se reemplazó por `locate_new_chat_button()`
+— detección por visión del botón verde de WA (ícono + color de relleno, no
+por selector) con clic real vía `page.mouse.click()`. El aria-label queda
+en el código solo como fallback si visión no encuentra nada (pesos no
+instalados, o una pantalla para la que el detector no está calibrado).
+
+Ver Fase 5 (§6) para el resto de esa visión; §4.8 es la ejecución paso a
+paso, no el destino final.
 
 **Pasos implementados (2026-09-18):**
 1. `wavi/vision_grounding.py::locate_compose_area()` — localiza el compose input
@@ -421,23 +436,75 @@ inspeccionar el DOM real de la sesión autenticada y encontrar el selector
 roto (ver ítem siguiente), después cerrado y reconectado a headless sin
 problemas.
 
-**`_OPEN_NEW_CHAT_JS` arreglado (2026-09-18, mismo día):** con el daemon
-visible, inspección directa del DOM confirmó lo que el handoff anterior
-sospechaba — WA reemplazó el ícono lápiz (`span[data-icon="new-chat-outline"]`)
-por un botón `+` sin ningún atributo `data-icon`. El único ancla que queda es
+**`_OPEN_NEW_CHAT_JS` parcheado — puente temporal, no la resolución
+(2026-09-18, mismo día):** con el daemon visible, inspección directa del DOM
+confirmó lo que el handoff anterior sospechaba — WA reemplazó el ícono
+lápiz (`span[data-icon="new-chat-outline"]`) por un botón `+` sin ningún
+atributo `data-icon`. El único ancla DOM que queda es
 `aria-label="Nuevo chat"` (su `<svg><title>` es `"ic-add"`, compartido con un
 botón no relacionado — "Nueva lista" —, así que el ícono solo no alcanza).
-Fix en `wavi/session.py`: mismo patrón ya usado en `_CLICK_SEND_BTN_JS`
-(selector `data-icon` primero, si no matchea cae a `aria-label` en
-español/inglés). Validado en vivo: `wavi list-contacts default` corrió
-end-to-end por primera vez desde que se confirmó roto, capturando la lista
-completa de contactos + el screenshot que se usó para sembrar
-`nuevo_chat_panel_000`.
+Primer fix: mismo patrón ya usado en `_CLICK_SEND_BTN_JS` (selector
+`data-icon` primero, si no matchea cae a `aria-label` en español/inglés).
+Validado en vivo: `wavi list-contacts default` corrió end-to-end por primera
+vez desde que se confirmó roto, capturando la lista completa de contactos +
+el screenshot que se usó para sembrar `nuevo_chat_panel_000`. **El usuario
+rechazó esto como resolución final** (ver "Política explícita" al principio
+de esta sección) — quedó como el fallback documentado, no como el arreglo.
+
+**`locate_new_chat_button()` — la resolución real, mismo día:** nueva función
+en `vision_grounding.py` que ubica el botón por visión: el único ícono
+WA-verde y relleno del header del sidebar (logo, wordmark y menú "..." son
+monocromos/outline). Detecta por presencia de ícono (`predict_yolo()`, sin
+Florence-2, mismo patrón que `_detect_row_direction`) + color de relleno
+promedio (delta de verde sobre rojo/azul), deliberadamente **no** por forma
+ni contenido — WA ya cambió el SVG de adentro de este mismo botón una vez
+(lápiz → `+`), y el verde de marca es el invariante visual que sobrevivió a
+ese cambio. Dos campos nuevos en `ChatAppProfile` (`header_band_px=60`,
+`accent_min_green_delta=30`), calibrados contra el mismo screenshot real de
+`sidebar_full_000`: el botón real promedió RGB(105,198,150), el resto de
+íconos del header quedó con R/G/B a menos de 5 de diferencia entre sí. Nuevo
+`expected_new_chat_button.json` por caso de corpus (7/7 casos, positivos y
+negativos) — incluye evidencia real y bonus del problema que motiva toda
+esta migración: `lurgo_000`/`lurgo_001`/`lurgo_002`/`tireless_000` son de
+antes de este rediseño de WA (junio 2026) y muestran un ícono de archivo
+monocromo en vez del `+` verde — la función correctamente devuelve `None`
+para esos, no un falso positivo, confirmando que el color+forma es una señal
+más estable que un selector atado a un ícono específico.
+
+**Cableado a `session.py` — primera vez que vision maneja un click real
+(2026-09-18, mismo día, a pedido explícito del usuario):**
+`navigate_to_new_chat()` ahora prueba `_click_new_chat_via_vision()`
+primero (screenshot → `locate_new_chat_button()` → `page.mouse.click()` en
+el centro del box) y solo cae a `_OPEN_NEW_CHAT_JS` (DOM) si vision no
+encuentra nada — invertido respecto al orden original. Cualquier falla en el
+paso de screenshot/detección (pesos no instalados, página en un estado que
+el detector no reconoce) se traga con un catch amplio y deliberado — mismo
+contrato que el resto de `vision_grounding.py`: "vision no disponible ahora"
+nunca es un error, solo dispara el fallback. Validado en vivo con
+`wavi debug-open`: `_click_new_chat_via_vision()` devolvió `True`, abrió el
+panel, se pudo cerrar con `close_new_chat()` sin problemas. 2 tests nuevos en
+`tests/test_session.py` (vision encontrado → nunca llama al DOM; vision
+`None` → cae al DOM como antes) + 2 tests existentes ajustados (mensaje de
+error nuevo, ya no es puramente DOM).
+
+**Gotcha nuevo (observado en vivo, no bloqueante):** Chrome headless
+renderiza con tema claro por defecto (sin contexto real de macOS para
+detectar `prefers-color-scheme`), mientras que `wavi debug-open` (visible)
+sí toma el modo real del sistema — no afecta la sesión de WA (vive en
+IndexedDB, no en el tema), pero si algún día se captura un screenshot en
+dark mode sin querer, podría descalibrar el detector de color de
+`locate_new_chat_button()` (calibrado solo contra modo claro). Si hace falta
+generalizar a dark mode, es un `ChatAppProfile`/umbral nuevo, no un
+rediseño.
 
 **Pendiente (próximos pasos, uno a la vez):**
-1. Cablear `locate_compose_area()` y `parse_sidebar_rows()` a `session.py` como
-   fallback real detrás de un flag, con pruebas contra una sesión de staging
-   antes de default-on.
+1. Cablear `locate_compose_area()` y `parse_sidebar_rows()` a `session.py`
+   como fallback real detrás de un flag, con pruebas contra una sesión de
+   staging antes de default-on — mismo patrón que `locate_new_chat_button()`
+   ya probó en producción (screenshot → detección → `page.mouse.click()`,
+   catch amplio para caer al DOM si vision no encuentra nada), pero sin flag
+   todavía porque `locate_new_chat_button()` es la primera vez que se hizo
+   con el usuario mirando en vivo (`wavi debug-open`), no en frío.
 2. ~~Validar `direction` contra un caso de corpus real~~ ✅ hecho
    (2026-09-18, `sidebar_full_000`) — pero solo cubre 1 fila sin ambigüedad;
    mejorar precisión sigue abierto: reducir falsos positivos (filtrar por
@@ -450,11 +517,14 @@ completa de contactos + el screenshot que se usó para sembrar
    (2026-09-18, `nuevo_chat_panel_000`) — `test_parse_contacts_panel_rows()`
    nuevo en `tests/test_corpus_grounding.py`, primera validación contra OCR
    real (antes solo sintética). Ver detalle abajo (`wavi debug-open`).
-4. ~~`_OPEN_NEW_CHAT_JS` roto~~ ✅ arreglado (2026-09-18) — ver detalle abajo.
-   Resto de señales de íconos que siguen pendientes: scroll-bottom button
-   (§`_CLICK_SCROLL_BOTTOM_BTN_JS`), `_CLOSE_NEW_CHAT_JS`,
-   `_CLEAR_SIDEBAR_SEARCH_JS`, reacciones — mismo patrón (detección primero
-   sobre corpus estático, cableado a `session.py` después, por separado).
+4. ~~`_OPEN_NEW_CHAT_JS` roto~~ ✅ resuelto por visión (2026-09-18,
+   `locate_new_chat_button()` + cableado a `session.py`) — ver detalle
+   arriba. Resto de señales de íconos que siguen pendientes: scroll-bottom
+   button (§`_CLICK_SCROLL_BOTTOM_BTN_JS`), `_CLOSE_NEW_CHAT_JS`,
+   `_CLEAR_SIDEBAR_SEARCH_JS`, reacciones — mismo patrón, aplicado en orden
+   correcto esta vez: `wavi debug-open` para ver qué hay, detector de visión
+   sobre corpus estático (no un selector parcheado) como resolución, cableado
+   a `session.py` con catch amplio + fallback DOM temporal si aplica.
 5. Evaluar si conviene sumar un VLM (Qwen-VL u otro) como capa de *razonamiento*
    sobre lo que OmniParser detecta — ver §4.6. Mantiene la filosofía de wavi como
    harness: OmniParser/vision aporta los "ojos" (detección estructurada), el
