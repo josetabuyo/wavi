@@ -275,7 +275,7 @@ class TestNavigateToContact:
         """El resultado se abre haciendo clic en las coordenadas resueltas
         (ADR-010), nunca con ArrowDown/Enter a ciegas ni con page.click(selector)."""
         await session.navigate_to_contact("Gregorio")
-        session.open_search_result.assert_awaited_once_with(100, 200)
+        session.open_search_result.assert_awaited_once_with(100, 200, expected_name="Gregorio")
         session._page.locator.assert_not_called()
 
     @pytest.mark.asyncio

@@ -866,10 +866,21 @@ class WASession:
         await self._page.wait_for_timeout(400)
         return await self._page.evaluate(_SEARCH_RESULTS_JS)
 
-    async def open_search_result(self, x: int, y: int) -> bool:
+    async def open_search_result(
+        self, x: int, y: int, expected_name: str | None = None
+    ) -> bool:
         """Click a result row (coordinates from search_contacts) and verify
         a real conversation ended up open — never assume success from the
-        click alone."""
+        click alone.
+
+        A conversation panel being present is NOT enough: if some other chat
+        was already open (the previous capture's), a click that silently
+        misses (list re-render, an incoming-call popup stealing the event —
+        real case 2026-09-24, a whole capture landed under the wrong
+        contact's folder) leaves that stale chat on screen and the panel
+        check passes anyway. When EXPECTED_NAME is given, the open chat's
+        header title must actually match it.
+        """
         await self._page.mouse.click(x, y)
         try:
             await self._page.wait_for_selector(
@@ -878,7 +889,30 @@ class WASession:
         except Exception:
             return False
         await self._page.wait_for_timeout(1500)
-        return True
+        if expected_name is None:
+            return True
+        title = await self.open_chat_title()
+        if title and _name_matches(expected_name, title):
+            return True
+        import sys
+        print(
+            f"[wavi] open_search_result: header shows {title!r}, expected "
+            f"{expected_name!r} — click did not open the chat", file=sys.stderr,
+        )
+        return False
+
+    async def open_chat_title(self) -> str | None:
+        """Display name in the header of the currently open chat (first line
+        of `#main header`), or None if no chat is open."""
+        try:
+            text = await self._page.evaluate(
+                "() => document.querySelector('#main header')?.innerText || null"
+            )
+        except Exception:
+            return None
+        if not text:
+            return None
+        return text.strip().split("\n", 1)[0].strip() or None
 
     async def _resolve_contact(self, contact: str, pick: int | None = None) -> dict:
         """Find CONTACT's chat/entry, disambiguating with a human when more
@@ -981,12 +1015,16 @@ class WASession:
     async def navigate_to_contact(self, contact: str, pick: int | None = None) -> None:
         chosen = await self._resolve_contact(contact, pick=pick)
 
-        opened = await self.open_search_result(chosen["x"], chosen["y"])
+        opened = await self.open_search_result(
+            chosen["x"], chosen["y"], expected_name=chosen["name"]
+        )
         if not opened:
             # The row's coordinates could have shifted (list re-rendered) —
             # resolve and click once more before giving up.
             chosen = await self._resolve_contact(contact, pick=pick)
-            opened = await self.open_search_result(chosen["x"], chosen["y"])
+            opened = await self.open_search_result(
+                chosen["x"], chosen["y"], expected_name=chosen["name"]
+            )
 
         if not opened:
             shot_path = await self._debug_screenshot("navigate_failed")
