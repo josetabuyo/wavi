@@ -7,6 +7,7 @@ classification, then uses DOM queries to locate exact play button positions
 """
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 from datetime import UTC
@@ -764,26 +765,37 @@ class WARunner:
 
             bubbles = new_bubbles
 
-        # Re-assign globally sequential IDs
+        # Re-assign globally sequential IDs.
+        #
+        # ONE convention for history_bubbles.json, whatever path wrote it:
+        # file order is newest → oldest and id=1 is the newest message — the
+        # same convention Bubble.id already uses in memory and the CLI prints.
+        # `all_bubbles` is accumulated oldest-first (older screens are prepended
+        # as we scroll up), so every path reverses it before writing.
+        #
+        # Before 2026-09-24 the fresh-capture path wrote the file oldest-first
+        # while --newest/--grow assumed newest-first, so one --newest run on top
+        # of a fresh capture produced a file with a seam in the middle and no
+        # global order at all (real case: javier_lurgo, 336 bubbles).
+        n = len(all_bubbles)
+        for i, b in enumerate(all_bubbles):
+            b.id = n - i
+        new_dicts = [b.as_dict() for b in reversed(all_bubbles)]
         if newest and existing_bubbles:
-            # newest: new (newer) prepended before existing (older)
-            final_bubbles = [b.as_dict() for b in all_bubbles] + existing_bubbles
-            for i, item in enumerate(final_bubbles):
-                item["id"] = i + 1
+            existing_bubbles = _normalize_newest_first(existing_bubbles)
+            final_bubbles = new_dicts + existing_bubbles
             print(f"[wavi] newest: merged {len(all_bubbles)} new + {len(existing_bubbles)} existing = {len(final_bubbles)} total", file=sys.stderr)
         elif grow and existing_bubbles:
-            # grow: existing (newer) first, then new captures (older)
-            final_bubbles = existing_bubbles + [b.as_dict() for b in all_bubbles]
-            for i, item in enumerate(final_bubbles):
-                item["id"] = i + 1
+            existing_bubbles = _normalize_newest_first(existing_bubbles)
+            final_bubbles = existing_bubbles + new_dicts
             print(f"[wavi] grow: merged {len(existing_bubbles)} existing + {len(all_bubbles)} new = {len(final_bubbles)} total", file=sys.stderr)
         else:
-            final_bubbles = [b.as_dict() for b in all_bubbles]
-            n = len(all_bubbles)
-            for i, b in enumerate(all_bubbles):
-                b.id = n - i
-            for i, item in enumerate(final_bubbles):
-                item["id"] = i + 1
+            final_bubbles = new_dicts
+        for i, item in enumerate(final_bubbles):
+            item["id"] = i + 1
+        filled = _fill_missing_dates(final_bubbles)
+        if filled:
+            print(f"[wavi] dates: inferred day for {filled} bubble(s) whose screen had no day pill", file=sys.stderr)
 
         # Save aggregated result to assets_dir
         if assets_dir:
@@ -1195,6 +1207,88 @@ async def run_enhanced(
         await transcribe_history_audios(Path(assets_dir))
 
     return {"bubbles": bubbles}
+
+
+_FULL_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$")
+_BARE_TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+
+
+def _normalize_newest_first(bubbles: list[dict]) -> list[dict]:
+    """Return BUBBLES ordered newest → oldest.
+
+    history_bubbles.json files written by a fresh capture before 2026-09-24
+    are oldest-first; everything else is newest-first. The only signal a
+    legacy file carries is its dated timestamps, so compare the first and
+    last dated bubble and flip the list when they read ascending. Fewer than
+    two dated bubbles, or equal ends: returned untouched.
+    """
+    dated = [b["timestamp"] for b in bubbles if _FULL_TS_RE.match(b.get("timestamp") or "")]
+    if len(dated) < 2:
+        return list(bubbles)
+    if all(a >= c for a, c in zip(dated, dated[1:], strict=False)):
+        return list(bubbles)                      # already newest-first
+    if all(a <= c for a, c in zip(dated, dated[1:], strict=False)):
+        return list(reversed(bubbles))            # legacy oldest-first file
+
+    # Neither: a file with a seam — e.g. a --newest run written on top of a
+    # legacy oldest-first capture (two ascending runs glued together). Sort
+    # by timestamp, newest first. Undated bubbles have no key of their own:
+    # they borrow the key of the previous dated bubble in file order so they
+    # stay attached to their neighbours instead of sinking to the end. The
+    # sort is stable, and the list is reversed first so bubbles sharing a
+    # minute keep newest-first relative order.
+    keyed: list[tuple[str, dict]] = []
+    last_key = ""
+    for b in bubbles:
+        ts = b.get("timestamp") or ""
+        if _FULL_TS_RE.match(ts):
+            last_key = ts
+        keyed.append((last_key, b))
+    # A leading undated run has no previous key: give it the first real one.
+    first_key = next((k for k, _ in keyed if k), "")
+    keyed = [(k or first_key, b) for k, b in keyed]
+    keyed.reverse()
+    keyed.sort(key=lambda kb: kb[0], reverse=True)
+    return [b for _, b in keyed]
+
+
+def _fill_missing_dates(bubbles: list[dict]) -> int:
+    """Give a day to bubbles whose timestamp is a bare 'HH:MM'.
+
+    A bubble ends up with only a time when its screenshot showed no day pill
+    (the pill sat outside the crop). Its day is that of the nearest bubble in
+    BUBBLES (newest-first order) that carries a full date — adjacent screens
+    overlap, so the nearest dated neighbour is nearly always on the same day;
+    on a tie the older neighbour wins, because the pill that governs a bubble
+    sits above it. Marks each such bubble with "date_inferred": true. Bubbles
+    with no timestamp at all are left alone (nothing to anchor a guess on).
+    Returns how many bubbles were filled.
+    """
+    dates: list[str | None] = []
+    for b in bubbles:
+        m = _FULL_TS_RE.match(b.get("timestamp") or "")
+        dates.append(m.group(1) if m else None)
+    filled = 0
+    for i, b in enumerate(bubbles):
+        ts = b.get("timestamp") or ""
+        if not _BARE_TIME_RE.match(ts):
+            continue
+        best: str | None = None
+        for dist in range(1, len(bubbles)):
+            older, newer = i + dist, i - dist
+            if older < len(bubbles) and dates[older]:
+                best = dates[older]
+                break
+            if newer >= 0 and dates[newer]:
+                best = dates[newer]
+                break
+        if best is None:
+            continue
+        b["timestamp"] = f"{best}T{ts}"
+        b["date_inferred"] = True
+        dates[i] = best
+        filled += 1
+    return filled
 
 
 async def transcribe_history_audios(history_dir: Path | str) -> int:

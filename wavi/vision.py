@@ -36,11 +36,16 @@ _ocr_stats = {"calls": 0, "secs": 0.0}
 RE_TIME          = re.compile(r'\d{1,2}:\d{2}\s*(a|p)\.?\s*m\.?', re.I)
 RE_TIME_END      = re.compile(r'\d{1,2}:\d{2}\s*(a|p)\.?\s*m\.?\s*[JVjv/✓✔✗]*\s*$', re.I)
 RE_CORE_TIME     = re.compile(r'(\d{1,2}:\d{2})\s*(a|p)', re.I)
-# Cyrillic OCR artifact: Apple Vision OCR misreads "p." as "р." (Cyrillic р looks like Latin p).
-# Pattern is specific to "р." so it doesn't fire on ordinary Russian/Bulgarian text.
+# Cyrillic OCR artifact: Apple Vision OCR misreads "p." as "р." (Cyrillic р looks like Latin p)
+# and, less often, "a." as "а." (Cyrillic а). The pattern is specific to "р."/"а." followed by a
+# period so it doesn't fire on ordinary Russian/Bulgarian text. The captured letter carries the
+# am/pm meaning and MUST be mapped back to Latin — dropping it used to turn "2:42 р. m." into a
+# bare "2:42" that downstream read as 02:42 (real case 2026-09-24: 17 afternoon audios filed
+# as early-morning in one export).
 # Known edge case: a 1:30-min audio whose duration block fuses with the timestamp ("1:30 р.")
-# is ambiguous; we accept "1:30" as the best-effort result since it's rare in practice.
-RE_TIME_CYRILLIC = re.compile(r'([1-9]\d?:\d{2})\s+р\.')
+# is ambiguous; we accept "1:30 p. m." as the best-effort result since it's rare in practice.
+RE_TIME_CYRILLIC = re.compile(r'([1-9]\d?:\d{2})\s+([ра])\.')
+_CYRILLIC_MERIDIEM = {"р": "p", "а": "a"}
 RE_DURATION      = re.compile(r'^\d+:\d{2}$')
 RE_AUDIO_LOOSE   = re.compile(r'^0[\s\-\.]?\d{2}$')
 RE_FILE_EXT      = re.compile(r'\.(xlsx?|docx?|pdf|csv|pptx?|txt|zip|rar|mov|mp4|png|jpg|jpeg)\b', re.I)
@@ -347,15 +352,15 @@ def _extract_timestamp(raw_blocks: list[dict]) -> str | None:
             m = RE_TIME.search(t)
             if m:
                 return t[m.start():m.end()].strip()
-    # Third pass: Cyrillic OCR artifact ("р." read as "p.") — returns bare "H:MM" without am/pm.
-    # Note: this differs from passes 1-2 which return the full "H:MM p. m." string.
-    # Downstream (dedup key, display) tolerates both formats.
+    # Third pass: Cyrillic OCR artifact ("p." read as "р.", "a." as "а.") — normalised back to
+    # the same "H:MM p. m." shape passes 1-2 return, so the am/pm information survives into
+    # _parse_time_str instead of being silently dropped.
     for b in raw_blocks:
         t = b["text"].strip()
         if len(t) < 25:
             m = RE_TIME_CYRILLIC.search(t)
             if m:
-                return m.group(1)
+                return f"{m.group(1)} {_CYRILLIC_MERIDIEM[m.group(2)]}. m."
     return None
 
 

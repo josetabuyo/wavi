@@ -121,13 +121,13 @@ class TestExtractTimestamp:
         """'р.' es OCR de 'p.' — el tiempo que precede a 'р.' es el timestamp."""
         blocks = [{"text": "0:19 6:13 р. т. /"}]
         result = _extract_timestamp(blocks)
-        assert result == "6:13"
+        assert result == "6:13 p. m."
 
     def test_cyrillic_ocr_artifact_separate_block(self):
         """Timestamp cirílico en bloque separado del duration."""
         blocks = [{"text": "0:19"}, {"text": "6:13 р."}]
         result = _extract_timestamp(blocks)
-        assert result == "6:13"
+        assert result == "6:13 p. m."
 
     def test_cyrillic_does_not_match_zero_duration(self):
         """'0:19 р.' no matchea: el patrón requiere [1-9] como primer dígito."""
@@ -142,13 +142,27 @@ class TestExtractTimestamp:
     def test_cyrillic_long_duration_ambiguous_edge_case(self):
         """
         Audio de 1:30 min cuyo bloque OCR funde duration+timestamp como '1:30 р.':
-        retorna '1:30' (best-effort). Caso raro en práctica ya que duration y timestamp
+        retorna '1:30 p. m.' (best-effort). Caso raro en práctica ya que duration y timestamp
         están separados espacialmente en WA y suelen quedar en bloques distintos.
         """
         blocks = [{"text": "1:30 р."}]
-        # Comportamiento documentado: ambiguo, acepta '1:30' como resultado
+        # Comportamiento documentado: ambiguo, acepta '1:30 p. m.' como resultado
         result = _extract_timestamp(blocks)
-        assert result == "1:30"
+        assert result == "1:30 p. m."
+
+    def test_cyrillic_pm_keeps_afternoon_when_parsed(self):
+        """'2:42 р. m.' es 14:42, no 02:42 — el marcador p.m. cirílico debe sobrevivir
+        hasta _parse_time_str (bug real 2026-09-24: 17 audios de la tarde archivados
+        como madrugada en un export)."""
+        from wavi.vision import _parse_time_str
+        blocks = [{"text": "1:33 2:42 р. m. M/"}]
+        assert _parse_time_str(_extract_timestamp(blocks)) == "14:42"
+
+    def test_cyrillic_am_artifact(self):
+        """'а.' (а cirílica) es OCR de 'a.' → mañana."""
+        from wavi.vision import _parse_time_str
+        blocks = [{"text": "9:08 а. m."}]
+        assert _parse_time_str(_extract_timestamp(blocks)) == "09:08"
 
 
 # ── _is_noise ─────────────────────────────────────────────────────────────────

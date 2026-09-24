@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from wavi.runner import WARunner
+from wavi.runner import WARunner, _fill_missing_dates, _normalize_newest_first
 from wavi.vision import Bubble
 
 
@@ -889,11 +889,14 @@ class TestCaptureFullHistoryNewest:
         assert "B" not in texts, "B is the duplicate anchor in iter_1, should not appear in new result"
         assert "A" not in texts, "A is from existing, should not appear in new result"
 
-        # Check merged result in JSON
+        # Check merged result in JSON — newest → oldest, one convention for every path.
+        # Geometry decides age: within iter_0, D (y=100) sits above C (y=200), so C is
+        # the newest; E comes from the screen above iter_0, so it is the oldest of the
+        # new block. Existing bubbles carry no ISO dates, so they are kept as stored.
         json_result = json.loads(json_path.read_text())
         json_texts = [b["text"] for b in json_result]
-        # Final order should be: E, D, C (new, newest first) + A, B (existing, in original order)
-        assert json_texts == ["E", "D", "C", "A", "B"], f"Merged order incorrect: {json_texts}"
+        assert json_texts == ["C", "D", "E", "A", "B"], f"Merged order incorrect: {json_texts}"
+        assert [b["id"] for b in json_result] == [1, 2, 3, 4, 5]
 
     @pytest.mark.asyncio
     async def test_newest_falls_back_when_no_json(self, tmp_path):
@@ -934,10 +937,11 @@ class TestCaptureFullHistoryNewest:
             _hist_bubble(screen_id=2, sender="me", text="B", y=200, timestamp="1:01 p.m."),
         ]
 
-        # New capture: D, C (D is newest, will be first after merge)
+        # New capture: C above D on screen (y=100 < y=200) → D is the newest,
+        # and must come first in the file after the merge.
         iter0 = [
-            _hist_bubble(screen_id=3, sender="other", text="D", y=100, timestamp="1:03 p.m."),
-            _hist_bubble(screen_id=4, sender="other", text="C", y=200, timestamp="1:02 p.m."),
+            _hist_bubble(screen_id=2, sender="other", text="C", y=100, timestamp="1:02 p.m."),
+            _hist_bubble(screen_id=1, sender="other", text="D", y=200, timestamp="1:03 p.m."),
         ]
 
         assets_dir = tmp_path / "assets"
@@ -1227,3 +1231,114 @@ class TestCheckUpdates:
         assert result["status"] == "updates"
         assert len(result["new_inbound"]) == 1
         assert result["new_inbound"][0]["name"] == "Nuevo"
+
+
+# ── history_bubbles.json order + date inference (2026-09-24) ─────────────────
+
+
+
+class TestHistoryFileOrder:
+    """Una sola convención para history_bubbles.json, la escriba quien la
+    escriba: orden newest → oldest, id=1 el más nuevo. Antes la captura fresca
+    escribía oldest-first y --newest asumía newest-first: un --newest sobre una
+    captura fresca dejaba el archivo con una costura en el medio y sin orden
+    global (caso real: javier_lurgo, 336 burbujas)."""
+
+    @pytest.mark.asyncio
+    async def test_fresh_capture_writes_newest_first(self, tmp_path):
+        import json
+        iter0 = [
+            _hist_bubble(screen_id=3, sender="me", text="A", y=100, timestamp="1:02 p.m."),
+            _hist_bubble(screen_id=2, sender="me", text="B", y=200, timestamp="1:03 p.m."),
+            _hist_bubble(screen_id=1, sender="me", text="C", y=300, timestamp="1:04 p.m."),
+        ]
+        iter1 = [
+            _hist_bubble(screen_id=2, sender="other", text="D", y=100, timestamp="1:00 p.m."),
+            _hist_bubble(screen_id=1, sender="me",    text="A", y=300, timestamp="1:02 p.m."),
+        ]
+        runner = _mock_runner_for_history(iter0, iter1)
+        assets_dir = tmp_path / "assets"
+        result = await runner.capture_full_history(assets_dir=assets_dir)
+
+        saved = json.loads((assets_dir / "history_bubbles.json").read_text())
+        assert [b["text"] for b in saved] == ["C", "B", "A", "D"]
+        assert [b["id"] for b in saved] == [1, 2, 3, 4]
+        # in-memory ids agree with the file: newest has id=1 on both sides
+        assert min(result, key=lambda b: b.id).text == "C"
+
+    def test_normalize_flips_legacy_ascending_file(self):
+        legacy = [
+            {"text": "old", "timestamp": "2026-09-18T11:00"},
+            {"text": "mid", "timestamp": "15:22"},          # bare time must not break the check
+            {"text": "new", "timestamp": "2026-09-18T19:15"},
+        ]
+        assert [b["text"] for b in _normalize_newest_first(legacy)] == ["new", "mid", "old"]
+
+    def test_normalize_keeps_newest_first_file(self):
+        current = [
+            {"text": "new", "timestamp": "2026-09-24T13:24"},
+            {"text": "old", "timestamp": "2026-09-24T09:53"},
+        ]
+        assert _normalize_newest_first(current) == current
+
+    def test_normalize_repairs_file_with_a_seam(self):
+        """Un --newest viejo sobre una captura fresca vieja dejaba dos tramos
+        ascendentes pegados: [nuevo asc][viejo asc]. Los extremos engañan (el
+        primero es más nuevo que el último), así que hay que ordenar de verdad,
+        y las burbujas sin fecha viajan pegadas a su vecina anterior."""
+        seam = [
+            {"text": "n1", "timestamp": "2026-09-18T19:15"},
+            {"text": "n1-audio", "timestamp": None},           # glued to n1
+            {"text": "n2", "timestamp": "2026-09-24T08:57"},
+            {"text": "o1", "timestamp": "2026-09-18T10:00"},
+            {"text": "o2", "timestamp": "2026-09-18T11:02"},
+        ]
+        out = [b["text"] for b in _normalize_newest_first(seam)]
+        assert out == ["n2", "n1-audio", "n1", "o2", "o1"]
+
+    def test_normalize_leaves_undated_file_alone(self):
+        undated = [{"text": "a", "timestamp": "1:00 p.m."}, {"text": "b", "timestamp": None}]
+        assert _normalize_newest_first(undated) == undated
+
+
+class TestFillMissingDates:
+    """Una burbuja queda con 'HH:MM' pelado cuando su captura no mostró la
+    pastilla de día. Hereda el día del vecino con fecha más cercano; en empate
+    gana el más viejo (la pastilla que la gobierna está arriba)."""
+
+    def test_bare_time_takes_nearest_dated_neighbour(self):
+        bubbles = [  # newest → oldest
+            {"timestamp": "2026-09-21T15:23"},
+            {"timestamp": "15:22"},
+            {"timestamp": "15:21"},
+            {"timestamp": "2026-09-20T15:20"},
+        ]
+        assert _fill_missing_dates(bubbles) == 2
+        assert bubbles[1]["timestamp"] == "2026-09-21T15:22"   # closest dated neighbour wins
+        assert bubbles[1]["date_inferred"] is True
+        assert bubbles[2]["timestamp"] == "2026-09-20T15:21"
+
+    def test_tie_prefers_older_neighbour(self):
+        bubbles = [
+            {"timestamp": "2026-09-21T10:00"},
+            {"timestamp": "09:00"},
+            {"timestamp": "2026-09-20T23:00"},
+        ]
+        _fill_missing_dates(bubbles)
+        assert bubbles[1]["timestamp"] == "2026-09-20T09:00"
+
+    def test_none_and_full_timestamps_untouched(self):
+        bubbles = [
+            {"timestamp": None},
+            {"timestamp": "2026-09-21T10:00"},
+            {"timestamp": "unparseable"},
+        ]
+        assert _fill_missing_dates(bubbles) == 0
+        assert bubbles[0]["timestamp"] is None
+        assert "date_inferred" not in bubbles[0]
+        assert bubbles[2]["timestamp"] == "unparseable"
+
+    def test_nothing_to_anchor_on(self):
+        bubbles = [{"timestamp": "09:00"}, {"timestamp": "10:00"}]
+        assert _fill_missing_dates(bubbles) == 0
+        assert bubbles[0]["timestamp"] == "09:00"
