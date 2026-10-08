@@ -126,9 +126,32 @@ wavi check-updates [session]                  # diff sidebar vs last snapshot
 wavi list-contacts [session]                  # list all contacts
 ```
 
-`wavi get`/`check-updates` read text via OCR over screenshots of the chat —
-they do not download or extract media (photos/videos) that were sent in the
-conversation, only whatever is visible as chat bubbles.
+`wavi get`/`check-updates` read text via OCR over screenshots of the chat
+(voice notes are downloaded and transcribed). Photos and videos are not part
+of `get` — use `wavi media` for those.
+
+### Where captures are saved
+
+Never in your current directory. Default: `<wavi output dir>/<session>/<contact>/`
+— the wavi repo's `output/` on a dev install, `~/.local/share/wavi/output/`
+otherwise, or `$WAVI_OUTPUT_DIR`. `wavi get` prints the exact path when it
+finishes. Captures copy chat text verbatim (credentials included) — don't
+copy them into other repos.
+
+## Media — photos and videos (full files)
+
+```bash
+wavi media [session] "Contact Name"                                  # all photos + videos
+wavi media [session] "Contact Name" --type video --from 2026-10-08   # videos since a date
+wavi media [session] "Contact Name" --limit 5 --json-out
+```
+
+Walks the chat's media viewer newest → oldest and saves the original files
+(not thumbnails) to `<output>/<session>/<contact>/media/` as
+`<date>_<time>_<sender>_<hash>.<ext>`, plus `media.json` (sender, timestamp,
+bytes, sha1). Re-runs skip files already downloaded. Typical follow-up:
+`ffmpeg -ss 10 -i video.mp4 -frames:v 1 frame.jpg` for stills, or extract the
+audio track to transcribe it.
 
 ## Send
 
@@ -139,6 +162,25 @@ wavi send [session] "Contact Name" "message text"
 There is currently no way to send file attachments (images, PDFs, etc.)
 through `wavi send` — text only. `--screenshot-out` only saves a screenshot
 *after* sending for confirmation; it does not attach anything to the message.
+
+`send` refuses rather than send something wrong: it fails if the chat already
+has a draft in the compose box, if the box never takes focus, or if the typed
+text doesn't match the message (lost/extra characters) after one retry.
+Numbered/bulleted lists are typed once (WA auto-continues them; wavi doesn't
+duplicate "2. 2.").
+
+## Edit a sent message (within 15 minutes)
+
+```bash
+wavi edit [session] "Contact Name" "atías, ya vi" "Matías, ya vi" --fragment   # replace just that part
+wavi edit [session] "Contact Name" "a las 5" "Nos vemos a las 6 en la oficina" # replace the whole text
+```
+
+MATCH must identify exactly one of **your own** messages in the chat
+(accent/case-insensitive). It fails without touching anything when nothing
+matches, when several match (they're listed — use a longer fragment), or when
+the message is older than WhatsApp's 15-minute edit window. Exit code 2 means
+the edit was saved but the new text couldn't be confirmed in the chat.
 
 ## Contact resolution — never guesses when a name is ambiguous
 
