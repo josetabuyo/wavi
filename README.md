@@ -110,7 +110,7 @@ wavi check-updates           # subsequent: no_updates or updates + contact list
 | `--from YYYY-MM-DD` | Stop scrolling when the oldest visible day pill is before this date. Drop bubbles older than the date. |
 | `--newest` | Load existing `history_bubbles.json` and stop the moment a known message is found. Prepends new messages. Goes toward the **present**. |
 | `--grow` | Load existing history, fast-forward past known content, then capture N more iterations toward the **past**. Saves a `grow_checkpoint.json` so each run continues where the last one stopped. Incompatible with `--newest`. |
-| `--assets DIR` | Override the output directory (default `output/<session>/<contact>/`). |
+| `--assets DIR` | Override the output directory (default `<wavi output dir>/<session>/<contact>/` — the repo's `output/` on dev installs, `~/.local/share/wavi/output/` otherwise, or `$WAVI_OUTPUT_DIR`; never the caller's cwd). |
 | `--json-out` | Print the bubble list as JSON to stdout instead of the summary table. |
 
 ### `--grow` workflow for long chats
@@ -121,7 +121,7 @@ wavi get "Contact" --grow --max-iter 10   # run 2: fast-forwards to boundary, ca
 # repeat — prints "history is now complete" when scrollTop reaches 0
 ```
 
-State is stored in `output/<session>/<contact>/grow_checkpoint.json`. Delete it to restart from scratch (also delete `history_bubbles.json`).
+State is stored in `<wavi output dir>/<session>/<contact>/grow_checkpoint.json`. Delete it to restart from scratch (also delete `history_bubbles.json`).
 
 ## check-updates behavior
 

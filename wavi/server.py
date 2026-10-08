@@ -25,6 +25,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+
+def _output_dir() -> Path:
+    from wavi.cli import DEFAULT_OUTPUT_DIR
+    return DEFAULT_OUTPUT_DIR
+
+
 _DEFAULT_SESSIONS_DIR = Path(os.environ.get(
     "WAVI_SESSIONS_DIR",
     str(Path(__file__).parent.parent / "data" / "sessions"),
@@ -129,7 +135,7 @@ def create_app(sessions_dir: Path | None = None):
         assets_dir = (
             Path(req.assets_dir)
             if req.assets_dir
-            else Path("output") / profile.name / req.contact.lower().replace(" ", "_")
+            else _output_dir() / profile.name / req.contact.lower().replace(" ", "_")
         )
 
         from_date = None
@@ -189,7 +195,7 @@ def create_app(sessions_dir: Path | None = None):
         if is_locked(profile):
             raise HTTPException(409, f"Session '{req.session}' is busy.")
 
-        assets_path = Path("output") / profile.name / "last-updates"
+        assets_path = _output_dir() / profile.name / "last-updates"
         runner = WARunner(profile)
         with session_lock(profile, "check-updates"):
             result = await runner.check_updates(assets_dir=assets_path, reset=req.reset)
@@ -203,7 +209,7 @@ def create_app(sessions_dir: Path | None = None):
         if is_locked(profile):
             raise HTTPException(409, f"Session '{req.session}' is busy.")
 
-        assets_path = Path("output") / profile.name / "contacts"
+        assets_path = _output_dir() / profile.name / "contacts"
         runner = WARunner(profile)
         with session_lock(profile, "list-contacts"):
             result = await runner.list_contacts(assets_dir=assets_path)

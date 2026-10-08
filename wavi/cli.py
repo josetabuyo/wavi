@@ -74,6 +74,26 @@ def _resolve_sessions_dir() -> Path:
     return xdg_data / "wavi" / "sessions"
 
 DEFAULT_SESSIONS_DIR = _resolve_sessions_dir()
+
+
+def _resolve_output_dir() -> Path:
+    """Central default for captures (history_bubbles.json, media, updates).
+
+    Never the caller's working directory: a capture copies chat text verbatim,
+    credentials included, and used to land inside whatever repo the caller
+    happened to be in (real case 2026-10-04, DataLake's client repo).
+    Same resolution order as the sessions dir.
+    """
+    if "WAVI_OUTPUT_DIR" in os.environ:
+        return Path(os.environ["WAVI_OUTPUT_DIR"])
+    repo_root = Path(__file__).parent.parent
+    if (repo_root / "pyproject.toml").exists():
+        return repo_root / "output"
+    xdg_data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return xdg_data / "wavi" / "output"
+
+
+DEFAULT_OUTPUT_DIR = _resolve_output_dir()
 REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 _HEADLESS_CHROME_ARGS = [
@@ -993,7 +1013,9 @@ def status(session: str):
 @main.command("get")
 @click.argument("session", default="default")
 @click.argument("contact")
-@click.option("--assets", default=None, help="Directory to save screenshots and history.")
+@click.option("--assets", default=None,
+              help="Directory to save screenshots and history. Defaults to "
+                   "<wavi output dir>/<session>/<contact>/ (WAVI_OUTPUT_DIR), never the cwd.")
 @click.option("--headless/--no-headless", default=True, show_default=True,
               help="Headless fallback (ignored when daemon is running headful).")
 @click.option("--json-out", is_flag=True, help="Output results as JSON.")
@@ -1019,7 +1041,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
     from wavi.runner import run_enhanced
 
     profile_dir = _profile(session)
-    assets_dir = Path(assets) if assets else Path("output") / profile_dir.name / contact.lower().replace(" ", "_")
+    assets_dir = Path(assets) if assets else DEFAULT_OUTPUT_DIR / profile_dir.name / contact.lower().replace(" ", "_")
 
     from_date_obj: _Date | None = None
     if from_date:
@@ -1063,6 +1085,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
                 sys.exit(1)
 
     bubbles = result["bubbles"]
+    click.echo(f"[wavi] historial guardado en: {assets_dir.resolve()}", err=True)
 
     if json_out:
         click.echo(json.dumps([b.as_dict() for b in bubbles], indent=2, ensure_ascii=False))
@@ -1236,7 +1259,7 @@ def boarding(open_browser: bool):
 @click.argument("session", default="default")
 @click.option("--assets", "assets_dir", default=None,
               help="Directory to store snapshots and state. "
-                   "Defaults to output/<session>/last-updates/.")
+                   "Defaults to <wavi output dir>/<session>/last-updates/.")
 @click.option("--reset", is_flag=True,
               help="Ignore previous snapshot and treat this run as the first one.")
 def check_updates(session: str, assets_dir: str | None, reset: bool):
@@ -1261,7 +1284,7 @@ def check_updates(session: str, assets_dir: str | None, reset: bool):
     assets_path = (
         Path(assets_dir)
         if assets_dir
-        else Path("output") / profile_dir.name / "last-updates"
+        else DEFAULT_OUTPUT_DIR / profile_dir.name / "last-updates"
     )
     from wavi.queue import is_locked, session_lock
     if is_locked(profile_dir):
@@ -1302,7 +1325,7 @@ def check_updates(session: str, assets_dir: str | None, reset: bool):
               help="Run Chrome headless (default) or visible.")
 @click.option("--assets", "assets_dir", default=None,
               help="Directory to save contacts_list.json + screenshot.png. "
-                   "Defaults to output/<session>/contacts/.")
+                   "Defaults to <wavi output dir>/<session>/contacts/.")
 def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str):
     """List all contacts available in the 'New chat' panel."""
     import json as _json
@@ -1310,7 +1333,7 @@ def list_contacts(session: str, json_out: bool, headless: bool, assets_dir: str)
     from wavi.runner import WARunner
 
     profile_dir = _profile(session)
-    assets_path = Path(assets_dir) if assets_dir else Path("output") / profile_dir.name / "contacts"
+    assets_path = Path(assets_dir) if assets_dir else DEFAULT_OUTPUT_DIR / profile_dir.name / "contacts"
     from wavi.queue import is_locked, session_lock
     if is_locked(profile_dir):
         click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
