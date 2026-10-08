@@ -790,3 +790,34 @@ class TestNeverDeleteSessionProfile:
         from wavi.cli import _cleanup_crash_files
         source = inspect.getsource(_cleanup_crash_files)
         assert "IndexedDB" not in source
+
+
+class TestListAutoprefix:
+    """WA continues a list by itself after Shift+Enter ("2. ", "• ");
+    send_message must not type the marker twice ("2. 2. dos" — DataLake
+    2026-10-04, reproduced live 2026-10-08)."""
+
+    @pytest.fixture
+    def session(self):
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        return s
+
+    @pytest.mark.asyncio
+    async def test_no_autoprefix_types_line_as_is(self, session):
+        session._page.evaluate = AsyncMock(return_value="\n")
+        assert await session._absorb_list_autoprefix("fin") == "fin"
+        session._page.keyboard.press.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_matching_marker_is_not_typed_again(self, session):
+        session._page.evaluate = AsyncMock(return_value="2. ")
+        assert await session._absorb_list_autoprefix("2. dos") == "dos"
+        session._page.keyboard.press.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_foreign_marker_is_erased(self, session):
+        session._page.evaluate = AsyncMock(return_value="3. ")
+        assert await session._absorb_list_autoprefix("fin") == "fin"
+        presses = [c.args[0] for c in session._page.keyboard.press.call_args_list]
+        assert presses == ["Backspace"] * 3

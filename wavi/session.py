@@ -263,6 +263,16 @@ _FOCUS_IN_CHAT_PANEL_JS = """
 }
 """
 
+# Text of the compose box's last paragraph. After Shift+Enter inside a list
+# WA's editor auto-continues it ("2. ", "• "), so typing the caller's own
+# "2. dos" produced "2. 2. dos" (reported by DataLake 2026-10-04).
+_LAST_COMPOSE_LINE_JS = """
+() => {
+    const ps = document.querySelectorAll('footer [contenteditable="true"] p');
+    return ps.length ? ps[ps.length - 1].innerText : null;
+}
+"""
+
 _CHECK_COMPOSE_EMPTY_JS = """
 () => {
     const sels = [
@@ -542,9 +552,15 @@ _EXTRACT_SIDEBAR_UPDATES_JS = """
 # aren't tagged with a stable selector); instead every distinct
 # (name, subtitle) row is surfaced so the caller can disambiguate with a
 # human instead of guessing.
+# The self-chat ("Name (Tú)") is not a cell-frame-container: WA renders it
+# as [data-testid="message-yourself-row"], with its time in
+# cell-frame-primary-detail — without both it never shows up as a result
+# (seen 2026-10-08). DOM bridge until search moves to vision.
+_RESULT_ROW_SEL = '[data-testid="cell-frame-container"], [data-testid="message-yourself-row"]'
+
 _SEARCH_RESULTS_JS = """
 () => {
-    const cells = document.querySelectorAll('[data-testid="cell-frame-container"]');
+    const cells = document.querySelectorAll('""" + _RESULT_ROW_SEL + """');
     const out = [];
     cells.forEach((cell) => {
         const titleEl = cell.querySelector('[data-testid="cell-frame-title"] span[title]')
@@ -563,7 +579,8 @@ _SEARCH_RESULTS_JS = """
         // contact with no conversation history has no last-activity time.
         // Used to rank real chats above never-messaged contacts when a name
         // is ambiguous, without trying to parse WA's date/time formats.
-        const tsEl = cell.querySelector('[data-testid="cell-frame-timestamp"]');
+        const tsEl = cell.querySelector('[data-testid="cell-frame-timestamp"]')
+                  || cell.querySelector('[data-testid="cell-frame-primary-detail"]');
         const last_activity = tsEl ? (tsEl.textContent || '').trim() : '';
 
         const rect = cell.getBoundingClientRect();
@@ -885,7 +902,7 @@ class WASession:
 
         try:
             await self._page.wait_for_selector(
-                '[data-testid="cell-frame-container"]', timeout=wait_results_ms
+                _RESULT_ROW_SEL, timeout=wait_results_ms
             )
         except Exception:
             return []
@@ -1214,10 +1231,13 @@ class WASession:
         # send each line as a separate message.
         lines = text.split("\n")
         for i, line in enumerate(lines):
+            if i > 0:
+                line = await self._absorb_list_autoprefix(line)
             if line:
                 await self._page.keyboard.type(line, delay=30)
             if i < len(lines) - 1:
                 await self._page.keyboard.press("Shift+Enter")
+                await self._page.wait_for_timeout(150)
         await self._page.wait_for_timeout(500)
 
         await self._page.keyboard.press("Enter")
@@ -1236,6 +1256,23 @@ class WASession:
                 raise RuntimeError("Mensaje sigue en el compose box después de intentar Send — no fue enviado")
 
         return {"selector": info.get("selector"), "x": info["x"], "y": info["y"]}
+
+    async def _absorb_list_autoprefix(self, line: str) -> str:
+        """Reconcile LINE with whatever WA auto-inserted on the new line.
+
+        Inside a list WA continues it on its own ("2. ", "• "). If LINE
+        already starts with that marker, only the rest is typed; otherwise
+        the marker is erased so LINE comes out exactly as written.
+        """
+        auto = await self._page.evaluate(_LAST_COMPOSE_LINE_JS)
+        marker = (auto or "").strip()
+        if not marker:
+            return line
+        if line.startswith(marker):
+            return line[len(marker):].lstrip(" ")
+        for _ in range(len(auto)):
+            await self._page.keyboard.press("Backspace")
+        return line
 
     async def _click_new_chat_via_vision(self) -> bool:
         """Locates the "new chat" button via vision
