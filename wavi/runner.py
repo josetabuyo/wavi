@@ -1262,12 +1262,23 @@ def _fill_missing_dates(bubbles: list[dict]) -> int:
     on a tie the older neighbour wins, because the pill that governs a bubble
     sits above it. Marks each such bubble with "date_inferred": true. Bubbles
     with no timestamp at all are left alone (nothing to anchor a guess on).
+
+    The inferred day never breaks chronology: a bubble whose time is earlier
+    than its older anchor's time must be from a later day (anchor + 1), and
+    one later than its newer anchor's time from an earlier day (anchor - 1).
+    Real case 2026-10-04: a reply at 17:09 sat below a message stamped
+    2026-10-03T18:13 with no "Hoy" pill on screen, and inherited the 3rd.
     Returns how many bubbles were filled.
     """
+    from datetime import date as _date
+    from datetime import timedelta as _td
+
     dates: list[str | None] = []
+    times: list[str | None] = []
     for b in bubbles:
         m = _FULL_TS_RE.match(b.get("timestamp") or "")
         dates.append(m.group(1) if m else None)
+        times.append(m.group(2) if m else None)
     filled = 0
     for i, b in enumerate(bubbles):
         ts = b.get("timestamp") or ""
@@ -1278,15 +1289,19 @@ def _fill_missing_dates(bubbles: list[dict]) -> int:
             older, newer = i + dist, i - dist
             if older < len(bubbles) and dates[older]:
                 best = dates[older]
+                if ts < times[older]:
+                    best = (_date.fromisoformat(best) + _td(days=1)).isoformat()
                 break
             if newer >= 0 and dates[newer]:
                 best = dates[newer]
+                if ts > times[newer]:
+                    best = (_date.fromisoformat(best) - _td(days=1)).isoformat()
                 break
         if best is None:
             continue
         b["timestamp"] = f"{best}T{ts}"
         b["date_inferred"] = True
-        dates[i] = best
+        dates[i], times[i] = best, ts
         filled += 1
     return filled
 

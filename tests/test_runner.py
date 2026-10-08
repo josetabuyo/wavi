@@ -1321,11 +1321,29 @@ class TestFillMissingDates:
     def test_tie_prefers_older_neighbour(self):
         bubbles = [
             {"timestamp": "2026-09-21T10:00"},
-            {"timestamp": "09:00"},
+            {"timestamp": "23:30"},
             {"timestamp": "2026-09-20T23:00"},
         ]
         _fill_missing_dates(bubbles)
-        assert bubbles[1]["timestamp"] == "2026-09-20T09:00"
+        assert bubbles[1]["timestamp"] == "2026-09-20T23:30"
+
+    def test_earlier_time_than_older_anchor_is_next_day(self):
+        # Real case 2026-10-04: reply at 17:09 below a message of 10-03 18:13,
+        # no "Hoy" pill on screen — it cannot be from the 3rd.
+        bubbles = [
+            {"timestamp": "17:09"},
+            {"timestamp": "2026-10-03T18:13"},
+        ]
+        assert _fill_missing_dates(bubbles) == 1
+        assert bubbles[0]["timestamp"] == "2026-10-04T17:09"
+
+    def test_later_time_than_newer_anchor_is_previous_day(self):
+        bubbles = [
+            {"timestamp": "2026-10-04T08:00"},
+            {"timestamp": "22:00"},
+        ]
+        _fill_missing_dates(bubbles)
+        assert bubbles[1]["timestamp"] == "2026-10-03T22:00"
 
     def test_none_and_full_timestamps_untouched(self):
         bubbles = [
