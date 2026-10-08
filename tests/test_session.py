@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from wavi.session import WA_URL, WINDOW_H, WINDOW_W, WASession
+from wavi.session import WA_URL, WINDOW_H, WINDOW_W, WASession, _same_letters
 
 
 def _make_session() -> WASession:
@@ -821,3 +821,60 @@ class TestListAutoprefix:
         assert await session._absorb_list_autoprefix("fin") == "fin"
         presses = [c.args[0] for c in session._page.keyboard.press.call_args_list]
         assert presses == ["Backspace"] * 3
+
+
+class TestSendMessageGuards:
+    """send_message never sends what isn't exactly the message: no glued
+    draft, no keystrokes before focus, no lost letters ("atías" — DataLake
+    2026-10-08)."""
+
+    def _session(self, answers):
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+
+        def evaluate(js, *a):
+            for key, value in answers.items():
+                if key in js:
+                    return value() if callable(value) else value
+            return None
+        s._page.evaluate = AsyncMock(side_effect=evaluate)
+        return s
+
+    def _base(self, **over):
+        answers = {
+            "found: true": {"found": True, "x": 10, "y": 20, "selector": "footer"},
+            "if (el) return (el.innerText": True,     # compose empty
+            "a.closest('footer": True,                # focus in compose
+            "join(": "Matías, hola",                  # compose text
+            "data-icon": False,
+        }
+        answers.update(over)
+        return answers
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_a_draft_is_present(self):
+        s = self._session(self._base(**{"if (el) return (el.innerText": False}))
+        with pytest.raises(RuntimeError, match="borrador"):
+            await s.send_message("Matías, hola")
+        s._page.keyboard.type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refuses_when_compose_never_takes_focus(self):
+        s = self._session(self._base(**{"a.closest('footer": False}))
+        with pytest.raises(RuntimeError, match="foco"):
+            await s.send_message("Matías, hola")
+        s._page.keyboard.type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_lost_letter_is_never_sent(self):
+        s = self._session(self._base(**{"join(": "atías, hola"}))
+        with pytest.raises(RuntimeError, match="no coincide"):
+            await s.send_message("Matías, hola")
+        presses = [c.args[0] for c in s._page.keyboard.press.call_args_list]
+        assert "Enter" not in presses
+        assert s._page.keyboard.type.call_count == 2   # one clean retry
+
+
+def test_same_letters_tolerates_list_markers_only():
+    assert _same_letters("• a\n• b", "- a\n- b")
+    assert not _same_letters("atías", "Matías")

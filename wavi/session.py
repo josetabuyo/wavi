@@ -273,6 +273,32 @@ _LAST_COMPOSE_LINE_JS = """
 }
 """
 
+# Full compose text, one line per paragraph (empty paragraphs → "").
+_COMPOSE_TEXT_JS = """
+() => {
+    const ps = document.querySelectorAll('footer [contenteditable="true"] p');
+    if (!ps.length) return null;  // unknown editor DOM — can't verify
+    return [...ps].map(p => p.innerText.replace(/\\n$/, '')).join('\\n');
+}
+"""
+
+_FOCUS_IN_COMPOSE_JS = """
+() => {
+    const a = document.activeElement;
+    return !!(a && a.closest && a.closest('footer [contenteditable="true"]'));
+}
+"""
+
+
+def _same_letters(a: str, b: str) -> bool:
+    """Compare ignoring everything but letters/digits — WA's editor rewrites
+    list markers ("- " → "• ") and may style markdown, but a lost or extra
+    character is a real difference."""
+    def keep(s: str) -> str:
+        return "".join(ch for ch in s if ch.isalnum())
+    return keep(a) == keep(b)
+
+
 _CHECK_COMPOSE_EMPTY_JS = """
 () => {
     const sels = [
@@ -1224,21 +1250,46 @@ class WASession:
         if not info.get("found"):
             raise RuntimeError("No se encontró el input de mensajes (compose box) en el chat actual")
 
-        await self._page.mouse.click(info["x"], info["y"])
-        await self._page.wait_for_timeout(300)
+        # A draft already in the box would be sent glued to TEXT — and it may
+        # be a leftover from a misdirected search (DataLake 2026-10-03).
+        if not await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS):
+            raise RuntimeError(
+                "El chat tiene un borrador en la caja de mensaje — no se envía "
+                "nada para no mezclarlo con el mensaje. Revisalo y borralo a mano."
+            )
 
-        # Split on newlines — use Shift+Enter for line breaks so WA doesn't
-        # send each line as a separate message.
-        lines = text.split("\n")
-        for i, line in enumerate(lines):
-            if i > 0:
-                line = await self._absorb_list_autoprefix(line)
-            if line:
-                await self._page.keyboard.type(line, delay=30)
-            if i < len(lines) - 1:
-                await self._page.keyboard.press("Shift+Enter")
-                await self._page.wait_for_timeout(150)
-        await self._page.wait_for_timeout(500)
+        # Never type before the compose box actually holds focus: keystrokes
+        # sent while WA is still settling are lost — real case 2026-10-08,
+        # "Matías, ya vi..." arrived as "atías, ya vi..." (DataLake).
+        for _attempt in range(3):
+            await self._page.mouse.click(info["x"], info["y"])
+            await self._page.wait_for_timeout(300)
+            if await self._page.evaluate(_FOCUS_IN_COMPOSE_JS):
+                break
+        else:
+            raise RuntimeError("La caja de mensaje no tomó el foco — no se envió nada")
+
+        # Type, then check the box holds exactly TEXT before pressing Enter.
+        # One clean retry; if it still differs, nothing is sent.
+        for _attempt in range(2):
+            await self._type_compose(text)
+            typed = await self._page.evaluate(_COMPOSE_TEXT_JS)
+            if typed is None or _same_letters(typed, text):
+                break
+            import sys
+            print(
+                f"[wavi] send_message: compose shows {typed[:60]!r}, expected "
+                f"{text[:60]!r} — clearing", file=sys.stderr,
+            )
+            _select_all = "Meta+a" if sys.platform == "darwin" else "Control+a"
+            await self._page.keyboard.press(_select_all)
+            await self._page.keyboard.press("Delete")
+            await self._page.wait_for_timeout(300)
+        else:
+            raise RuntimeError(
+                "El texto en la caja de mensaje no coincide con el mensaje "
+                "(se perdieron o cambiaron caracteres) — no se envió nada"
+            )
 
         await self._page.keyboard.press("Enter")
         await self._page.wait_for_timeout(1000)
@@ -1256,6 +1307,20 @@ class WASession:
                 raise RuntimeError("Mensaje sigue en el compose box después de intentar Send — no fue enviado")
 
         return {"selector": info.get("selector"), "x": info["x"], "y": info["y"]}
+
+    async def _type_compose(self, text: str) -> None:
+        """Type TEXT into the focused compose box. Newlines become Shift+Enter
+        so WA doesn't send each line as a separate message."""
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if i > 0:
+                line = await self._absorb_list_autoprefix(line)
+            if line:
+                await self._page.keyboard.type(line, delay=30)
+            if i < len(lines) - 1:
+                await self._page.keyboard.press("Shift+Enter")
+                await self._page.wait_for_timeout(150)
+        await self._page.wait_for_timeout(500)
 
     async def _absorb_list_autoprefix(self, line: str) -> str:
         """Reconcile LINE with whatever WA auto-inserted on the new line.
