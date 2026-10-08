@@ -878,3 +878,59 @@ class TestSendMessageGuards:
 def test_same_letters_tolerates_list_markers_only():
     assert _same_letters("• a\n• b", "- a\n- b")
     assert not _same_letters("atías", "Matías")
+
+
+class TestEditMessage:
+    """wavi edit — picks exactly one own message by fragment, respects WA's
+    15-minute window, and fails without touching anything otherwise."""
+
+    NOW = __import__("datetime").datetime(2026, 10, 8, 16, 45)
+    OWN = [
+        {"id": "A", "pre": "[4:38 p. m., 8/10/2026] Jozbuyo: ", "text": "atías, ya vi el video, gracias!"},
+        {"id": "B", "pre": "[4:40 p. m., 8/10/2026] Jozbuyo: ", "text": "@Matias Becerro salió mal"},
+        {"id": "C", "pre": "[10:24 a. m., 8/10/2026] Jozbuyo: ", "text": "gracias Vito, ya vi"},
+    ]
+
+    def _session(self, own=None):
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        s._page.evaluate = AsyncMock(return_value=own if own is not None else self.OWN)
+        return s
+
+    def test_parse_pre_plain(self):
+        from datetime import datetime
+
+        from wavi.session import _parse_pre_plain
+        assert _parse_pre_plain("[4:38 p. m., 8/10/2026] Jozbuyo: ") == datetime(2026, 10, 8, 16, 38)
+        assert _parse_pre_plain(None) is None
+
+    @pytest.mark.asyncio
+    async def test_no_match(self):
+        with pytest.raises(RuntimeError, match="No encontré"):
+            await self._session().edit_message("inexistente", "x", now=self.NOW)
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_lists_candidates(self):
+        with pytest.raises(RuntimeError, match="Hay 2 mensajes"):
+            await self._session().edit_message("ya vi", "x", now=self.NOW)
+
+    @pytest.mark.asyncio
+    async def test_match_ignores_accents_and_case(self):
+        s = self._session()
+        with pytest.raises(RuntimeError, match="17 min|solo permite"):
+            # "SALIO MAL" → B, sent 16:40; 22 min later it is out of the window
+            await s.edit_message("SALIO MAL", "x", now=self.NOW.replace(hour=17, minute=2))
+
+    @pytest.mark.asyncio
+    async def test_expired_window_touches_nothing(self):
+        s = self._session()
+        with pytest.raises(RuntimeError, match="15 min"):
+            await s.edit_message("gracias Vito", "x", now=self.NOW)
+        s._page.mouse.move.assert_not_called()
+        s._page.keyboard.type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fragment_must_be_literal(self):
+        s = self._session()
+        with pytest.raises(RuntimeError, match="no aparece literal"):
+            await s.edit_message("ATIAS, YA", "Matías, ya", fragment=True, now=self.NOW)

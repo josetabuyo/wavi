@@ -1179,6 +1179,66 @@ def media(session: str, contact: str, kind: str, from_date: str | None, limit: i
                    f"{e['bytes'] // 1024:>7} KB  {e['file']}")
 
 
+# ── edit ──────────────────────────────────────────────────────────────────────
+
+@main.command("edit")
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.argument("match")
+@click.argument("new_text")
+@click.option("--fragment", is_flag=True,
+              help="NEW_TEXT reemplaza solo MATCH dentro del mensaje (no el texto entero).")
+@click.option("--pick", type=int, default=None,
+              help="Si el contacto es ambiguo, elegir la coincidencia N (1-based).")
+@click.option("--json-out", is_flag=True, help="Imprimir el resultado como JSON.")
+def edit(session: str, contact: str, match: str, new_text: str, fragment: bool,
+         pick: int | None, json_out: bool):
+    """Editar un mensaje propio ya enviado (WhatsApp lo permite 15 min).
+
+    MATCH es un fragmento del mensaje a editar (sin importar tildes ni
+    mayúsculas); tiene que identificar un único mensaje propio. Falla sin
+    tocar nada si no hay ninguno, si hay varios o si pasaron los 15 minutos.
+
+    \b
+    Ejemplos:
+      wavi edit default "DATA LAKE - Técnico" "atías, ya vi" "Matías, ya vi" --fragment
+      wavi edit default "Juan" "nos vemos a las 5" "Nos vemos a las 6 en la oficina"
+    """
+    from wavi.queue import is_locked, session_lock
+    from wavi.session import WASession
+
+    profile_dir = _profile(session)
+
+    async def _go():
+        s = WASession(profile_dir)
+        await s.connect()
+        try:
+            await s.navigate_to_contact(contact, pick=pick)
+            return await s.edit_message(match, new_text, fragment=fragment)
+        finally:
+            await s.close()
+
+    if is_locked(profile_dir):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...", err=True)
+    with session_lock(profile_dir, "edit", contact=contact):
+        with _lazy_session(profile_dir):
+            try:
+                result = asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
+
+    if json_out:
+        click.echo(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        click.echo(f"Mensaje editado ({result['sent_at']}):")
+        click.echo(f"  antes:   {result['before'][:100]}")
+        click.echo(f"  después: {(result['after'] or '?')[:100]}")
+    if not result["verified"]:
+        click.echo("⚠️  No pude confirmar el texto nuevo en el chat — revisalo.", err=True)
+        sys.exit(2)
+
+
 # ── send ──────────────────────────────────────────────────────────────────────
 
 @main.command("send")

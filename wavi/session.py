@@ -268,7 +268,11 @@ _FOCUS_IN_CHAT_PANEL_JS = """
 # "2. dos" produced "2. 2. dos" (reported by DataLake 2026-10-04).
 _LAST_COMPOSE_LINE_JS = """
 () => {
-    const ps = document.querySelectorAll('footer [contenteditable="true"] p');
+    // The focused editor (compose box or the edit dialog), else the compose box.
+    const a = document.activeElement;
+    const ed = (a && a.closest && a.closest('[contenteditable="true"]'))
+            || document.querySelector('footer [contenteditable="true"]');
+    const ps = ed ? ed.querySelectorAll('p') : [];
     return ps.length ? ps[ps.length - 1].innerText : null;
 }
 """
@@ -297,6 +301,131 @@ def _same_letters(a: str, b: str) -> bool:
     def keep(s: str) -> str:
         return "".join(ch for ch in s if ch.isalnum())
     return keep(a) == keep(b)
+
+
+# ── Edit (wavi edit) ─────────────────────────────────────────────────────────
+# Own messages carry a hidden "Tú:"/"You:" label; data-pre-plain-text holds
+# "[5:35 p. m., 8/10/2026] Name: ". Text is rebuilt with emoji <img alt>.
+_OWN_MESSAGES_JS = """
+() => {
+    const textOf = (el) => {
+        let out = '';
+        el.childNodes.forEach(n => {
+            if (n.nodeType === 3) out += n.textContent;
+            else if (n.tagName === 'IMG') out += n.getAttribute('alt') || '';
+            else if (n.tagName === 'BR') out += '\\n';
+            else out += textOf(n);
+        });
+        return out;
+    };
+    const rows = [...document.querySelectorAll('#main [data-id]')];
+    return rows.filter(r => r.querySelector('[aria-label="Tú:"], [aria-label="You:"]'))
+        .map(r => {
+            const pre = r.querySelector('[data-pre-plain-text]');
+            const body = r.querySelector('[data-testid="selectable-text"]');
+            return {
+                id: r.getAttribute('data-id'),
+                pre: pre ? pre.getAttribute('data-pre-plain-text') : null,
+                text: body ? textOf(body) : '',
+            };
+        });
+}
+"""
+
+_OPEN_MSG_MENU_JS = """
+(id) => {
+    const row = document.querySelector('#main [data-id="' + id + '"]');
+    if (!row) return false;
+    const btn = [...row.querySelectorAll('[aria-label]')].find(e =>
+        /opciones del mensaje|message options|context menu|men[uú] contextual/i.test(e.getAttribute('aria-label')));
+    if (!btn) return false;
+    btn.click();
+    return true;
+}
+"""
+
+_MSG_BUBBLE_POS_JS = """
+(id) => {
+    const row = document.querySelector('#main [data-id="' + id + '"]');
+    if (!row) return null;
+    const el = row.querySelector('[data-testid="msg-container"]') || row;
+    el.scrollIntoView({block: 'center'});
+    const r = el.getBoundingClientRect();
+    return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
+}
+"""
+
+_CLICK_EDIT_ITEM_JS = """
+() => {
+    const it = [...document.querySelectorAll('[role="menuitem"]')].find(e =>
+        /^(editar|edit)$/i.test((e.innerText || '').trim()));
+    if (!it) return false;
+    it.click();
+    return true;
+}
+"""
+
+_EDIT_DIALOG_TEXT_JS = """
+() => {
+    const d = document.querySelector('[role="dialog"]');
+    const ed = d && d.querySelector('[contenteditable="true"]');
+    if (!ed) return null;
+    const ps = ed.querySelectorAll('p');
+    const line = (p) => {
+        let out = '';
+        p.childNodes.forEach(function walk(n) {
+            if (n.nodeType === 3) out += n.textContent;
+            else if (n.tagName === 'IMG') out += n.getAttribute('alt') || '';
+            else n.childNodes.forEach(walk);
+        });
+        return out;
+    };
+    return ps.length ? [...ps].map(line).join('\\n') : ed.innerText;
+}
+"""
+
+_EDIT_DIALOG_FOCUS_JS = """
+() => {
+    const a = document.activeElement;
+    return !!(a && a.closest && a.closest('[role="dialog"] [contenteditable="true"]'));
+}
+"""
+
+_CLICK_SEND_EDIT_JS = """
+() => {
+    const d = document.querySelector('[role="dialog"]');
+    if (!d) return false;
+    const b = [...d.querySelectorAll('[aria-label]')].find(e =>
+        /editado|edited/i.test(e.getAttribute('aria-label')));
+    if (!b) return false;
+    (b.closest('button') || b).click();
+    return true;
+}
+"""
+
+EDIT_WINDOW_MIN = 15
+
+_PRE_RE = __import__("re").compile(r"^\[(?P<time>[^,\]]+),\s*(?P<date>[^\]]+)\]")
+
+
+def _parse_pre_plain(pre: str | None):
+    """'[5:35 p. m., 8/10/2026] Name: ' → datetime (day-first dates)."""
+    from datetime import datetime as _DT
+
+    from wavi.vision import _parse_time_str
+    m = _PRE_RE.match(pre or "")
+    if not m:
+        return None
+    hhmm = _parse_time_str(m.group("time"))
+    parts = m.group("date").strip().split("/")
+    if not hhmm or len(parts) != 3:
+        return None
+    try:
+        d, mo, y = (int(x) for x in parts)
+        h, mi = (int(x) for x in hhmm.split(":"))
+        return _DT(y if y > 100 else 2000 + y, mo, d, h, mi)
+    except ValueError:
+        return None
 
 
 _CHECK_COMPOSE_EMPTY_JS = """
@@ -1235,6 +1364,119 @@ class WASession:
                 return null;
             }
         """)
+
+    async def edit_message(
+        self, match: str, new_text: str, *, fragment: bool = False, now=None,
+    ) -> dict:
+        """Edit one of my own messages in the open chat (WA allows it for
+        EDIT_WINDOW_MIN minutes after sending).
+
+        MATCH picks the message: an own message whose text contains it
+        (accent/case-insensitive). Exactly one must match — zero or several
+        raise RuntimeError listing what was seen. With FRAGMENT, NEW_TEXT
+        replaces MATCH inside the message; otherwise it replaces the whole
+        text. Nothing is changed unless the editor ends up holding exactly
+        the intended text.
+        """
+        import sys as _sys
+        from datetime import datetime as _DT
+
+        now = now or _DT.now()
+        own = await self._page.evaluate(_OWN_MESSAGES_JS)
+        q = _normalize_name(match)
+        hits = [m for m in own if q and q in _normalize_name(m["text"])]
+        if not hits:
+            raise RuntimeError(
+                f"No encontré un mensaje propio que contenga '{match}' entre los "
+                f"{len(own)} mensajes propios cargados del chat."
+            )
+        if len(hits) > 1:
+            lines = "\n".join(f"  {m['pre'] or '?'} {m['text'][:60]!r}" for m in hits)
+            raise RuntimeError(
+                f"Hay {len(hits)} mensajes propios que contienen '{match}' — usá un "
+                f"fragmento más específico:\n{lines}"
+            )
+        target = hits[0]
+        sent_at = _parse_pre_plain(target["pre"])
+        if sent_at is not None:
+            age_min = (now - sent_at).total_seconds() / 60
+            if age_min > EDIT_WINDOW_MIN:
+                raise RuntimeError(
+                    f"El mensaje se envió a las {sent_at:%H:%M} ({age_min:.0f} min) — "
+                    f"WhatsApp solo permite editar durante {EDIT_WINDOW_MIN} min."
+                )
+
+        if fragment:
+            old = target["text"]
+            if match in old:
+                intended = old.replace(match, new_text, 1)
+            else:
+                raise RuntimeError(
+                    f"'{match}' no aparece literal en el mensaje — pasá el texto "
+                    f"completo nuevo sin --fragment."
+                )
+        else:
+            intended = new_text
+
+        pos = await self._page.evaluate(_MSG_BUBBLE_POS_JS, target["id"])
+        if not pos:
+            raise RuntimeError("El mensaje dejó de estar en pantalla")
+        await self._page.mouse.move(pos["x"], pos["y"])
+        await self._page.wait_for_timeout(600)
+        if not await self._page.evaluate(_OPEN_MSG_MENU_JS, target["id"]):
+            raise RuntimeError("No se encontró el menú de opciones del mensaje")
+        await self._page.wait_for_timeout(800)
+        if not await self._page.evaluate(_CLICK_EDIT_ITEM_JS):
+            await self._page.keyboard.press("Escape")
+            raise RuntimeError(
+                "WhatsApp no ofrece 'Editar' para ese mensaje (pasaron más de "
+                f"{EDIT_WINDOW_MIN} min, o no es editable)."
+            )
+        await self._page.wait_for_timeout(1200)
+        if not await self._page.evaluate(_EDIT_DIALOG_FOCUS_JS):
+            await self._page.keyboard.press("Escape")
+            raise RuntimeError("El editor del mensaje no tomó el foco — no se cambió nada")
+
+        def _cancel_reason(shown: str | None) -> str:
+            return f"el editor muestra {(shown or '')[:60]!r}"
+
+        try:
+            for _attempt in range(2):
+                _select_all = "Meta+a" if _sys.platform == "darwin" else "Control+a"
+                await self._page.keyboard.press(_select_all)
+                await self._page.keyboard.press("Delete")
+                await self._page.wait_for_timeout(200)
+                await self._type_compose(intended)
+                shown = await self._page.evaluate(_EDIT_DIALOG_TEXT_JS)
+                if shown is not None and _same_letters(shown, intended):
+                    break
+                print(f"[wavi] edit_message: {_cancel_reason(shown)} — reintento", file=_sys.stderr)
+            else:
+                raise RuntimeError(
+                    f"El texto en el editor no coincide ({_cancel_reason(shown)}) — "
+                    "se canceló la edición, el mensaje quedó como estaba."
+                )
+        except Exception:
+            await self._page.keyboard.press("Escape")
+            await self._page.wait_for_timeout(400)
+            raise
+
+        if not await self._page.evaluate(_CLICK_SEND_EDIT_JS):
+            await self._page.keyboard.press("Enter")
+        await self._page.wait_for_timeout(1500)
+        if await self._page.evaluate(_EDIT_DIALOG_FOCUS_JS):
+            await self._page.keyboard.press("Escape")
+            raise RuntimeError("El diálogo de edición no se cerró — la edición no se guardó")
+
+        after = {m["id"]: m for m in await self._page.evaluate(_OWN_MESSAGES_JS)}
+        saved = after.get(target["id"], {}).get("text")
+        return {
+            "id": target["id"],
+            "sent_at": sent_at.isoformat(timespec="minutes") if sent_at else None,
+            "before": target["text"],
+            "after": saved,
+            "verified": saved is not None and _same_letters(saved, intended),
+        }
 
     async def send_message(self, text: str) -> dict:
         """Type and send a message in the currently open chat.

@@ -11,6 +11,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi reload [session]` | **Safe reload** — about:blank flush → WA → verify auth | — |
 | `wavi get <contact>` | Extract full message history from a chat (`--grow` to page through in chunks) | **Vision** |
 | `wavi send <contact> <message>` | Send a message | DOM + keyboard |
+| `wavi edit <contact> <match> <new>` | Edit one of your own sent messages (WA's 15-min window); `--fragment` replaces only `<match>` | DOM + keyboard |
 | `wavi media <contact>` | Download a chat's videos and photos (full files) + `media.json` | Media viewer (DOM) |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
 | `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |
@@ -123,6 +124,14 @@ wavi get "Contact" --grow --max-iter 10   # run 2: fast-forwards to boundary, ca
 ```
 
 State is stored in `<wavi output dir>/<session>/<contact>/grow_checkpoint.json`. Delete it to restart from scratch (also delete `history_bubbles.json`).
+
+## wavi edit
+
+```bash
+wavi edit default "DATA LAKE - Técnico" "atías, ya vi" "Matías, ya vi" --fragment
+```
+
+Finds the one **own** message in the open chat whose text contains `<match>` (accent/case-insensitive), opens WA's *Edit* dialog and saves the new text. Fails without touching anything when there is no match, more than one match (prints them — use a longer fragment), or the message is older than 15 minutes. The editor's content is checked against the intended text before saving; the result is re-read from the chat (`verified`).
 
 ## wavi media
 
