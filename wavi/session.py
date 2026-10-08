@@ -251,6 +251,18 @@ _FIND_COMPOSE_INPUT_JS = """
 }
 """
 
+# Safety guard for search_contacts: true when keyboard focus sits inside the
+# open chat's panel (#main — its compose box). A search-box click that doesn't
+# take focus leaves it there, and the query would be typed as a draft into
+# whatever chat is open (real case 2026-10-03, "DATA LAKE - Tecnico" ended up
+# in the compose box of "DATA LAKE - Gerencia"). Read-only check, not a locator.
+_FOCUS_IN_CHAT_PANEL_JS = """
+() => {
+    const a = document.activeElement;
+    return !!(a && a.closest && a.closest('#main'));
+}
+"""
+
 _CHECK_COMPOSE_EMPTY_JS = """
 () => {
     const sels = [
@@ -845,6 +857,20 @@ class WASession:
         # Click en el cuadro de búsqueda por coordenadas (ADR-001: sin locator)
         await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
         await self._page.wait_for_timeout(300)
+
+        # Never type while focus is still in the open chat: Cmd+A/Delete
+        # would wipe its draft and the query would land in its compose box.
+        if await self._page.evaluate(_FOCUS_IN_CHAT_PANEL_JS):
+            await self._page.wait_for_timeout(700)
+            await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
+            await self._page.wait_for_timeout(300)
+            if await self._page.evaluate(_FOCUS_IN_CHAT_PANEL_JS):
+                shot_path = await self._debug_screenshot("search_focus_lost")
+                raise RuntimeError(
+                    "El click en el buscador no tomó el foco (sigue en el chat "
+                    "abierto) — no se escribió nada para no dejar texto en ese "
+                    f"chat. Ver captura: {shot_path}"
+                )
 
         # Limpiar: seleccionar todo y borrar (Mac: Cmd+A, Windows: Ctrl+A)
         import sys as _sys

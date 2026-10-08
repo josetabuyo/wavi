@@ -67,8 +67,32 @@ class TestSearchContacts:
     def session(self):
         s = _make_session()
         s._page = _make_page(selector_found=True)
-        s._page.evaluate = AsyncMock(return_value=[{"name": "Gregorio", "subtitle": "", "x": 1, "y": 2}])
+        results = [{"name": "Gregorio", "subtitle": "", "x": 1, "y": 2}]
+        # 1st evaluate = focus guard (False → focus left the chat), then results
+        s._page.evaluate = AsyncMock(side_effect=lambda js, *a: False if "activeElement" in js else results)
         return s
+
+    @pytest.mark.asyncio
+    async def test_never_types_while_focus_stays_in_open_chat(self, session):
+        # Real case 2026-10-03: the search click didn't take focus and the
+        # query was typed into the open group's compose box.
+        session._page.evaluate = AsyncMock(return_value=True)
+        session._debug_screenshot = AsyncMock(return_value=None)
+        with pytest.raises(RuntimeError, match="foco"):
+            await session.search_contacts("DATA LAKE - Tecnico")
+        session._page.keyboard.type.assert_not_called()
+        calls = [c.args[0] for c in session._page.keyboard.press.call_args_list]
+        assert "Delete" not in calls
+
+    @pytest.mark.asyncio
+    async def test_retries_click_once_when_focus_stuck(self, session):
+        answers = iter([True, False])
+        session._page.evaluate = AsyncMock(
+            side_effect=lambda js, *a: next(answers) if "activeElement" in js else []
+        )
+        await session.search_contacts("Gregorio")
+        assert session._page.mouse.click.call_count == 2
+        session._page.keyboard.type.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_clicks_search_box_by_coordinate(self, session):
@@ -104,7 +128,9 @@ class TestSearchContacts:
             {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "x": 100, "y": 240},
             {"name": "Rodolfo Prado", "subtitle": "+54 9 11 6671-4914", "x": 100, "y": 500},
         ]
-        session._page.evaluate = AsyncMock(return_value=candidates)
+        session._page.evaluate = AsyncMock(
+            side_effect=lambda js, *a: False if "activeElement" in js else candidates
+        )
         result = await session.search_contacts("Rodolfo Prado")
         assert result == candidates
 
