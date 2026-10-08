@@ -1,8 +1,15 @@
 {
   "name": "Wavi",
   "voice": "Flo (English (US))",
+  "locale": "en-US",
   "pronunciation": "Wavi",
   "created": "2026-05-27",
+  "response_length_hint": 40,
+  "short_description": "WhatsApp Web automation CLI: read and send chats",
+  "long_description": "Vision-based WhatsApp Web CLI: per-session Chrome daemons, history export, send, updates",
+  "scope_docs": [
+    "README.md"
+  ],
   "ports": [
     {
       "port": 9200,
@@ -41,7 +48,33 @@
       "app": "WhatsApp CDP daemon"
     }
   ],
-  "response_length_hint": 40,
-  "short_description": "",
-  "long_description": ""
+  "sessions": {
+    "target": "default",
+    "cc_default": false,
+    "runtimes": {
+      "claude": {
+        "intelligent": true,
+        "accepts": [
+          "message",
+          "command"
+        ],
+        "scope": "Claude Code session: natural language and commands, acts and reports back"
+      },
+      "codex": {
+        "intelligent": true,
+        "accepts": [
+          "message",
+          "command"
+        ],
+        "scope": "Codex TUI: natural-language coding tasks typed into it"
+      },
+      "shell": {
+        "intelligent": false,
+        "accepts": [
+          "command"
+        ],
+        "scope": "plain shell: literal commands only, prose is printed and never run"
+      }
+    }
+  }
 }
