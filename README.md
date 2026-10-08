@@ -11,6 +11,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi reload [session]` | **Safe reload** — about:blank flush → WA → verify auth | — |
 | `wavi get <contact>` | Extract full message history from a chat (`--grow` to page through in chunks) | **Vision** |
 | `wavi send <contact> <message>` | Send a message | DOM + keyboard |
+| `wavi media <contact>` | Download a chat's videos and photos (full files) + `media.json` | Media viewer (DOM) |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
 | `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |
 | `wavi queue [session]` | Show operation queue status | — |
@@ -122,6 +123,21 @@ wavi get "Contact" --grow --max-iter 10   # run 2: fast-forwards to boundary, ca
 ```
 
 State is stored in `<wavi output dir>/<session>/<contact>/grow_checkpoint.json`. Delete it to restart from scratch (also delete `history_bubbles.json`).
+
+## wavi media
+
+```bash
+wavi media default "DATA LAKE - Técnico" --type video --from 2026-10-08
+```
+
+Opens the newest photo/video in the chat's media viewer and walks it with ← (newest → oldest), saving the **full file** (not the bubble thumbnail): photos from the viewer's blob image, videos from WA's `/stream/video` endpoint read range by range. Files land in `<wavi output dir>/<session>/<contact>/media/` as `<date>_<time>_<sender>_<hash>.<ext>`, with `media.json` (sender, timestamp, bytes, sha1). Re-runs skip what's already there.
+
+| Flag | Meaning |
+|---|---|
+| `--type all\|video\|image` | What to download (default `all`). |
+| `--from YYYY-MM-DD` | Stop at the first item older than this date. |
+| `--limit N` | At most N new files. |
+| `--assets DIR` | Override the output directory. |
 
 ## check-updates behavior
 

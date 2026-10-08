@@ -1105,6 +1105,80 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             click.echo(f"  {Path(f).relative_to(assets_dir)}: {size} bytes")
 
 
+# ── media ─────────────────────────────────────────────────────────────────────
+
+@main.command("media")
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.option("--type", "kind", type=click.Choice(["all", "video", "image"]), default="all",
+              show_default=True, help="Qué bajar: videos, fotos o ambos.")
+@click.option("--from", "from_date", default=None,
+              help="Solo media en o después de esta fecha (YYYY-MM-DD).")
+@click.option("--limit", type=int, default=None, help="Máximo de archivos nuevos a bajar.")
+@click.option("--assets", default=None,
+              help="Directorio de salida. Default: <wavi output dir>/<session>/<contact>/media/.")
+@click.option("--pick", type=int, default=None,
+              help="Si el contacto es ambiguo, elegir la coincidencia N (1-based).")
+@click.option("--json-out", is_flag=True, help="Imprimir las entradas nuevas como JSON.")
+def media(session: str, contact: str, kind: str, from_date: str | None, limit: int | None,
+          assets: str | None, pick: int | None, json_out: bool):
+    """Bajar videos y fotos de un chat (archivo completo, no la miniatura).
+
+    Recorre el visor de WhatsApp del más nuevo al más viejo. Guarda cada archivo
+    como <fecha>_<hora>_<remitente>_<hash>.<ext> y un media.json con remitente,
+    fecha y tamaño. Los ya bajados se saltean.
+
+    \b
+    Ejemplos:
+      wavi media default "DATA LAKE - Técnico" --type video --from 2026-10-08
+      wavi media default "Juan" --limit 5
+    """
+    from datetime import date as _Date
+
+    from wavi.media import download_chat_media
+    from wavi.queue import is_locked, session_lock
+    from wavi.session import WASession
+
+    profile_dir = _profile(session)
+    out_dir = (Path(assets) if assets
+               else DEFAULT_OUTPUT_DIR / profile_dir.name / contact.lower().replace(" ", "_") / "media")
+    from_date_obj = None
+    if from_date:
+        try:
+            from_date_obj = _Date.fromisoformat(from_date)
+        except ValueError:
+            click.echo(f"Error: --from debe ser YYYY-MM-DD, recibido: {from_date}", err=True)
+            sys.exit(1)
+    kinds = ("video", "image") if kind == "all" else (kind,)
+
+    async def _go():
+        s = WASession(profile_dir)
+        await s.connect()
+        try:
+            await s.navigate_to_contact(contact, pick=pick)
+            return await download_chat_media(s, out_dir, kinds=kinds, from_date=from_date_obj, limit=limit)
+        finally:
+            await s.close()
+
+    if is_locked(profile_dir):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...", err=True)
+    with session_lock(profile_dir, "media", contact=contact):
+        with _lazy_session(profile_dir):
+            try:
+                entries = asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
+
+    if json_out:
+        click.echo(json.dumps(entries, indent=2, ensure_ascii=False))
+        return
+    click.echo(f"{len(entries)} archivo(s) nuevo(s) en {out_dir.resolve()}")
+    for e in entries:
+        click.echo(f"  {e['kind']:5s} {e['timestamp'] or '?':16s} {e['sender'][:20]:20s} "
+                   f"{e['bytes'] // 1024:>7} KB  {e['file']}")
+
+
 # ── send ──────────────────────────────────────────────────────────────────────
 
 @main.command("send")
