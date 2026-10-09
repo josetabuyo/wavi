@@ -256,15 +256,16 @@ _FIND_COMPOSE_INPUT_JS = """
 }
 """
 
-# Safety guard for search_contacts: true when keyboard focus sits inside the
-# open chat's panel (#main — its compose box). A search-box click that doesn't
-# take focus leaves it there, and the query would be typed as a draft into
-# whatever chat is open (real case 2026-10-03, "DATA LAKE - Tecnico" ended up
-# in the compose box of "DATA LAKE - Gerencia"). Read-only check, not a locator.
-_FOCUS_IN_CHAT_PANEL_JS = """
+# Positive check before typing a search query: focus must sit in the
+# sidebar's search input itself, not merely "outside the chat" — WA can move
+# focus into the open chat's compose box after the click (real case
+# 2026-10-09 ~14:40: "DATA LAKE - Técnico" left as a draft in Gerencia, on a
+# Chrome that had just started and was still settling).
+_FOCUS_IN_SEARCH_JS = """
 () => {
     const a = document.activeElement;
-    return !!(a && a.closest && a.closest('#main'));
+    return !!(a && a.closest && a.closest('#side') && !a.closest('#main')
+              && (a.tagName === 'INPUT' || a.isContentEditable));
 }
 """
 
@@ -1142,19 +1143,21 @@ class WASession:
         await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
         await self._page.wait_for_timeout(300)
 
-        # Never type while focus is still in the open chat: Cmd+A/Delete
-        # would wipe its draft and the query would land in its compose box.
-        if await self._page.evaluate(_FOCUS_IN_CHAT_PANEL_JS):
+        # Never type unless focus is IN the search input: otherwise Cmd+A/
+        # Delete would wipe the open chat's draft and the query would land in
+        # its compose box.
+        if not await self._page.evaluate(_FOCUS_IN_SEARCH_JS):
             await self._page.wait_for_timeout(700)
             await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
             await self._page.wait_for_timeout(300)
-            if await self._page.evaluate(_FOCUS_IN_CHAT_PANEL_JS):
+            if not await self._page.evaluate(_FOCUS_IN_SEARCH_JS):
                 shot_path = await self._debug_screenshot("search_focus_lost")
                 raise RuntimeError(
-                    "El click en el buscador no tomó el foco (sigue en el chat "
-                    "abierto) — no se escribió nada para no dejar texto en ese "
-                    f"chat. Ver captura: {shot_path}"
+                    "El click en el buscador no tomó el foco — no se escribió "
+                    "nada para no dejar texto en el chat abierto. "
+                    f"Ver captura: {shot_path}"
                 )
+        compose_before = await self._page.evaluate(_COMPOSE_RAW_TEXT_JS) or ""
 
         # Limpiar: seleccionar todo y borrar (Mac: Cmd+A, Windows: Ctrl+A)
         import sys as _sys
@@ -1164,8 +1167,12 @@ class WASession:
         await self._page.keyboard.press("Delete")
         await self._page.wait_for_timeout(200)
 
-        # Escribir el contacto con delays realistas
+        # Escribir el contacto con delays realistas — re-checking focus right
+        # before, since WA can still steal it after the clear.
+        if not await self._page.evaluate(_FOCUS_IN_SEARCH_JS):
+            raise RuntimeError("El buscador perdió el foco antes de escribir — no se escribió nada")
         await self._page.keyboard.type(query, delay=40)
+        await self._check_query_not_in_compose(query, compose_before)
 
         try:
             await self._page.wait_for_selector(
@@ -1175,6 +1182,35 @@ class WASession:
             return []
         await self._page.wait_for_timeout(400)
         return await self._page.evaluate(_SEARCH_RESULTS_JS)
+
+    async def _check_query_not_in_compose(self, query: str, before: str) -> None:
+        """If focus was stolen mid-typing, (part of) QUERY sits in the open
+        chat's compose box. When that box was empty before, what's there now is
+        only ours: clear it. Either way raise — the search didn't happen."""
+        import sys as _sys
+        after = await self._page.evaluate(_COMPOSE_RAW_TEXT_JS) or ""
+        if after.strip() == before.strip():
+            return
+        leaked = after.strip()
+        if not before.strip() and leaked and leaked in query:
+            info = await self._page.evaluate(_FIND_COMPOSE_INPUT_JS)
+            if info.get("found"):
+                await self._page.mouse.click(info["x"], info["y"])
+                await self._page.wait_for_timeout(300)
+                if await self._page.evaluate(_FOCUS_IN_COMPOSE_JS):
+                    _select_all = "Meta+a" if _sys.platform == "darwin" else "Control+a"
+                    await self._page.keyboard.press(_select_all)
+                    await self._page.keyboard.press("Delete")
+                    await self._page.wait_for_timeout(300)
+            if await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS):
+                raise RuntimeError(
+                    f"WhatsApp movió el foco al chat abierto mientras se buscaba "
+                    f"'{query}' — se borró lo que quedó en su caja; reintentá."
+                )
+        raise RuntimeError(
+            f"La búsqueda de '{query}' dejó texto en la caja del chat abierto "
+            f"({leaked[:60]!r}) — revisalo con 'wavi draft show'."
+        )
 
     async def open_search_result(
         self, x: int, y: int, expected_name: str | None = None

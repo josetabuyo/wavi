@@ -61,23 +61,46 @@ def _stub_resolved(session: WASession, name: str = "Gregorio", x: int = 100, y: 
 class TestSearchContacts:
     """search_contacts() owns the actual search-box interaction — clicking,
     clearing, typing — that navigate_to_contact used to do inline before
-    ADR-010 added disambiguation."""
+    ADR-010 added disambiguation. It only ever types with focus IN the
+    search input, and never leaves the query in the open chat's box."""
+
+    RESULTS = [{"name": "Gregorio", "subtitle": "", "x": 1, "y": 2}]
+
+    def _route(self, session, *, focus=True, compose=("", ""), results=None, compose_empty=True):
+        """FOCUS: bool or iterator of bools for the search-focus check;
+        COMPOSE: compose-box text before / after typing."""
+        focus_it = focus if hasattr(focus, "__next__") else None
+        compose_it = iter(compose)
+        last = {"compose": compose[0]}
+
+        def evaluate(js, *a):
+            if "closest('#side')" in js:
+                return next(focus_it) if focus_it else focus
+            if "return el ? (el.innerText" in js:
+                last["compose"] = next(compose_it, last["compose"])
+                return last["compose"]
+            if "found: true" in js:
+                return {"found": True, "x": 5, "y": 6}
+            if "a.closest('footer" in js:
+                return True
+            if "if (el) return (el.innerText" in js:
+                return compose_empty
+            return results if results is not None else self.RESULTS
+        session._page.evaluate = AsyncMock(side_effect=evaluate)
+        session._debug_screenshot = AsyncMock(return_value=None)
 
     @pytest.fixture
     def session(self):
         s = _make_session()
         s._page = _make_page(selector_found=True)
-        results = [{"name": "Gregorio", "subtitle": "", "x": 1, "y": 2}]
-        # 1st evaluate = focus guard (False → focus left the chat), then results
-        s._page.evaluate = AsyncMock(side_effect=lambda js, *a: False if "activeElement" in js else results)
+        self._route(s)
         return s
 
     @pytest.mark.asyncio
-    async def test_never_types_while_focus_stays_in_open_chat(self, session):
+    async def test_never_types_unless_focus_is_in_search(self, session):
         # Real case 2026-10-03: the search click didn't take focus and the
         # query was typed into the open group's compose box.
-        session._page.evaluate = AsyncMock(return_value=True)
-        session._debug_screenshot = AsyncMock(return_value=None)
+        self._route(session, focus=False)
         with pytest.raises(RuntimeError, match="foco"):
             await session.search_contacts("DATA LAKE - Tecnico")
         session._page.keyboard.type.assert_not_called()
@@ -85,14 +108,35 @@ class TestSearchContacts:
         assert "Delete" not in calls
 
     @pytest.mark.asyncio
-    async def test_retries_click_once_when_focus_stuck(self, session):
-        answers = iter([True, False])
-        session._page.evaluate = AsyncMock(
-            side_effect=lambda js, *a: next(answers) if "activeElement" in js else []
-        )
+    async def test_retries_click_once_when_focus_not_in_search(self, session):
+        self._route(session, focus=iter([False, True, True]))
         await session.search_contacts("Gregorio")
         assert session._page.mouse.click.call_count == 2
         session._page.keyboard.type.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_focus_lost_after_clearing_types_nothing(self, session):
+        self._route(session, focus=iter([True, False]))
+        with pytest.raises(RuntimeError, match="perdió el foco"):
+            await session.search_contacts("Gregorio")
+        session._page.keyboard.type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_query_leaked_into_empty_compose_is_cleaned(self, session):
+        # Real case 2026-10-09 ~14:40: "DATA LAKE - Técnico" left in Gerencia.
+        self._route(session, compose=("", "LAKE - Técnico"), compose_empty=True)
+        with pytest.raises(RuntimeError, match="se borró"):
+            await session.search_contacts("DATA LAKE - Técnico")
+        presses = [c.args[0] for c in session._page.keyboard.press.call_args_list]
+        assert presses.count("Delete") == 2   # search clear + compose clean-up
+
+    @pytest.mark.asyncio
+    async def test_existing_draft_is_never_touched(self, session):
+        self._route(session, compose=("borrador mío", "borrador míoGregorio"))
+        with pytest.raises(RuntimeError, match="draft show"):
+            await session.search_contacts("Gregorio")
+        presses = [c.args[0] for c in session._page.keyboard.press.call_args_list]
+        assert presses.count("Delete") == 1   # only the search box clear
 
     @pytest.mark.asyncio
     async def test_clicks_search_box_by_coordinate(self, session):
@@ -128,9 +172,7 @@ class TestSearchContacts:
             {"name": "Rodolfo Prado", "subtitle": "Reaccionó con ❤️", "x": 100, "y": 240},
             {"name": "Rodolfo Prado", "subtitle": "+54 9 11 6671-4914", "x": 100, "y": 500},
         ]
-        session._page.evaluate = AsyncMock(
-            side_effect=lambda js, *a: False if "activeElement" in js else candidates
-        )
+        self._route(session, results=candidates)
         result = await session.search_contacts("Rodolfo Prado")
         assert result == candidates
 
