@@ -1309,7 +1309,10 @@ def reply(session: str, contact: str, match: str, message: str, sender: str | No
 @click.option("--screenshot-out", default=None, help="Save a screenshot of the chat after sending.")
 @click.option("--pick", type=int, default=None,
               help="Pick option N (1-based) when CONTACT is ambiguous, without needing a TTY — see the numbered list a prior ambiguous call printed.")
-def send(session: str, contact: str, message: str, screenshot_out: str | None, pick: int | None):
+@click.option("--discard-draft", is_flag=True,
+              help="If the chat's compose box holds a draft, print it, empty the box, then send.")
+def send(session: str, contact: str, message: str, screenshot_out: str | None, pick: int | None,
+         discard_draft: bool):
     """Send MESSAGE to CONTACT via WhatsApp.
 
     Opens the chat with CONTACT, types MESSAGE, and presses Enter.
@@ -1329,7 +1332,9 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None, p
                 raise RuntimeError(f"Sesión no autenticada (estado={status}). Ejecutá 'wavi connect' primero.")
 
             await s.navigate_to_contact(contact, pick=pick)
-            meta = await s.send_message(message)
+            meta = await s.send_message(message, discard_draft=discard_draft)
+            if meta.get("discarded_draft"):
+                click.echo(f"Borrador descartado: {meta['discarded_draft']!r}")
             click.echo(f"Mensaje enviado a '{contact}' (input @ {meta['x']},{meta['y']})")
 
             if screenshot_out:
@@ -1350,6 +1355,58 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None, p
             except RuntimeError as e:
                 click.echo(str(e), err=True)
                 sys.exit(1)
+
+
+# ── draft ─────────────────────────────────────────────────────────────────────
+
+@main.command("draft")
+@click.argument("action", type=click.Choice(["show", "clear"]))
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.option("--pick", type=int, default=None,
+              help="Si el contacto es ambiguo, elegir la coincidencia N (1-based).")
+def draft(action: str, session: str, contact: str, pick: int | None):
+    """Ver (show) o vaciar (clear) el borrador de la caja de mensaje de un chat.
+
+    'wavi send' no envía si hay un borrador; con Chrome headless no se puede
+    borrar a mano. 'clear' imprime lo que descarta y solo usa teclado dentro
+    de la caja (sin recargar la página ni tocar el almacenamiento).
+
+    \b
+    Ejemplos:
+      wavi draft show default "DATA LAKE - Gerencia"
+      wavi draft clear default "DATA LAKE - Gerencia"
+    """
+    from wavi.queue import is_locked, session_lock
+    from wavi.session import WASession
+
+    profile_dir = _profile(session)
+
+    async def _go():
+        s = WASession(profile_dir)
+        await s.connect()
+        try:
+            await s.navigate_to_contact(contact, pick=pick)
+            return await (s.read_draft() if action == "show" else s.clear_draft())
+        finally:
+            await s.close()
+
+    if is_locked(profile_dir):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...", err=True)
+    with session_lock(profile_dir, f"draft-{action}", contact=contact):
+        with _lazy_session(profile_dir):
+            try:
+                text = asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
+
+    if not text:
+        click.echo("Sin borrador — la caja de mensaje está vacía.")
+    elif action == "show":
+        click.echo(f"Borrador: {text!r}")
+    else:
+        click.echo(f"Borrador descartado: {text!r}")
 
 
 # ── queue ─────────────────────────────────────────────────────────────────────

@@ -859,6 +859,39 @@ class TestSendMessageGuards:
         s._page.keyboard.type.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_refusal_shows_draft_and_the_way_out(self):
+        s = self._session(self._base(**{"if (el) return (el.innerText": False,
+                                        "join(": "texto viejo"}))
+        with pytest.raises(RuntimeError, match="'texto viejo'.*--discard-draft"):
+            await s.send_message("Matías, hola")
+
+    @pytest.mark.asyncio
+    async def test_discard_draft_clears_then_sends(self):
+        empty = iter([False, True, True])   # draft, cleared, sent
+        typed = iter(["texto viejo", "Matías, hola"])
+        s = self._session(self._base(**{"if (el) return (el.innerText": lambda: next(empty),
+                                        "join(": lambda: next(typed)}))
+        meta = await s.send_message("Matías, hola", discard_draft=True)
+        assert meta["discarded_draft"] == "texto viejo"
+        presses = [c.args[0] for c in s._page.keyboard.press.call_args_list]
+        assert presses[:2] in (["Meta+a", "Delete"], ["Control+a", "Delete"])
+        assert presses[-1] == "Enter"
+
+    @pytest.mark.asyncio
+    async def test_clear_draft_fails_loudly_if_box_stays_full(self):
+        s = self._session(self._base(**{"if (el) return (el.innerText": False,
+                                        "join(": "texto viejo"}))
+        with pytest.raises(RuntimeError, match="sigue ahí"):
+            await s.clear_draft()
+        s._page.keyboard.type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clear_draft_noop_when_empty(self):
+        s = self._session(self._base(**{"join(": ""}))
+        assert await s.clear_draft() == ""
+        s._page.keyboard.press.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_refuses_when_compose_never_takes_focus(self):
         s = self._session(self._base(**{"a.closest('footer": False}))
         with pytest.raises(RuntimeError, match="foco"):

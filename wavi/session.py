@@ -291,6 +291,13 @@ _COMPOSE_TEXT_JS = """
 }
 """
 
+_COMPOSE_RAW_TEXT_JS = """
+() => {
+    const el = document.querySelector('footer [contenteditable="true"]');
+    return el ? (el.innerText || el.textContent || '') : '';
+}
+"""
+
 _FOCUS_IN_COMPOSE_JS = """
 () => {
     const a = document.activeElement;
@@ -1641,7 +1648,40 @@ class WASession:
             "verified": verified,
         }
 
-    async def send_message(self, text: str) -> dict:
+    async def read_draft(self) -> str:
+        """Text sitting in the open chat's compose box ('' when empty)."""
+        text = await self._page.evaluate(_COMPOSE_TEXT_JS)
+        if text is None:  # unknown editor DOM — fall back to the raw box text
+            text = await self._page.evaluate(_COMPOSE_RAW_TEXT_JS)
+        return (text or "").strip()
+
+    async def clear_draft(self) -> str:
+        """Empty the open chat's compose box and return what it held.
+
+        Only keystrokes inside the focused box (select-all + Delete) — no
+        reload, no storage. Raises RuntimeError if the box doesn't end empty.
+        """
+        import sys as _sys
+        draft = await self.read_draft()
+        if not draft:
+            return ""
+        info = await self._page.evaluate(_FIND_COMPOSE_INPUT_JS)
+        if not info.get("found"):
+            raise RuntimeError("No se encontró la caja de mensaje del chat")
+        _select_all = "Meta+a" if _sys.platform == "darwin" else "Control+a"
+        for _attempt in range(2):
+            await self._page.mouse.click(info["x"], info["y"])
+            await self._page.wait_for_timeout(300)
+            if not await self._page.evaluate(_FOCUS_IN_COMPOSE_JS):
+                continue
+            await self._page.keyboard.press(_select_all)
+            await self._page.keyboard.press("Delete")
+            await self._page.wait_for_timeout(400)
+            if await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS):
+                return draft
+        raise RuntimeError("No pude vaciar la caja de mensaje — el borrador sigue ahí")
+
+    async def send_message(self, text: str, *, discard_draft: bool = False) -> dict:
         """Type and send a message in the currently open chat.
 
         Handles multi-line text (\\n → Shift+Enter so WA doesn't send early).
@@ -1657,11 +1697,18 @@ class WASession:
 
         # A draft already in the box would be sent glued to TEXT — and it may
         # be a leftover from a misdirected search (DataLake 2026-10-03).
+        discarded = ""
         if not await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS):
-            raise RuntimeError(
-                "El chat tiene un borrador en la caja de mensaje — no se envía "
-                "nada para no mezclarlo con el mensaje. Revisalo y borralo a mano."
-            )
+            if not discard_draft:
+                draft = await self.read_draft()
+                raise RuntimeError(
+                    f"El chat tiene un borrador en la caja de mensaje ({draft[:80]!r}) — no "
+                    "se envía nada para no mezclarlo con el mensaje. Miralo con 'wavi draft "
+                    "show', vacialo con 'wavi draft clear' o reenviá con --discard-draft."
+                )
+            import sys as _sys
+            discarded = await self.clear_draft()
+            print(f"[wavi] borrador descartado: {discarded!r}", file=_sys.stderr)
 
         # Never type before the compose box actually holds focus: keystrokes
         # sent while WA is still settling are lost — real case 2026-10-08,
@@ -1711,7 +1758,8 @@ class WASession:
             if still_there:
                 raise RuntimeError("Mensaje sigue en el compose box después de intentar Send — no fue enviado")
 
-        return {"selector": info.get("selector"), "x": info["x"], "y": info["y"]}
+        return {"selector": info.get("selector"), "x": info["x"], "y": info["y"],
+                "discarded_draft": discarded}
 
     async def _type_compose(self, text: str) -> None:
         """Type TEXT into the focused compose box. Newlines become Shift+Enter

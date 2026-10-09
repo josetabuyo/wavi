@@ -13,6 +13,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi send <contact> <message>` | Send a message | DOM + keyboard |
 | `wavi edit <contact> <match> <new>` | Edit one of your own sent messages (WA's 15-min window); `--fragment` replaces only `<match>` | DOM + keyboard |
 | `wavi reply <contact> <match> <text>` | Reply quoting one message (yours or anyone's); `--from` narrows by sender, `--index N` picks among matches | DOM + keyboard |
+| `wavi draft show\|clear <contact>` | Show or empty a chat's compose-box draft (it blocks `send`); `wavi send --discard-draft` does both and sends | DOM + keyboard |
 | `wavi media <contact>` | Download a chat's videos and photos (full files) + `media.json` | Media viewer (DOM) |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
 | `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |

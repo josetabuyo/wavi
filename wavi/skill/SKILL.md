@@ -169,6 +169,20 @@ text doesn't match the message (lost/extra characters) after one retry.
 Numbered/bulleted lists are typed once (WA auto-continues them; wavi doesn't
 duplicate "2. 2.").
 
+## A draft blocks the send
+
+`wavi send` refuses when the chat's compose box already holds text (it would
+be glued to the message) and prints that draft. The daemon is headless, so
+nobody can clear it by hand — use:
+
+```bash
+wavi draft show [session] "Contact Name"     # print what is in the box
+wavi draft clear [session] "Contact Name"    # empty it (prints what it discarded)
+wavi send [session] "Contact Name" "text" --discard-draft   # print + empty + send
+```
+
+Clearing is select-all + Delete inside the focused box — no reload, no storage.
+
 ## Edit a sent message (within 15 minutes)
 
 ```bash
