@@ -8,6 +8,7 @@ Correr:
     pytest tests/ -v
 """
 import numpy as np
+import pytest
 from PIL import Image
 
 from wavi.element_detector import detect_bubbles
@@ -587,3 +588,65 @@ class TestFindReactionBadge:
         img = Image.fromarray(arr, mode="RGB")
 
         assert _find_reaction_badge(img, bubble) is None
+
+
+class TestDateOrder:
+    """Numeric dates are day-first in Spanish WA, month-first in US English."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_order(self):
+        from wavi import vision
+        saved = vision._DAY_FIRST
+        yield
+        vision.set_date_order(saved)
+
+    def test_unambiguous_sample_wins_over_language(self):
+        from wavi.vision import infer_day_first
+        assert infer_day_first("en", ["[9:00 AM, 25/10/2026] Ana: "]) is True
+        assert infer_day_first("es", ["[9:00 a. m., 10/25/2026] Ana: "]) is False
+
+    def test_language_decides_ambiguous(self):
+        from wavi.vision import infer_day_first
+        assert infer_day_first("es", ["[7:15 p. m., 8/10/2026] Jozbuyo: "]) is True
+        assert infer_day_first("en", ["[7:15 PM, 8/10/2026] Jozbuyo: "]) is False
+        assert infer_day_first("en-GB", []) is True
+        assert infer_day_first(None, []) is True
+
+    def test_pill_follows_explicit_and_global_order(self):
+        from datetime import date
+
+        from wavi.vision import _date_from_pill_text, set_date_order
+        today = date(2026, 10, 8)
+        assert _date_from_pill_text("5/10/2026", today) == date(2026, 10, 5)
+        assert _date_from_pill_text("5/10/2026", today, day_first=False) == date(2026, 5, 10)
+        set_date_order(False)
+        assert _date_from_pill_text("5/10/2026", today) == date(2026, 5, 10)
+
+    def test_pre_plain_and_viewer_header_follow_global_order(self):
+        from datetime import date, datetime
+
+        from wavi.media import parse_viewer_when
+        from wavi.session import _parse_pre_plain
+        from wavi.vision import set_date_order
+        set_date_order(False)
+        assert _parse_pre_plain("[4:38 PM, 8/10/2026] Ann: ") == datetime(2026, 8, 10, 16, 38)
+        assert parse_viewer_when("5/10/2026 at 3:51 PM", date(2026, 10, 8)) == datetime(2026, 5, 10, 15, 51)
+
+
+@pytest.mark.asyncio
+async def test_detect_date_order_uses_wa_lang_not_navigator():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from wavi import vision
+    from wavi.session import WASession
+    saved = vision._DAY_FIRST
+    try:
+        s = WASession.__new__(WASession)
+        s._page = MagicMock()
+        s._page.evaluate = AsyncMock(return_value={"lang": "en", "dates": ["[7:15 PM, 8/10/2026] X: "]})
+        assert await s.detect_date_order() is False
+        assert vision._DAY_FIRST is False
+        s._page.evaluate = AsyncMock(side_effect=RuntimeError("page gone"))
+        assert await s.detect_date_order() is None
+    finally:
+        vision.set_date_order(saved)

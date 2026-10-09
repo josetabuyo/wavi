@@ -567,8 +567,46 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
     return results
 
 
-def _date_from_pill_text(text: str, today) -> object | None:
-    """Parse a WA day-separator pill text into a datetime.date. Returns None if unrecognised."""
+# Order of numeric dates ("5/10/2026"): WA writes them day-first in Spanish
+# and most locales, month-first in US English. Set once per process from the
+# open session (WASession.detect_date_order); default day-first.
+_DAY_FIRST = True
+_NUM_DATE_RE = re.compile(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})")
+
+
+def infer_day_first(wa_lang: str | None, samples=()) -> bool:
+    """Decide the numeric date order of a WA session.
+
+    A sample that can only be read one way ("25/10/2026") wins. Otherwise
+    WA's own UI language decides: US English ("en", "en-US") is month-first,
+    everything else day-first. WA_LANG is <html lang>, not navigator.language
+    — Chrome can say en-US while WA itself runs in Spanish (seen live
+    2026-10-08)."""
+    for smp in samples:
+        for a, b, _y in _NUM_DATE_RE.findall(smp or ""):
+            if int(a) > 12 >= int(b):
+                return True
+            if int(b) > 12 >= int(a):
+                return False
+    lang = (wa_lang or "").strip().lower().replace("_", "-")
+    return lang not in ("en", "en-us")
+
+
+def set_date_order(day_first: bool) -> None:
+    global _DAY_FIRST
+    _DAY_FIRST = bool(day_first)
+
+
+def split_numeric_date(a: int, b: int, day_first: bool | None = None) -> tuple[int, int]:
+    """(first, second) fields of a numeric date → (day, month)."""
+    if day_first is None:
+        day_first = _DAY_FIRST
+    return (a, b) if day_first else (b, a)
+
+
+def _date_from_pill_text(text: str, today, day_first: bool | None = None) -> object | None:
+    """Parse a WA day-separator pill text into a datetime.date. Returns None if unrecognised.
+    Numeric dates follow DAY_FIRST (default: the process-wide date order)."""
     import re as _re
     from datetime import date as _D
     from datetime import timedelta as _td
@@ -597,7 +635,8 @@ def _date_from_pill_text(text: str, today) -> object | None:
                 return today - _td(days=days_back)
     m = _re.match(r'^(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})$', t)
     if m:
-        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        d, mo = split_numeric_date(int(m.group(1)), int(m.group(2)), day_first)
+        y = int(m.group(3))
         try:
             return _D(y if y > 100 else 2000 + y, mo, d)
         except ValueError:

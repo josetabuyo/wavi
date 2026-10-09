@@ -489,11 +489,11 @@ EDIT_WINDOW_MIN = 15
 _PRE_RE = __import__("re").compile(r"^\[(?P<time>[^,\]]+),\s*(?P<date>[^\]]+)\]")
 
 
-def _parse_pre_plain(pre: str | None):
-    """'[5:35 p. m., 8/10/2026] Name: ' → datetime (day-first dates)."""
+def _parse_pre_plain(pre: str | None, day_first: bool | None = None):
+    """'[5:35 p. m., 8/10/2026] Name: ' → datetime (session's date order)."""
     from datetime import datetime as _DT
 
-    from wavi.vision import _parse_time_str
+    from wavi.vision import _parse_time_str, split_numeric_date
     m = _PRE_RE.match(pre or "")
     if not m:
         return None
@@ -502,11 +502,23 @@ def _parse_pre_plain(pre: str | None):
     if not hhmm or len(parts) != 3:
         return None
     try:
-        d, mo, y = (int(x) for x in parts)
+        a, b, y = (int(x) for x in parts)
+        d, mo = split_numeric_date(a, b, day_first)
         h, mi = (int(x) for x in hhmm.split(":"))
         return _DT(y if y > 100 else 2000 + y, mo, d, h, mi)
     except ValueError:
         return None
+
+
+# WA's own UI language (<html lang>; navigator.language is Chrome's and can
+# differ) plus the dates of the loaded messages — see vision.infer_day_first.
+_DATE_ORDER_SIGNALS_JS = """
+() => ({
+    lang: document.documentElement.lang || null,
+    dates: [...document.querySelectorAll('#main [data-pre-plain-text]')]
+        .map(e => e.getAttribute('data-pre-plain-text')),
+})
+"""
 
 
 _CHECK_COMPOSE_EMPTY_JS = """
@@ -1344,6 +1356,23 @@ class WASession:
         else:
             import sys
             print("[wavi] ⚠️  navigate_to_contact: could not confirm bottom after 5 retries", file=sys.stderr)
+
+        await self.detect_date_order()
+
+    async def detect_date_order(self) -> bool | None:
+        """Set the process-wide numeric date order (vision.set_date_order)
+        from WA's UI language and the dates visible in the open chat.
+        Returns day_first, or None when the page gave nothing to go on."""
+        from wavi.vision import infer_day_first, set_date_order
+        try:
+            info = await self._page.evaluate(_DATE_ORDER_SIGNALS_JS)
+        except Exception:
+            return None  # best-effort: never let it break opening a chat
+        if not isinstance(info, dict):
+            return None
+        day_first = infer_day_first(info.get("lang"), info.get("dates") or [])
+        set_date_order(day_first)
+        return day_first
 
     # ── Screenshot ────────────────────────────────────────────────────────────
 
