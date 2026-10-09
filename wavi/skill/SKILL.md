@@ -182,6 +182,21 @@ matches, when several match (they're listed — use a longer fragment), or when
 the message is older than WhatsApp's 15-minute edit window. Exit code 2 means
 the edit was saved but the new text couldn't be confirmed in the chat.
 
+## Reply to (quote) a message
+
+```bash
+wavi reply [session] "Contact Name" "subí el video" "Gracias, ya lo veo"
+wavi reply [session] "Group" "a qué hora" "A las 9" --from "Mamá"   # only that sender's messages
+wavi reply [session] "Group" "video" "Este" --index 2               # 2nd of several matches, oldest first
+```
+
+MATCH must identify exactly one loaded message, yours or anyone's
+(accent/case-insensitive). Several matches are listed, numbered — narrow with
+`--from` or pick with `--index N`. Nothing is sent unless WhatsApp's quote
+panel shows that message; a failed reply leaves no quote behind. The text goes
+through the same guards as `wavi send`. Exit code 2 means it was sent but the
+quote couldn't be confirmed in the chat.
+
 ## Contact resolution — never guesses when a name is ambiguous
 
 `wavi get` and `wavi send` resolve CONTACT through WhatsApp's own search

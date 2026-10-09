@@ -12,6 +12,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi get <contact>` | Extract full message history from a chat (`--grow` to page through in chunks) | **Vision** |
 | `wavi send <contact> <message>` | Send a message | DOM + keyboard |
 | `wavi edit <contact> <match> <new>` | Edit one of your own sent messages (WA's 15-min window); `--fragment` replaces only `<match>` | DOM + keyboard |
+| `wavi reply <contact> <match> <text>` | Reply quoting one message (yours or anyone's); `--from` narrows by sender, `--index N` picks among matches | DOM + keyboard |
 | `wavi media <contact>` | Download a chat's videos and photos (full files) + `media.json` | Media viewer (DOM) |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
 | `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |
@@ -132,6 +133,14 @@ wavi edit default "DATA LAKE - Técnico" "atías, ya vi" "Matías, ya vi" --frag
 ```
 
 Finds the one **own** message in the open chat whose text contains `<match>` (accent/case-insensitive), opens WA's *Edit* dialog and saves the new text. Fails without touching anything when there is no match, more than one match (prints them — use a longer fragment), or the message is older than 15 minutes. The editor's content is checked against the intended text before saving; the result is re-read from the chat (`verified`).
+
+## wavi reply
+
+```bash
+wavi reply default "DATA LAKE - Técnico" "subí el video" "Gracias, ya lo veo" --from Matias
+```
+
+Finds the one message in the open chat (own or not) whose text contains `<match>`, opens its menu → *Responder*, checks the quote panel shows that message, and sends `<text>` with the same guards as `wavi send`. Ambiguous matches are listed numbered — narrow with `--from <sender>` or pick with `--index N`. Any failure cancels the quote (Escape) so nothing is left half-done. The sent reply is re-read from the chat (`verified`: body and quote both match).
 
 ## wavi media
 

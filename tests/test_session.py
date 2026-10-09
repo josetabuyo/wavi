@@ -886,9 +886,9 @@ class TestEditMessage:
 
     NOW = __import__("datetime").datetime(2026, 10, 8, 16, 45)
     OWN = [
-        {"id": "A", "pre": "[4:38 p. m., 8/10/2026] Jozbuyo: ", "text": "atías, ya vi el video, gracias!"},
-        {"id": "B", "pre": "[4:40 p. m., 8/10/2026] Jozbuyo: ", "text": "@Matias Becerro salió mal"},
-        {"id": "C", "pre": "[10:24 a. m., 8/10/2026] Jozbuyo: ", "text": "gracias Vito, ya vi"},
+        {"id": "A", "own": True, "pre": "[4:38 p. m., 8/10/2026] Jozbuyo: ", "text": "atías, ya vi el video, gracias!"},
+        {"id": "B", "own": True, "pre": "[4:40 p. m., 8/10/2026] Jozbuyo: ", "text": "@Matias Becerro salió mal"},
+        {"id": "C", "own": True, "pre": "[10:24 a. m., 8/10/2026] Jozbuyo: ", "text": "gracias Vito, ya vi"},
     ]
 
     def _session(self, own=None):
@@ -934,3 +934,116 @@ class TestEditMessage:
         s = self._session()
         with pytest.raises(RuntimeError, match="no aparece literal"):
             await s.edit_message("ATIAS, YA", "Matías, ya", fragment=True, now=self.NOW)
+
+
+class TestLocateMessage:
+    from wavi.session import _locate_message
+    locate = staticmethod(_locate_message)
+    ROWS = [
+        {"id": "1", "own": False, "pre": "[9:00 a. m., 8/10/2026] Matias Becerro: ", "text": "Subí el video nuevo"},
+        {"id": "2", "own": True, "pre": "[9:05 a. m., 8/10/2026] Jozbuyo: ", "text": "Genial, ya vi el video"},
+        {"id": "3", "own": False, "pre": "[9:10 a. m., 8/10/2026] Vito: ", "text": "El VIDEO se ve bien"},
+    ]
+
+    def test_accent_and_case_insensitive(self):
+        assert self.locate(self.ROWS, "SUBI EL")["id"] == "1"
+
+    def test_ambiguous_lists_numbered_candidates(self):
+        with pytest.raises(RuntimeError, match="Hay 3 mensajes .*--index N"):
+            self.locate(self.ROWS, "video")
+
+    def test_sender_filter(self):
+        assert self.locate(self.ROWS, "video", sender="vito")["id"] == "3"
+
+    def test_index_picks_oldest_first(self):
+        assert self.locate(self.ROWS, "video", index=2)["id"] == "2"
+
+    def test_index_out_of_range(self):
+        with pytest.raises(RuntimeError, match="fuera de rango"):
+            self.locate(self.ROWS, "video", index=4)
+
+    def test_own_only(self):
+        assert self.locate(self.ROWS, "video", own_only=True)["id"] == "2"
+
+    def test_no_match_names_sender(self):
+        with pytest.raises(RuntimeError, match="de 'Ana'"):
+            self.locate(self.ROWS, "video", sender="Ana")
+
+
+class TestReplyMessage:
+    """wavi reply — quotes exactly one message and never sends unless WA's
+    quote panel shows it; a failed reply leaves no dangling quote."""
+
+    ROWS = TestLocateMessage.ROWS
+
+    def _session(self, preview="Matias Becerro\nSubí el video nuevo", reply_item=True, after=None):
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        after_rows = after if after is not None else self.ROWS + [
+            {"id": "4", "own": True, "pre": "[9:20 a. m., 8/10/2026] Jozbuyo: ", "text": "Gracias!",
+             "quoted": "Matias Becerro\nSubí el video nuevo"}]
+        calls = {"rows": 0}
+
+        async def evaluate(js, *a):
+            if "data-pre-plain-text" in js and "own:" in js:
+                calls["rows"] += 1
+                return self.ROWS if calls["rows"] == 1 else after_rows
+            if "scrollIntoView" in js:
+                return {"x": 10, "y": 20}
+            if "opciones del mensaje" in js:
+                return True
+            if "responder|reply" in js:
+                return reply_item
+            if "cloneNode" in js:
+                return preview
+            return None
+
+        s._page.evaluate = AsyncMock(side_effect=evaluate)
+        s.send_message = AsyncMock(return_value={})
+        return s
+
+    @pytest.mark.asyncio
+    async def test_happy_path_quotes_and_sends(self):
+        s = self._session()
+        r = await s.reply_message("subi el video", "Gracias!")
+        s.send_message.assert_awaited_once_with("Gracias!")
+        assert r["quoted_id"] == "1" and r["quoted_sender"] == "Matias Becerro"
+        assert r["verified"]
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_touches_nothing(self):
+        s = self._session()
+        with pytest.raises(RuntimeError, match="Hay 3"):
+            await s.reply_message("video", "x")
+        s._page.mouse.move.assert_not_called()
+        s.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_wrong_quote_cancels_and_sends_nothing(self):
+        s = self._session(preview="Vito\nEl VIDEO se ve bien")
+        with pytest.raises(RuntimeError, match="La cita no muestra"):
+            await s.reply_message("subi el video", "x")
+        s.send_message.assert_not_called()
+        assert [c.args[0] for c in s._page.keyboard.press.call_args_list] == ["Escape"]
+
+    @pytest.mark.asyncio
+    async def test_no_reply_item(self):
+        s = self._session(reply_item=False)
+        with pytest.raises(RuntimeError, match="Responder"):
+            await s.reply_message("subi el video", "x")
+        s.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_send_clears_quote(self):
+        s = self._session()
+        s.send_message = AsyncMock(side_effect=RuntimeError("borrador"))
+        with pytest.raises(RuntimeError, match="borrador"):
+            await s.reply_message("subi el video", "x")
+        assert s._page.keyboard.press.call_args_list[-1].args[0] == "Escape"
+
+    @pytest.mark.asyncio
+    async def test_unverified_when_last_own_lacks_quote(self):
+        after = self.ROWS + [{"id": "4", "own": True, "pre": "", "text": "Gracias!", "quoted": None}]
+        s = self._session(after=after)
+        r = await s.reply_message("subi el video", "Gracias!")
+        assert not r["verified"]

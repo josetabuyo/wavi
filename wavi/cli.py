@@ -1239,6 +1239,67 @@ def edit(session: str, contact: str, match: str, new_text: str, fragment: bool,
         sys.exit(2)
 
 
+# ── reply ─────────────────────────────────────────────────────────────────────
+
+@main.command("reply")
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.argument("match")
+@click.argument("message")
+@click.option("--from", "sender", default=None,
+              help="Solo mensajes de este remitente (fragmento del nombre).")
+@click.option("--index", type=int, default=None,
+              help="Si MATCH coincide con varios mensajes, elegir el N (1-based, del más viejo al más nuevo).")
+@click.option("--pick", type=int, default=None,
+              help="Si el contacto es ambiguo, elegir la coincidencia N (1-based).")
+@click.option("--json-out", is_flag=True, help="Imprimir el resultado como JSON.")
+def reply(session: str, contact: str, match: str, message: str, sender: str | None,
+          index: int | None, pick: int | None, json_out: bool):
+    """Responder (citar) un mensaje del chat — propio o de otro.
+
+    MATCH es un fragmento del mensaje a citar (sin importar tildes ni
+    mayúsculas); tiene que identificar un único mensaje entre los cargados.
+    No se envía nada si la cita de WhatsApp no muestra ese mensaje.
+
+    \b
+    Ejemplos:
+      wavi reply default "DATA LAKE - Técnico" "subí el video" "Gracias, ya lo veo"
+      wavi reply default "Familia" "a qué hora" "A las 9" --from Mamá
+    """
+    from wavi.queue import is_locked, session_lock
+    from wavi.session import WASession
+
+    profile_dir = _profile(session)
+
+    async def _go():
+        s = WASession(profile_dir)
+        await s.connect()
+        try:
+            await s.navigate_to_contact(contact, pick=pick)
+            return await s.reply_message(match, message, sender=sender, index=index)
+        finally:
+            await s.close()
+
+    if is_locked(profile_dir):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...", err=True)
+    with session_lock(profile_dir, "reply", contact=contact):
+        with _lazy_session(profile_dir):
+            try:
+                result = asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
+
+    if json_out:
+        click.echo(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        who = result["quoted_sender"] or "?"
+        click.echo(f"Respuesta enviada citando a {who}: {result['quoted_text'][:80]!r}")
+    if not result["verified"]:
+        click.echo("⚠️  No pude confirmar la respuesta con la cita en el chat — revisalo.", err=True)
+        sys.exit(2)
+
+
 # ── send ──────────────────────────────────────────────────────────────────────
 
 @main.command("send")

@@ -105,6 +105,11 @@ _BLOB_INIT_SCRIPT = """
 # _EXTRACT_SIDEBAR_UPDATES_JS | cell-frame-container cells;      | OCR sidebar: parse name + last-message +
 #                             |   name via span[title],          |   timestamp per row; detect tick icon
 #                             |   direction via msg-* tick icons |   via vision for inbound/outbound
+# _CHAT_MESSAGES_JS           | #main [data-id] rows; own = tick | OCR chat bubbles (vision.py) →
+#                             |   aria-label; quoted-message     |   bbox; own = right-aligned bubble
+# _OPEN_MSG_MENU_JS           | aria-label "Opciones del mensaje"| hover bubble → locate chevron icon
+# _CLICK_REPLY_ITEM_JS        | [role=menuitem] "Responder"      | OCR the open menu for "Responder"
+# _REPLY_PREVIEW_JS           | #main footer minus the editor    | OCR the strip above the compose box
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -303,10 +308,13 @@ def _same_letters(a: str, b: str) -> bool:
     return keep(a) == keep(b)
 
 
-# ── Edit (wavi edit) ─────────────────────────────────────────────────────────
+# ── Edit / reply (wavi edit, wavi reply) ─────────────────────────────────────
+# Temporary DOM bridge (vision-first policy, docs/plan-mejoras.md §4.8): the
+# rows below are what _locate_message() picks from. Vision replacement: OCR
+# the chat bubbles (wavi/vision.py) → bbox → hover the bubble.
 # Own messages carry a hidden "Tú:"/"You:" label; data-pre-plain-text holds
 # "[5:35 p. m., 8/10/2026] Name: ". Text is rebuilt with emoji <img alt>.
-_OWN_MESSAGES_JS = """
+_CHAT_MESSAGES_JS = """
 () => {
     const textOf = (el) => {
         let out = '';
@@ -318,19 +326,92 @@ _OWN_MESSAGES_JS = """
         });
         return out;
     };
+    // "Tú:" only labels some own bubbles (first of a run); the delivery
+    // ticks ("Leído", "Entregado", …) are on every own message and no other.
+    const OWN = /^(t[uú]:|you:|le[ií]do|entregado|enviado|pendiente|read|delivered|sent|pending)$/i;
     const rows = [...document.querySelectorAll('#main [data-id]')];
-    return rows.filter(r => r.querySelector('[aria-label="Tú:"], [aria-label="You:"]'))
-        .map(r => {
+    return rows.map(r => {
             const pre = r.querySelector('[data-pre-plain-text]');
-            const body = r.querySelector('[data-testid="selectable-text"]');
+            const quote = r.querySelector('[data-testid="quoted-message"]');
+            const bodies = [...r.querySelectorAll('[data-testid="selectable-text"]')]
+                .filter(e => !(quote && quote.contains(e)));
+            const body = bodies[bodies.length - 1];
             return {
                 id: r.getAttribute('data-id'),
+                own: [...r.querySelectorAll('[aria-label]')].some(e =>
+                    OWN.test((e.getAttribute('aria-label') || '').trim())),
                 pre: pre ? pre.getAttribute('data-pre-plain-text') : null,
                 text: body ? textOf(body) : '',
+                quoted: quote ? (quote.innerText || '') : null,
             };
-        });
+        }).filter(m => m.pre || m.text);
 }
 """
+
+_CLICK_REPLY_ITEM_JS = """
+() => {
+    const it = [...document.querySelectorAll('[role="menuitem"]')].find(e =>
+        /^(responder|reply)$/i.test((e.innerText || '').trim()));
+    if (!it) return false;
+    it.click();
+    return true;
+}
+"""
+
+# Text of the quote panel WA shows above the compose box after "Responder":
+# everything in the footer except the editor itself. null → no footer.
+_REPLY_PREVIEW_JS = """
+() => {
+    const f = document.querySelector('#main footer');
+    if (!f) return null;
+    const c = f.cloneNode(true);
+    c.querySelectorAll('[contenteditable="true"]').forEach(e => e.remove());
+    return (c.innerText || '').trim();
+}
+"""
+
+
+def _pre_sender(pre: str | None) -> str:
+    """'[4:38 p. m., 8/10/2026] Matias Becerro: ' → 'Matias Becerro'."""
+    if not pre or "] " not in pre:
+        return ""
+    return pre.split("] ", 1)[1].rstrip().rstrip(":").strip()
+
+
+def _locate_message(
+    rows: list[dict], match: str, *, sender: str | None = None,
+    index: int | None = None, own_only: bool = False,
+) -> dict:
+    """Pick exactly one chat message whose text contains MATCH (accent/case
+    insensitive). SENDER narrows by the name in data-pre-plain-text; INDEX
+    (1-based, oldest first) picks among several hits. Zero hits, or several
+    without INDEX, raise RuntimeError listing what was seen."""
+    pool = [m for m in rows if m.get("own")] if own_only else rows
+    kind = "mensaje propio" if own_only else "mensaje"
+    q = _normalize_name(match)
+    hits = [m for m in pool if q and q in _normalize_name(m.get("text") or "")]
+    if sender:
+        sq = _normalize_name(sender)
+        hits = [m for m in hits if sq in _normalize_name(_pre_sender(m.get("pre")))]
+    if not hits:
+        of = f" de '{sender}'" if sender else ""
+        raise RuntimeError(
+            f"No encontré un {kind}{of} que contenga '{match}' entre los "
+            f"{len(pool)} mensajes {'propios ' if own_only else ''}cargados del chat."
+        )
+    if index is not None:
+        if not 1 <= index <= len(hits):
+            raise RuntimeError(f"--index {index} fuera de rango: hay {len(hits)} coincidencia(s).")
+        return hits[index - 1]
+    if len(hits) > 1:
+        lines = "\n".join(
+            f"  {i}. {m.get('pre') or '?'} {m['text'][:60]!r}" for i, m in enumerate(hits, 1))
+        raise RuntimeError(
+            f"Hay {len(hits)} {kind.replace('mensaje', 'mensajes').replace('propio', 'propios')} "
+            f"que contienen '{match}' — usá un fragmento más específico"
+            f"{'' if own_only else ' o --index N'}:\n{lines}"
+        )
+    return hits[0]
 
 _OPEN_MSG_MENU_JS = """
 (id) => {
@@ -1382,21 +1463,8 @@ class WASession:
         from datetime import datetime as _DT
 
         now = now or _DT.now()
-        own = await self._page.evaluate(_OWN_MESSAGES_JS)
-        q = _normalize_name(match)
-        hits = [m for m in own if q and q in _normalize_name(m["text"])]
-        if not hits:
-            raise RuntimeError(
-                f"No encontré un mensaje propio que contenga '{match}' entre los "
-                f"{len(own)} mensajes propios cargados del chat."
-            )
-        if len(hits) > 1:
-            lines = "\n".join(f"  {m['pre'] or '?'} {m['text'][:60]!r}" for m in hits)
-            raise RuntimeError(
-                f"Hay {len(hits)} mensajes propios que contienen '{match}' — usá un "
-                f"fragmento más específico:\n{lines}"
-            )
-        target = hits[0]
+        rows = await self._page.evaluate(_CHAT_MESSAGES_JS)
+        target = _locate_message(rows, match, own_only=True)
         sent_at = _parse_pre_plain(target["pre"])
         if sent_at is not None:
             age_min = (now - sent_at).total_seconds() / 60
@@ -1468,7 +1536,7 @@ class WASession:
             await self._page.keyboard.press("Escape")
             raise RuntimeError("El diálogo de edición no se cerró — la edición no se guardó")
 
-        after = {m["id"]: m for m in await self._page.evaluate(_OWN_MESSAGES_JS)}
+        after = {m["id"]: m for m in await self._page.evaluate(_CHAT_MESSAGES_JS)}
         saved = after.get(target["id"], {}).get("text")
         return {
             "id": target["id"],
@@ -1476,6 +1544,60 @@ class WASession:
             "before": target["text"],
             "after": saved,
             "verified": saved is not None and _same_letters(saved, intended),
+        }
+
+    async def reply_message(
+        self, match: str, text: str, *, sender: str | None = None, index: int | None = None,
+    ) -> dict:
+        """Reply to (quote) one message of the open chat — own or someone else's.
+
+        MATCH/SENDER/INDEX pick the message (see _locate_message). Nothing is
+        sent unless WA's quote panel above the compose box shows that exact
+        message; any failure cancels the quote with Escape. TEXT then goes
+        through send_message() with all of its guards.
+        """
+        rows = await self._page.evaluate(_CHAT_MESSAGES_JS)
+        target = _locate_message(rows, match, sender=sender, index=index)
+        snippet = _normalize_name(target["text"])[:30]
+
+        pos = await self._page.evaluate(_MSG_BUBBLE_POS_JS, target["id"])
+        if not pos:
+            raise RuntimeError("El mensaje dejó de estar en pantalla")
+        await self._page.mouse.move(pos["x"], pos["y"])
+        await self._page.wait_for_timeout(600)
+        if not await self._page.evaluate(_OPEN_MSG_MENU_JS, target["id"]):
+            raise RuntimeError("No se encontró el menú de opciones del mensaje")
+        await self._page.wait_for_timeout(800)
+        if not await self._page.evaluate(_CLICK_REPLY_ITEM_JS):
+            await self._page.keyboard.press("Escape")
+            raise RuntimeError("WhatsApp no ofrece 'Responder' para ese mensaje — no se envió nada")
+        await self._page.wait_for_timeout(800)
+
+        try:
+            preview = await self._page.evaluate(_REPLY_PREVIEW_JS)
+            if not preview or snippet not in _normalize_name(preview):
+                raise RuntimeError(
+                    f"La cita no muestra el mensaje elegido (muestra {(preview or '')[:60]!r}) "
+                    "— no se envió nada"
+                )
+            await self.send_message(text)
+        except Exception:
+            # Leave no dangling quote: the next send would carry it.
+            await self._page.keyboard.press("Escape")
+            await self._page.wait_for_timeout(300)
+            raise
+        await self._page.wait_for_timeout(800)
+
+        own = [m for m in await self._page.evaluate(_CHAT_MESSAGES_JS) if m.get("own")]
+        last = own[-1] if own else {}
+        verified = bool(last) and _same_letters(last.get("text") or "", text) \
+            and snippet in _normalize_name(last.get("quoted") or "")
+        return {
+            "quoted_id": target["id"],
+            "quoted_sender": _pre_sender(target.get("pre")) or None,
+            "quoted_text": target["text"],
+            "sent": text,
+            "verified": verified,
         }
 
     async def send_message(self, text: str) -> dict:
