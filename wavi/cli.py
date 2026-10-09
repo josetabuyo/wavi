@@ -1623,6 +1623,10 @@ def alias_list():
         profile = DEFAULT_SESSIONS_DIR / session
         marker = "✓" if profile.exists() else "✗ carpeta no encontrada"
         click.echo(f"  {name:<20} → {session}  {marker}")
+    dangling = [n for n, sess in aliases.items() if not (DEFAULT_SESSIONS_DIR / sess).exists()]
+    if dangling:
+        click.echo(f"\n{len(dangling)} alias apuntan a sesiones inexistentes; usarlos falla sin abrir "
+                   f"nada. Si ya no sirven: wavi alias remove <nombre>")
 
 
 # ── install-skill ─────────────────────────────────────────────────────────────

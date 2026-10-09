@@ -1047,3 +1047,26 @@ class TestReplyMessage:
         s = self._session(after=after)
         r = await s.reply_message("subi el video", "Gracias!")
         assert not r["verified"]
+
+
+@pytest.mark.asyncio
+async def test_connect_refuses_missing_profile_without_touching_ports(tmp_path, monkeypatch):
+    """A dangling alias / wrong path must not fall back to CDP_PORT — that
+    port can be another session's live daemon (killed for real 2026-10-08)."""
+    import playwright.async_api as pw_api
+
+    import wavi.session as ws
+    killed = []
+    monkeypatch.setattr(ws, "_kill_port", lambda port: killed.append(port))
+    fake_pw = MagicMock()
+    fake_pw.stop = AsyncMock()
+    starter = MagicMock()
+    starter.start = AsyncMock(return_value=fake_pw)
+    monkeypatch.setattr(pw_api, "async_playwright", lambda: starter)
+
+    s = WASession(tmp_path / "no-existe")
+    with pytest.raises(RuntimeError, match="no existe"):
+        await s.connect()
+    assert killed == []
+    assert not (tmp_path / "no-existe").exists()
+    fake_pw.stop.assert_awaited_once()

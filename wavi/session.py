@@ -963,6 +963,18 @@ class WASession:
                 print(f"⚠️  Daemon vivo (PID {pid}) pero CDP no responde: {e}", file=sys.stderr)
                 pass  # daemon alive but CDP not responding — fall through
 
+        # A session that doesn't exist (dangling alias, wrong path) has no
+        # port file → CDP_PORT, which may be another session's live daemon:
+        # the fallback below would kill it and open an empty profile. Real
+        # case 2026-10-08: a wrong relative path killed the default daemon.
+        if not self.profile_dir.is_dir():
+            await self._pw.stop()
+            self._pw = None
+            raise RuntimeError(
+                f"La sesión no existe: {self.profile_dir} — no se abrió nada. "
+                f"Revisá 'wavi alias list' o creala con 'wavi connect'."
+            )
+
         # No daemon: start headless Chrome (status/run without a prior connect)
         import sys
         print("⚠️  No daemon detectado — abriendo Chrome en fallback headless...", file=sys.stderr)
