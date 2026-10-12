@@ -134,6 +134,7 @@ De las 16 señales documentadas ahí, este es el estado real a 2026-09-18:
 | `_CLICK_SCROLL_BOTTOM_BTN_JS` | ❌ Pendiente — ícono, sin fallback |
 | `_CLOSE_NEW_CHAT_JS` | ❌ Pendiente — ícono |
 | `_CLEAR_SIDEBAR_SEARCH_JS` | ❌ Pendiente — ícono (ya tiene fallback no-visual: click + Escape) |
+| `_CHAT_MESSAGES_JS` / `_OPEN_MSG_MENU_JS` / `_CLICK_MENU_ITEM_JS` (edit, reply) | ✅ 2026-10-12: `vision.read_message_bubbles()` (OCR + barra de cita + nombre coloreado) + click derecho + `vision.find_menu_item()`; DOM solo como fallback sin helper OCR y para la relectura de verificación |
 | `_GET_VISIBLE_MSG_IDS_JS` | ⚠️ Ya tiene fallback OCR pre-existente en `runner.get()` (no de esta migración) |
 | Scroll state/control (`_CHAT_SCROLL_JS`, `_SCROLL_UP/DOWN_JS`, `_CONTACTS_SCROLL_STATE_JS`, `_SCROLL_CONTACTS_DOWN_JS`) | N/A — solo control de scroll |
 
