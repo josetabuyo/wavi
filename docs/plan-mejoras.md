@@ -582,7 +582,8 @@ rediseño.
    connect/close. ⏳
 5. `config.py` con todas las constantes de geometría/umbral (preparado para Fase 2). ⏳
 6. ~~pyproject + ruff + CI~~ ✅ (dev-deps unificadas, ruff E/F/W/I/B/UP limpio,
-   `.github/workflows/test.yml` con lint+test en ubuntu).
+   lint+test en cada push vía el hook pre-push `.githooks/`). El workflow de GitHub
+   Actions se quitó el 2026-10-12: nunca llegó a correr (cuenta sin Actions).
 7. ~~Documentación~~ ✅ (drift de boarding corregido, ADR-001…008 en `docs/adr/`,
    `docs/capability-matrix.md` creado).
 
