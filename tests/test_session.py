@@ -955,22 +955,65 @@ def test_same_letters_tolerates_list_markers_only():
     assert not _same_letters("atías", "Matías")
 
 
-class TestEditMessage:
-    """wavi edit — picks exactly one own message by fragment, respects WA's
-    15-minute window, and fails without touching anything otherwise."""
-
-    NOW = __import__("datetime").datetime(2026, 10, 8, 16, 45)
-    OWN = [
-        {"id": "A", "own": True, "pre": "[4:38 p. m., 8/10/2026] Jozbuyo: ", "text": "atías, ya vi el video, gracias!"},
-        {"id": "B", "own": True, "pre": "[4:40 p. m., 8/10/2026] Jozbuyo: ", "text": "@Matias Becerro salió mal"},
-        {"id": "C", "own": True, "pre": "[10:24 a. m., 8/10/2026] Jozbuyo: ", "text": "gracias Vito, ya vi"},
+def _vision_page(session, *, menu=True):
+    """Wire SESSION for the vision path: OCR helper present, screenshots and
+    the menu OCR stubbed. MENU: whether the context menu offers the entry."""
+    import wavi.vision as vision
+    session._page.mouse.click = AsyncMock()
+    session.screenshot_to_file = AsyncMock(side_effect=lambda p: p)
+    session.scroll_chat_up = AsyncMock()
+    return [
+        __import__("unittest.mock", fromlist=["patch"]).patch.object(vision, "vision_available", lambda: True),
+        __import__("unittest.mock", fromlist=["patch"]).patch.object(
+            vision, "find_menu_item", lambda shot, labels: (900, 800) if menu else None),
     ]
 
-    def _session(self, own=None):
+
+class TestEditMessage:
+    """wavi edit — picks exactly one own message by vision, respects WA's
+    15-minute window, edits the editor's own prefilled text, and fails
+    without touching anything otherwise."""
+
+    NOW = __import__("datetime").datetime(2026, 10, 8, 16, 45)
+    ROWS = [
+        {"id": "v3", "own": True, "sender": "Tú", "timestamp": "2026-10-08T16:38",
+         "text": "atías, ya vi el video, gracias!", "click_x": 1000, "click_y": 1500},
+        {"id": "v2", "own": True, "sender": "Tú", "timestamp": "2026-10-08T16:40",
+         "text": "@Matias Becerro salió mal", "click_x": 1000, "click_y": 1600},
+        {"id": "v1", "own": True, "sender": "Tú", "timestamp": "2026-10-08T10:24",
+         "text": "gracias Vito, ya vi", "click_x": 1000, "click_y": 1700},
+    ]
+
+    @pytest.fixture
+    def env(self):
+        from contextlib import ExitStack
         s = _make_session()
         s._page = _make_page(selector_found=True)
-        s._page.evaluate = AsyncMock(return_value=own if own is not None else self.OWN)
-        return s
+        s._vision_messages = AsyncMock(return_value=self.ROWS)
+        self.editor = {"text": "atías, ya vi el video, gracias!"}
+
+        def evaluate(js, *a):
+            if "activeElement" in js:             # edit dialog has focus
+                return not getattr(self, "closed", False)
+            if "querySelectorAll('p')" in js:     # editor text
+                return self.editor["text"]
+            if "editado|edited" in js:            # save button
+                self.closed = True
+                return True
+            if "own:" in js:                      # re-read after saving
+                return [{"own": True, "text": self.editor["text"]}]
+            return None
+
+        s._page.evaluate = AsyncMock(side_effect=evaluate)
+
+        async def typed(text, delay=30):
+            self.editor["text"] = text
+        s._page.keyboard.type = AsyncMock(side_effect=typed)
+        with ExitStack() as st:
+            for p in _vision_page(s):
+                st.enter_context(p)
+            yield s
+        self.closed = False
 
     def test_parse_pre_plain(self):
         from datetime import datetime
@@ -980,35 +1023,72 @@ class TestEditMessage:
         assert _parse_pre_plain(None) is None
 
     @pytest.mark.asyncio
-    async def test_no_match(self):
-        with pytest.raises(RuntimeError, match="No encontré"):
-            await self._session().edit_message("inexistente", "x", now=self.NOW)
+    async def test_no_match_scrolls_up_then_gives_up(self, env):
+        with pytest.raises(RuntimeError, match="No encontré.*4 pantallas"):
+            await env.edit_message("inexistente", "x", now=self.NOW)
+        assert env.scroll_chat_up.await_count == env.MESSAGE_SCREENS - 1
+        env._page.mouse.click.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_ambiguous_lists_candidates(self):
+    async def test_found_after_scrolling(self, env):
+        env._vision_messages = AsyncMock(side_effect=[self.ROWS[1:], self.ROWS])
+        r = await env.edit_message("atías, ya", "Matías, ya", fragment=True, now=self.NOW)
+        assert env.scroll_chat_up.await_count == 1
+        assert r["verified"] and r["before"].startswith("atías")
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_lists_candidates(self, env):
         with pytest.raises(RuntimeError, match="Hay 2 mensajes"):
-            await self._session().edit_message("ya vi", "x", now=self.NOW)
+            await env.edit_message("ya vi", "x", now=self.NOW)
+        env._page.mouse.click.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_match_ignores_accents_and_case(self):
-        s = self._session()
-        with pytest.raises(RuntimeError, match="17 min|solo permite"):
-            # "SALIO MAL" → B, sent 16:40; 22 min later it is out of the window
-            await s.edit_message("SALIO MAL", "x", now=self.NOW.replace(hour=17, minute=2))
+    async def test_match_ignores_accents_and_case(self, env):
+        with pytest.raises(RuntimeError, match="solo permite"):
+            await env.edit_message("SALIO MAL", "x", now=self.NOW.replace(hour=17, minute=2))
 
     @pytest.mark.asyncio
-    async def test_expired_window_touches_nothing(self):
-        s = self._session()
+    async def test_expired_window_touches_nothing(self, env):
         with pytest.raises(RuntimeError, match="15 min"):
-            await s.edit_message("gracias Vito", "x", now=self.NOW)
-        s._page.mouse.move.assert_not_called()
-        s._page.keyboard.type.assert_not_called()
+            await env.edit_message("gracias Vito", "x", now=self.NOW)
+        env._page.mouse.move.assert_not_called()
+        env._page.keyboard.type.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_fragment_must_be_literal(self):
-        s = self._session()
+    async def test_menu_opened_by_right_click(self, env):
+        await env.edit_message("atías, ya", "Matías, ya", fragment=True, now=self.NOW)
+        env._page.mouse.click.assert_any_await(1000, 1500, button="right")
+        env._page.mouse.click.assert_any_await(900, 800)
+
+    @pytest.mark.asyncio
+    async def test_fragment_replaces_inside_the_exact_editor_text(self, env):
+        # OCR may misread letters; the editor holds the real message.
+        env._vision_messages = AsyncMock(return_value=[dict(self.ROWS[0], text="atias, ya vl el video")])
+        r = await env.edit_message("atías, ya", "Matías, ya", fragment=True, now=self.NOW)
+        assert self.editor["text"] == "Matías, ya vi el video, gracias!"
+        assert r["verified"]
+
+    @pytest.mark.asyncio
+    async def test_fragment_must_be_literal(self, env):
         with pytest.raises(RuntimeError, match="no aparece literal"):
-            await s.edit_message("ATIAS, YA", "Matías, ya", fragment=True, now=self.NOW)
+            await env.edit_message("ATIAS, YA", "Matías, ya", fragment=True, now=self.NOW)
+        env._page.keyboard.type.assert_not_called()
+        assert env._page.keyboard.press.call_args_list[-1].args[0] == "Escape"
+
+    @pytest.mark.asyncio
+    async def test_wrong_message_opened_changes_nothing(self, env):
+        self.editor["text"] = "otro mensaje cualquiera"
+        with pytest.raises(RuntimeError, match="otro mensaje"):
+            await env.edit_message("atías, ya", "x", now=self.NOW)
+        env._page.keyboard.type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_edit_entry_in_menu(self, env):
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+                "wavi.vision.find_menu_item", lambda shot, labels: None):
+            with pytest.raises(RuntimeError, match="no ofrece 'Editar'"):
+                await env.edit_message("atías, ya", "x", now=self.NOW)
+        assert env._page.keyboard.press.call_args_list[-1].args[0] == "Escape"
 
 
 class TestLocateMessage:
@@ -1041,87 +1121,147 @@ class TestLocateMessage:
         assert self.locate(self.ROWS, "video", own_only=True)["id"] == "2"
 
     def test_no_match_names_sender(self):
-        with pytest.raises(RuntimeError, match="de 'Ana'"):
+        from wavi.session import MessageNotFound
+        with pytest.raises(MessageNotFound, match="de 'Ana'"):
             self.locate(self.ROWS, "video", sender="Ana")
+
+    def test_vision_rows_carry_sender_and_time(self):
+        rows = [{"id": "v2", "own": False, "sender": "Matías Cagnina", "timestamp": "2026-10-09T13:31",
+                 "text": "recibido!!!"},
+                {"id": "v1", "own": True, "sender": "Tú", "timestamp": "2026-10-09T13:32", "text": "recibido, gracias"}]
+        assert self.locate(rows, "recibido", sender="matias")["id"] == "v2"
+        with pytest.raises(RuntimeError, match="2026-10-09T13:31 Matías Cagnina"):
+            self.locate(rows, "recibido")
+
+
+def test_roughly_contains_tolerates_ocr_slips():
+    from wavi.session import _roughly_contains
+    assert _roughly_contains("Matias Becerro\nSubí el video nuevo", "Subi el vldeo nuevo")
+    assert _roughly_contains("x", "") is False
+    assert not _roughly_contains("Vito\nEl VIDEO se ve bien", "Subí el video nuevo")
 
 
 class TestReplyMessage:
-    """wavi reply — quotes exactly one message and never sends unless WA's
-    quote panel shows it; a failed reply leaves no dangling quote."""
+    """wavi reply — quotes exactly one message (picked by vision) and never
+    sends unless WA's quote panel shows it; a failed reply leaves no
+    dangling quote."""
 
-    ROWS = TestLocateMessage.ROWS
+    ROWS = [
+        {"id": "v3", "own": False, "sender": "Matias Becerro", "timestamp": "2026-10-08T09:00",
+         "text": "Subi el vldeo nuevo", "click_x": 700, "click_y": 1200},   # OCR slip on purpose
+        {"id": "v2", "own": True, "sender": "Tú", "timestamp": "2026-10-08T09:05",
+         "text": "Genial, ya vi el video", "click_x": 1100, "click_y": 1300},
+        {"id": "v1", "own": False, "sender": "Vito", "timestamp": "2026-10-08T09:10",
+         "text": "El VIDEO se ve bien", "click_x": 700, "click_y": 1400},
+    ]
 
-    def _session(self, preview="Matias Becerro\nSubí el video nuevo", reply_item=True, after=None):
-        s = _make_session()
-        s._page = _make_page(selector_found=True)
-        after_rows = after if after is not None else self.ROWS + [
-            {"id": "4", "own": True, "pre": "[9:20 a. m., 8/10/2026] Jozbuyo: ", "text": "Gracias!",
-             "quoted": "Matias Becerro\nSubí el video nuevo"}]
-        calls = {"rows": 0}
+    @pytest.fixture
+    def make(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
 
-        async def evaluate(js, *a):
-            if "data-pre-plain-text" in js and "own:" in js:
-                calls["rows"] += 1
-                return self.ROWS if calls["rows"] == 1 else after_rows
-            if "scrollIntoView" in js:
-                return {"x": 10, "y": 20}
-            if "opciones del mensaje" in js:
-                return True
-            if "responder|reply" in js:
-                return reply_item
-            if "cloneNode" in js:
-                return preview
-            return None
+        def _make(preview="Matias Becerro\nSubí el video nuevo", menu=True, after=None):
+            s = _make_session()
+            s._page = _make_page(selector_found=True)
+            s._vision_messages = AsyncMock(return_value=self.ROWS)
+            after_rows = after if after is not None else [
+                {"own": True, "text": "Gracias!", "quoted": "Matias Becerro\nSubí el video nuevo"}]
 
-        s._page.evaluate = AsyncMock(side_effect=evaluate)
-        s.send_message = AsyncMock(return_value={})
-        return s
+            async def evaluate(js, *a):
+                if "own:" in js:
+                    return after_rows
+                if "cloneNode" in js:
+                    return preview
+                return None
+            s._page.evaluate = AsyncMock(side_effect=evaluate)
+            s.send_message = AsyncMock(return_value={})
+            for p in _vision_page(s, menu=menu):
+                stack.enter_context(p)
+            return s
+        yield _make
+        stack.close()
 
     @pytest.mark.asyncio
-    async def test_happy_path_quotes_and_sends(self):
-        s = self._session()
-        r = await s.reply_message("subi el video", "Gracias!")
+    async def test_happy_path_quotes_and_sends(self, make):
+        s = make()
+        r = await s.reply_message("subi el", "Gracias!")
+        s._page.mouse.click.assert_any_await(700, 1200, button="right")
         s.send_message.assert_awaited_once_with("Gracias!")
-        assert r["quoted_id"] == "1" and r["quoted_sender"] == "Matias Becerro"
+        assert r["quoted_id"] == "v3" and r["quoted_sender"] == "Matias Becerro"
         assert r["verified"]
 
     @pytest.mark.asyncio
-    async def test_ambiguous_touches_nothing(self):
-        s = self._session()
-        with pytest.raises(RuntimeError, match="Hay 3"):
+    async def test_from_filter_uses_vision_sender(self, make):
+        s = make(preview="Vito\nEl VIDEO se ve bien",
+                 after=[{"own": True, "text": "x", "quoted": "Vito El VIDEO se ve bien"}])
+        r = await s.reply_message("video", "x", sender="vito")
+        assert r["quoted_id"] == "v1"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_touches_nothing(self, make):
+        s = make()
+        with pytest.raises(RuntimeError, match="Hay 2"):
             await s.reply_message("video", "x")
-        s._page.mouse.move.assert_not_called()
+        s._page.mouse.click.assert_not_called()
         s.send_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_wrong_quote_cancels_and_sends_nothing(self):
-        s = self._session(preview="Vito\nEl VIDEO se ve bien")
+    async def test_wrong_quote_cancels_and_sends_nothing(self, make):
+        s = make(preview="Vito\nEl VIDEO se ve bien")
         with pytest.raises(RuntimeError, match="La cita no muestra"):
-            await s.reply_message("subi el video", "x")
+            await s.reply_message("subi el", "x")
         s.send_message.assert_not_called()
-        assert [c.args[0] for c in s._page.keyboard.press.call_args_list] == ["Escape"]
-
-    @pytest.mark.asyncio
-    async def test_no_reply_item(self):
-        s = self._session(reply_item=False)
-        with pytest.raises(RuntimeError, match="Responder"):
-            await s.reply_message("subi el video", "x")
-        s.send_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_failed_send_clears_quote(self):
-        s = self._session()
-        s.send_message = AsyncMock(side_effect=RuntimeError("borrador"))
-        with pytest.raises(RuntimeError, match="borrador"):
-            await s.reply_message("subi el video", "x")
         assert s._page.keyboard.press.call_args_list[-1].args[0] == "Escape"
 
     @pytest.mark.asyncio
-    async def test_unverified_when_last_own_lacks_quote(self):
-        after = self.ROWS + [{"id": "4", "own": True, "pre": "", "text": "Gracias!", "quoted": None}]
-        s = self._session(after=after)
-        r = await s.reply_message("subi el video", "Gracias!")
+    async def test_no_reply_item(self, make):
+        s = make(menu=False)
+        with pytest.raises(RuntimeError, match="Responder"):
+            await s.reply_message("subi el", "x")
+        s.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_send_clears_quote(self, make):
+        s = make()
+        s.send_message = AsyncMock(side_effect=RuntimeError("borrador"))
+        with pytest.raises(RuntimeError, match="borrador"):
+            await s.reply_message("subi el", "x")
+        assert s._page.keyboard.press.call_args_list[-1].args[0] == "Escape"
+
+    @pytest.mark.asyncio
+    async def test_unverified_when_last_own_lacks_quote(self, make):
+        s = make(after=[{"own": True, "text": "Gracias!", "quoted": None}])
+        r = await s.reply_message("subi el", "Gracias!")
         assert not r["verified"]
+
+    @pytest.mark.asyncio
+    async def test_dom_fallback_without_ocr_helper(self):
+        """No OCR helper on this machine → temporary DOM path."""
+        from unittest.mock import patch
+
+        import wavi.vision as vision
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        rows = [{"id": "A", "own": False, "pre": "[9:00 a. m., 8/10/2026] Ana: ", "text": "hola"}]
+
+        async def evaluate(js, *a):
+            if "own:" in js:
+                return rows if not s.send_message.await_count else [
+                    {"own": True, "text": "chau", "quoted": "Ana hola"}]
+            if "scrollIntoView" in js:
+                return {"x": 1, "y": 2}
+            if "opciones del mensaje" in js:
+                return True
+            if "menuitem" in js:
+                return a and "Responder" in a[0]
+            if "cloneNode" in js:
+                return "Ana\nhola"
+            return None
+        s._page.evaluate = AsyncMock(side_effect=evaluate)
+        s.send_message = AsyncMock(return_value={})
+        with patch.object(vision, "vision_available", lambda: False):
+            r = await s.reply_message("hola", "chau")
+        assert r["quoted_sender"] == "Ana" and r["verified"]
 
 
 @pytest.mark.asyncio

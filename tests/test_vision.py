@@ -652,6 +652,117 @@ async def test_detect_date_order_uses_wa_lang_not_navigator():
         vision.set_date_order(saved)
 
 
+class TestMessageBubbleVision:
+    """Visual invariants wavi edit/reply rely on to pick a message without
+    the DOM: the quote's coloured left bar, coloured sender names, the
+    context-menu entry found by OCR."""
+
+    OWN_BG = (217, 253, 211)       # WA's own-bubble green
+    QUOTE_BG = (209, 244, 204)
+    BAR = (27, 135, 85)            # measured live 2026-10-12
+
+    def _bubble(self, quote=True):
+        from PIL import ImageDraw
+        img = Image.new("RGB", (420, 100), self.OWN_BG)
+        d = ImageDraw.Draw(img)
+        if quote:
+            d.rectangle((10, 6, 400, 50), fill=self.QUOTE_BG)
+            d.rectangle((10, 6, 13, 50), fill=self.BAR)          # 4 px bar
+        d.rectangle((20, 70, 160, 80), fill=(17, 27, 33))         # dark "text"
+        return img
+
+    def test_quote_band_found_from_the_bar(self):
+        from wavi.vision import find_quote_band
+        y0, y1 = find_quote_band(self._bubble())
+        assert abs(y0 - 6) <= 1 and abs(y1 - 51) <= 1
+
+    def test_no_quote_no_band(self):
+        from wavi.vision import find_quote_band
+        assert find_quote_band(self._bubble(quote=False)) is None
+
+    def test_coloured_block_is_not_a_bar(self):
+        from PIL import ImageDraw
+
+        from wavi.vision import find_quote_band
+        img = Image.new("RGB", (300, 120), self.OWN_BG)
+        ImageDraw.Draw(img).rectangle((10, 10, 200, 100), fill=(200, 60, 40))   # a photo
+        assert find_quote_band(img) is None
+
+    def test_coloured_name_vs_black_text(self):
+        from PIL import ImageDraw
+
+        from wavi.vision import _is_colored_text
+        img = Image.new("RGB", (200, 60), (255, 255, 255))
+        d = ImageDraw.Draw(img)
+        d.rectangle((5, 5, 100, 15), fill=(83, 189, 235))        # light-blue name
+        d.rectangle((5, 30, 100, 40), fill=(17, 27, 33))         # message text
+        assert _is_colored_text(img, (0, 0, 110, 20))
+        assert not _is_colored_text(img, (0, 25, 110, 45))
+
+    def test_strip_meta(self):
+        from wavi.vision import _strip_meta
+        assert _strip_meta("segunda respuesta ok, editada Editado 7:18 p. m. //") == \
+            "segunda respuesta ok, editada"
+        assert _strip_meta("Hola Wavi! 5:20 p. m. /") == "Hola Wavi!"
+        assert _strip_meta("a las 5:30 nos vemos") == "a las 5:30 nos vemos"
+
+    def test_find_menu_item_by_ocr(self, tmp_path, monkeypatch):
+        import wavi.vision as vision
+        shot = tmp_path / "menu.png"
+        Image.new("RGB", (1280, 1920)).save(shot)
+        monkeypatch.setattr(vision, "_run_ocr", lambda p: [
+            {"text": "Copiar", "x": 0.85, "y": 0.80, "w": 0.05, "h": 0.01},
+            {"text": "Responder ", "x": 0.85, "y": 0.78, "w": 0.06, "h": 0.01},
+        ])
+        x, y = vision.find_menu_item(shot, ("Responder", "Reply"))
+        assert (x, y) == (int(0.88 * 1280), int(0.785 * 1920))
+        assert vision.find_menu_item(shot, ("Editar", "Edit")) is None
+
+    def test_read_message_bubbles_splits_quote_and_inherits_sender(self, tmp_path, monkeypatch):
+        from PIL import ImageDraw
+
+        import wavi.vision as vision
+        shot = tmp_path / "chat.png"
+        full = Image.new("RGB", (1280, 1920), (239, 234, 226))
+        d = ImageDraw.Draw(full)
+        ox, oy = vision.SIDEBAR_PX, vision.HEADER_PX
+        # other's bubble with a blue name label, then an unlabeled one (same run)
+        d.rectangle((ox + 20, oy + 100, ox + 320, oy + 160), fill=(255, 255, 255))
+        d.rectangle((ox + 30, oy + 105, ox + 150, oy + 115), fill=(83, 189, 235))
+        d.rectangle((ox + 20, oy + 170, ox + 320, oy + 200), fill=(255, 255, 255))
+        # own reply quoting it
+        d.rectangle((ox + 300, oy + 300, ox + 680, oy + 400), fill=self.OWN_BG)
+        d.rectangle((ox + 310, oy + 306, ox + 670, oy + 350), fill=self.QUOTE_BG)
+        d.rectangle((ox + 310, oy + 306, ox + 313, oy + 350), fill=self.BAR)
+        full.save(shot)
+
+        def blk(text, x, y, w, h, bw, bh):
+            return {"text": text, "x": x / bw, "y": y / bh, "w": w / bw, "h": h / bh}
+        bubbles = [
+            vision.Bubble(id=3, screen_id=3, sender="other", msg_type="text", timestamp="2026-10-09T13:31",
+                          text="", bbox={"x": 20, "y": 100, "w": 300, "h": 60},
+                          raw_blocks=[blk("Matías Cagnina", 10, 5, 120, 10, 300, 60),
+                                      blk("recibido!!! 1:31 p. m.", 10, 30, 200, 15, 300, 60)]),
+            vision.Bubble(id=2, screen_id=2, sender="other", msg_type="text", timestamp="2026-10-09T13:32",
+                          text="", bbox={"x": 20, "y": 170, "w": 300, "h": 30},
+                          raw_blocks=[blk("gracias Jose 1:32 p. m.", 10, 8, 200, 15, 300, 30)]),
+            vision.Bubble(id=1, screen_id=1, sender="me", msg_type="text", timestamp="2026-10-09T13:40",
+                          text="", bbox={"x": 300, "y": 300, "w": 380, "h": 100},
+                          raw_blocks=[blk("Matías Cagnina", 20, 10, 120, 10, 380, 100),
+                                      blk("recibido!!!", 20, 30, 100, 12, 380, 100),
+                                      blk("de nada 1:40 p. m. //", 20, 70, 150, 15, 380, 100)]),
+        ]
+        monkeypatch.setattr(vision, "analyze", lambda *a, **k: bubbles)
+        rows = vision.read_message_bubbles(shot, tmp_path)
+        assert [r["key"] for r in rows] == ["v3", "v2", "v1"]           # oldest first
+        assert rows[0]["sender"] == "Matías Cagnina" and rows[0]["text"] == "recibido!!!"
+        assert rows[1]["sender"] == "Matías Cagnina" and rows[1]["text"] == "gracias Jose"
+        assert rows[2]["own"] and rows[2]["sender"] == "Tú"
+        assert rows[2]["text"] == "de nada" and rows[2]["quoted"] == "recibido!!!"
+        # click point lands on the body, in page coordinates
+        assert ox + 300 < rows[2]["click_x"] < ox + 680 and oy + 370 < rows[2]["click_y"] < oy + 390
+
+
 def test_ocr_helper_is_found():
     """The swift OCR helper must resolve both in a checkout and in the wheel
     (pyproject force-include → wavi/_ocr/)."""

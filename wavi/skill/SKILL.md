@@ -190,8 +190,8 @@ wavi edit [session] "Contact Name" "atías, ya vi" "Matías, ya vi" --fragment  
 wavi edit [session] "Contact Name" "a las 5" "Nos vemos a las 6 en la oficina" # replace the whole text
 ```
 
-MATCH must identify exactly one of **your own** messages in the chat
-(accent/case-insensitive). It fails without touching anything when nothing
+MATCH must identify exactly one of **your own** messages on screen
+(accent/case-insensitive; wavi scrolls up a few screens if it isn't visible). It fails without touching anything when nothing
 matches, when several match (they're listed — use a longer fragment), or when
 the message is older than WhatsApp's 15-minute edit window. Exit code 2 means
 the edit was saved but the new text couldn't be confirmed in the chat.
@@ -204,8 +204,11 @@ wavi reply [session] "Group" "a qué hora" "A las 9" --from "Mamá"   # only tha
 wavi reply [session] "Group" "video" "Este" --index 2               # 2nd of several matches, oldest first
 ```
 
-MATCH must identify exactly one loaded message, yours or anyone's
-(accent/case-insensitive). Several matches are listed, numbered — narrow with
+MATCH must identify exactly one message, yours or anyone's
+(accent/case-insensitive). The message is found **by vision** — OCR of the
+chat, the quote's coloured bar, the sender's coloured name — and wavi scrolls
+up to 4 screens looking for it; expect ~20–40 s. Text inside a quote doesn't
+count as a match, only a message's own body. Several matches are listed, numbered — narrow with
 `--from` or pick with `--index N`. Nothing is sent unless WhatsApp's quote
 panel shows that message; a failed reply leaves no quote behind. The text goes
 through the same guards as `wavi send`. Exit code 2 means it was sent but the

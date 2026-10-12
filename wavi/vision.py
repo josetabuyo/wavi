@@ -768,3 +768,167 @@ def _save_debug_image(
 
     combined = Image.alpha_composite(debug, overlay).convert("RGB")
     combined.save(out_path)
+
+
+# ── Message bubbles for actions (wavi edit / wavi reply) ─────────────────────
+# Vision replacement for the DOM rows edit/reply used to pick a message from
+# (_CHAT_MESSAGES_JS): which bubbles are on screen, whose they are, their
+# body text, the quote inside a reply and where to click. Everything is read
+# off the screenshot by visual invariants — no selector involved.
+
+def _hsv_arrays(region: Image.Image):
+    import numpy as np
+    a = np.asarray(region.convert("RGB"), dtype=np.float32) / 255.0
+    mx, mn = a.max(axis=2), a.min(axis=2)
+    sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0.0)
+    return sat, mx
+
+
+def find_quote_band(region: Image.Image, min_run: int = 24) -> tuple[int, int] | None:
+    """(y0, y1) of the quoted block inside a bubble crop, or None.
+
+    A quote is drawn with a thin vertical bar in the quoted sender's colour
+    at its left edge (green for your own messages, a per-contact colour for
+    others): a 2–8 px wide column run of saturated mid-value pixels, at least
+    MIN_RUN tall, with plain bubble background right beside it. Photos and
+    coloured blocks fail the "thin" test; glyphs and emoji are too short."""
+    import numpy as np
+    sat, val = _hsv_arrays(region)
+    mask = (sat > 0.45) & (val > 0.25) & (val < 0.85)
+    h, w = mask.shape
+    cols = []
+    for x in range(w):
+        col = mask[:, x]
+        best, start = (0, 0, 0), None
+        for y in range(h + 1):
+            on = y < h and col[y]
+            if on and start is None:
+                start = y
+            elif not on and start is not None:
+                if y - start > best[0]:
+                    best = (y - start, start, y)
+                start = None
+        if best[0] >= min_run:
+            cols.append((x, best[1], best[2]))
+    # group adjacent columns into bars
+    groups: list[list[tuple[int, int, int]]] = []
+    for c in cols:
+        if groups and c[0] == groups[-1][-1][0] + 1:
+            groups[-1].append(c)
+        else:
+            groups.append([c])
+    for g in groups:
+        if not 2 <= len(g) <= 8:
+            continue
+        y0 = int(np.median([c[1] for c in g]))
+        y1 = int(np.median([c[2] for c in g]))
+        left, right = g[0][0] - 3, g[-1][0] + 3
+        beside = [mask[y0:y1, x].mean() for x in (left, right) if 0 <= x < w]
+        if beside and max(beside) < 0.2:
+            return y0, y1
+    return None
+
+
+def _block_px(block: dict, w: int, h: int) -> tuple[int, int, int, int]:
+    return (int(block["x"] * w), int(block["y"] * h),
+            int((block["x"] + block["w"]) * w), int((block["y"] + block["h"]) * h))
+
+
+def _is_colored_text(region: Image.Image, box: tuple[int, int, int, int]) -> bool:
+    """True when the ink of BOX is coloured (a sender-name label: WA paints
+    names in the contact's colour; message text is near-black grey)."""
+    x0, y0, x1, y1 = box
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return False
+    sat, val = _hsv_arrays(region.crop(box))
+    # Glyph pixels, not the bubble background: dark ones (message text) or
+    # saturated ones (names come in light colours — blue, pink, orange).
+    # Bubble backgrounds stay under 0.3 saturation, even WA's own green.
+    # Near-black text (#111b21) has a high nominal saturation, so only
+    # pixels that aren't dark can count as coloured.
+    coloured = (sat > 0.3) & (val > 0.35)
+    ink = (val < 0.75) | coloured
+    if ink.sum() < 8:
+        return False
+    return float(coloured.sum()) / float(ink.sum()) > 0.5
+
+
+_RE_BUBBLE_META = re.compile(
+    r"(?:\b(?:editado|edited)\b\s*)?\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s*m\.?)?[\s/V✓]*$", re.I)
+
+
+def _strip_meta(text: str) -> str:
+    """Drop the trailing 'Editado 7:18 p. m. //' WA prints inside a bubble."""
+    return _RE_BUBBLE_META.sub("", text).strip()
+
+
+def read_message_bubbles(screenshot_path: Path, work_dir: Path | None = None) -> list[dict]:
+    """Messages visible in a full WA screenshot, oldest first.
+
+    Each: {key, own, sender, text, quoted, timestamp, click_x, click_y}.
+    SENDER is the coloured name label (inherited along a run of bubbles from
+    the same person, as WA only labels the first); own messages get "Tú".
+    TEXT is the body without the quote, name label or time/ticks. CLICK_X/Y
+    are page coordinates on the body, safe to right-click for the menu."""
+    bubbles = analyze(screenshot_path, assets_dir=work_dir)
+    cropped_path, sidebar_x = crop_chat_panel(screenshot_path)
+    img = Image.open(cropped_path).convert("RGB")
+    out: list[dict] = []
+    run_sender: str | None = None
+    for b in sorted(bubbles, key=lambda b: -b.screen_id):     # oldest first
+        bb = b.bbox
+        box = (max(0, bb["x"]), max(0, bb["y"]),
+               min(img.width, bb["x"] + bb["w"]), min(img.height, bb["y"] + bb["h"]))
+        region = img.crop(box)
+        rw, rh = region.size
+        band = find_quote_band(region)
+        body, quoted, label = [], [], None
+        for blk in sorted(b.raw_blocks, key=lambda k: k["y"]):
+            t = blk["text"].strip()
+            if not t:
+                continue
+            px = _block_px(blk, rw, rh)
+            cy = (px[1] + px[3]) / 2
+            if band and band[0] - 4 <= cy <= band[1] + 4:
+                quoted.append((t, px))
+            elif (b.sender == "other" and not body and label is None
+                  and not (band and cy > band[1]) and _is_colored_text(region, px)):
+                label = t
+            else:
+                body.append((t, px))
+        if b.sender == "me":
+            sender, run_sender = "Tú", None
+        else:
+            sender = label or run_sender
+            run_sender = sender
+        anchor = body[-1][1] if body else (0, 0, rw, rh)
+        # A quote opens with its own name label line; keep only what it quotes.
+        quoted_text = " ".join(t for t, _ in (quoted[1:] if len(quoted) > 1 else quoted))
+        out.append({
+            "key": f"v{b.screen_id}",
+            "own": b.sender == "me",
+            "sender": sender,
+            "text": _strip_meta(" ".join(t for t, _ in body)),
+            "quoted": quoted_text or None,
+            "timestamp": b.timestamp,
+            "click_x": sidebar_x + box[0] + (anchor[0] + anchor[2]) // 2,
+            "click_y": HEADER_PX + box[1] + (anchor[1] + anchor[3]) // 2,
+        })
+    return out
+
+
+def find_menu_item(screenshot_path: Path, labels: tuple[str, ...]) -> tuple[int, int] | None:
+    """Page coordinates of a context-menu entry whose OCR text is exactly one
+    of LABELS (case-insensitive), or None."""
+    with Image.open(screenshot_path) as im:
+        w, h = im.size
+    want = {lbl.lower() for lbl in labels}
+    for blk in _run_ocr(screenshot_path):
+        if blk["text"].strip().lower() in want:
+            return int((blk["x"] + blk["w"] / 2) * w), int((blk["y"] + blk["h"] / 2) * h)
+    return None
+
+
+def vision_available() -> bool:
+    """Apple Vision OCR helper present (compiled binary or swift on PATH)."""
+    return OCR_BIN.exists() or (SWIFT_OCR.exists() and shutil.which("swift") is not None)

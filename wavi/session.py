@@ -105,11 +105,12 @@ _BLOB_INIT_SCRIPT = """
 # _EXTRACT_SIDEBAR_UPDATES_JS | cell-frame-container cells;      | OCR sidebar: parse name + last-message +
 #                             |   name via span[title],          |   timestamp per row; detect tick icon
 #                             |   direction via msg-* tick icons |   via vision for inbound/outbound
-# _CHAT_MESSAGES_JS           | #main [data-id] rows; own = tick | OCR chat bubbles (vision.py) →
-#                             |   aria-label; quoted-message     |   bbox; own = right-aligned bubble
-# _OPEN_MSG_MENU_JS           | aria-label "Opciones del mensaje"| hover bubble → locate chevron icon
-# _CLICK_REPLY_ITEM_JS        | [role=menuitem] "Responder"      | OCR the open menu for "Responder"
-# _REPLY_PREVIEW_JS           | #main footer minus the editor    | OCR the strip above the compose box
+# _CHAT_MESSAGES_JS           | #main [data-id] rows; own = tick | ✅ vision.read_message_bubbles() picks
+#                             |   aria-label; quoted-message     |   the message; DOM only as fallback and
+#                             |                                  |   for the post-send/edit re-read check
+# _OPEN_MSG_MENU_JS           | aria-label "Opciones del mensaje"| ✅ right-click on the bubble (fallback)
+# _CLICK_MENU_ITEM_JS         | [role=menuitem] by label         | ✅ vision.find_menu_item() OCR (fallback)
+# _REPLY_PREVIEW_JS           | #main footer minus the editor    | read-only cross-check of the quote
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -356,16 +357,6 @@ _CHAT_MESSAGES_JS = """
 }
 """
 
-_CLICK_REPLY_ITEM_JS = """
-() => {
-    const it = [...document.querySelectorAll('[role="menuitem"]')].find(e =>
-        /^(responder|reply)$/i.test((e.innerText || '').trim()));
-    if (!it) return false;
-    it.click();
-    return true;
-}
-"""
-
 # Text of the quote panel WA shows above the compose box after "Responder":
 # everything in the footer except the editor itself. null → no footer.
 _REPLY_PREVIEW_JS = """
@@ -386,26 +377,38 @@ def _pre_sender(pre: str | None) -> str:
     return pre.split("] ", 1)[1].rstrip().rstrip(":").strip()
 
 
+class MessageNotFound(RuntimeError):
+    """No message matched — the caller may scroll and look again."""
+
+
+def _row_sender(m: dict) -> str:
+    return m.get("sender") or _pre_sender(m.get("pre"))
+
+
+def _row_when(m: dict) -> str:
+    return m.get("timestamp") or m.get("pre") or "?"
+
+
 def _locate_message(
     rows: list[dict], match: str, *, sender: str | None = None,
     index: int | None = None, own_only: bool = False,
 ) -> dict:
     """Pick exactly one chat message whose text contains MATCH (accent/case
-    insensitive). SENDER narrows by the name in data-pre-plain-text; INDEX
-    (1-based, oldest first) picks among several hits. Zero hits, or several
-    without INDEX, raise RuntimeError listing what was seen."""
+    insensitive). SENDER narrows by the sender's name; INDEX (1-based,
+    oldest first) picks among several hits. Zero hits raise MessageNotFound;
+    several without INDEX raise RuntimeError listing what was seen."""
     pool = [m for m in rows if m.get("own")] if own_only else rows
     kind = "mensaje propio" if own_only else "mensaje"
     q = _normalize_name(match)
     hits = [m for m in pool if q and q in _normalize_name(m.get("text") or "")]
     if sender:
         sq = _normalize_name(sender)
-        hits = [m for m in hits if sq in _normalize_name(_pre_sender(m.get("pre")))]
+        hits = [m for m in hits if sq in _normalize_name(_row_sender(m))]
     if not hits:
         of = f" de '{sender}'" if sender else ""
-        raise RuntimeError(
+        raise MessageNotFound(
             f"No encontré un {kind}{of} que contenga '{match}' entre los "
-            f"{len(pool)} mensajes {'propios ' if own_only else ''}cargados del chat."
+            f"{len(pool)} mensajes {'propios ' if own_only else ''}a la vista."
         )
     if index is not None:
         if not 1 <= index <= len(hits):
@@ -413,13 +416,33 @@ def _locate_message(
         return hits[index - 1]
     if len(hits) > 1:
         lines = "\n".join(
-            f"  {i}. {m.get('pre') or '?'} {m['text'][:60]!r}" for i, m in enumerate(hits, 1))
+            f"  {i}. {_row_when(m)} {_row_sender(m) or '?'}: {m['text'][:60]!r}"
+            for i, m in enumerate(hits, 1))
         raise RuntimeError(
             f"Hay {len(hits)} {kind.replace('mensaje', 'mensajes').replace('propio', 'propios')} "
             f"que contienen '{match}' — usá un fragmento más específico"
             f"{'' if own_only else ' o --index N'}:\n{lines}"
         )
     return hits[0]
+
+
+def _roughly_contains(hay: str | None, needle: str | None, min_ratio: float = 0.8) -> bool:
+    """NEEDLE appears in HAY allowing for OCR slips (letters only, accents
+    and case ignored): exact containment, or a same-length window of HAY
+    that is at least MIN_RATIO similar."""
+    from difflib import SequenceMatcher
+
+    def keep(s: str) -> str:
+        return "".join(ch for ch in _normalize_name(s or "") if ch.isalnum())
+    h, n = keep(hay), keep(needle)[:40]
+    if not n:
+        return False
+    if n in h:
+        return True
+    step = max(1, len(n) // 8)
+    return any(SequenceMatcher(None, h[i:i + len(n)], n).ratio() >= min_ratio
+               for i in range(0, max(1, len(h) - len(n) + 1), step))
+
 
 _OPEN_MSG_MENU_JS = """
 (id) => {
@@ -444,16 +467,16 @@ _MSG_BUBBLE_POS_JS = """
 }
 """
 
-_CLICK_EDIT_ITEM_JS = """
-() => {
+_CLICK_MENU_ITEM_JS = """
+(labels) => {
+    const want = labels.map(l => l.toLowerCase());
     const it = [...document.querySelectorAll('[role="menuitem"]')].find(e =>
-        /^(editar|edit)$/i.test((e.innerText || '').trim()));
+        want.includes((e.innerText || '').trim().toLowerCase()));
     if (!it) return false;
     it.click();
     return true;
 }
 """
-
 _EDIT_DIALOG_TEXT_JS = """
 () => {
     const d = document.querySelector('[role="dialog"]');
@@ -1530,6 +1553,92 @@ class WASession:
             }
         """)
 
+    # ── Picking a message (edit / reply) ─────────────────────────────────────
+    # Vision-first: the bubbles on screen, their sender, body, quote and a
+    # click point come from wavi.vision.read_message_bubbles(); the menu is a
+    # right-click and its entry is found by OCR. The DOM path below
+    # (_CHAT_MESSAGES_JS + _OPEN_MSG_MENU_JS + menuitem) is a temporary
+    # fallback for machines without the OCR helper (vision-first policy,
+    # docs/plan-mejoras.md §4.8).
+
+    MESSAGE_SCREENS = 4   # screens to scroll up through looking for a message
+
+    async def _vision_messages(self) -> list[dict]:
+        """Messages visible right now, via a screenshot (oldest first)."""
+        import asyncio as _asyncio
+        import tempfile as _tempfile
+
+        from wavi import vision
+        work = Path(_tempfile.mkdtemp(prefix="wavi_msgs_"))
+        shot = await self.screenshot_to_file(work / "chat.png")
+        rows = await _asyncio.to_thread(vision.read_message_bubbles, shot, work)
+        out = []
+        for r in rows:
+            if not r["text"] and not r["quoted"]:
+                continue
+            out.append({**r, "id": r["key"]})
+        return out
+
+    async def _find_message(
+        self, match: str, *, sender: str | None = None, index: int | None = None,
+        own_only: bool = False,
+    ) -> dict:
+        """Locate one message by vision, scrolling up through at most
+        MESSAGE_SCREENS screens. Raises like _locate_message."""
+        last_err: MessageNotFound | None = None
+        for screen in range(self.MESSAGE_SCREENS):
+            if screen:
+                await self.scroll_chat_up(1400)
+                await self._page.wait_for_timeout(1200)
+            rows = await self._vision_messages()
+            try:
+                return _locate_message(rows, match, sender=sender, index=index, own_only=own_only)
+            except MessageNotFound as e:
+                last_err = e
+        raise MessageNotFound(f"{last_err} (revisé {self.MESSAGE_SCREENS} pantallas hacia arriba)")
+
+    async def _open_message_menu_item(self, target: dict, labels: tuple[str, ...]) -> bool:
+        """Open TARGET's context menu and click the entry named one of
+        LABELS. False (menu closed) when WA doesn't offer it."""
+        import asyncio as _asyncio
+        import tempfile as _tempfile
+
+        from wavi import vision
+        if "click_x" in target:
+            x, y = target["click_x"], target["click_y"]
+            await self._page.mouse.move(x, y)
+            await self._page.wait_for_timeout(400)
+            await self._page.mouse.click(x, y, button="right")
+            await self._page.wait_for_timeout(800)
+            shot = await self.screenshot_to_file(
+                Path(_tempfile.mkdtemp(prefix="wavi_menu_")) / "menu.png")
+            pos = await _asyncio.to_thread(vision.find_menu_item, shot, labels)
+            if not pos:
+                await self._page.keyboard.press("Escape")
+                return False
+            await self._page.mouse.click(*pos)
+            return True
+        # DOM fallback (no OCR helper on this machine)
+        pos = await self._page.evaluate(_MSG_BUBBLE_POS_JS, target["id"])
+        if not pos:
+            raise RuntimeError("El mensaje dejó de estar en pantalla")
+        await self._page.mouse.move(pos["x"], pos["y"])
+        await self._page.wait_for_timeout(600)
+        if not await self._page.evaluate(_OPEN_MSG_MENU_JS, target["id"]):
+            raise RuntimeError("No se encontró el menú de opciones del mensaje")
+        await self._page.wait_for_timeout(800)
+        if not await self._page.evaluate(_CLICK_MENU_ITEM_JS, list(labels)):
+            await self._page.keyboard.press("Escape")
+            return False
+        return True
+
+    async def _pick_message(self, match: str, **kw) -> dict:
+        from wavi import vision
+        if vision.vision_available():
+            return await self._find_message(match, **kw)
+        rows = await self._page.evaluate(_CHAT_MESSAGES_JS)
+        return _locate_message(rows, match, **kw)
+
     async def edit_message(
         self, match: str, new_text: str, *, fragment: bool = False, now=None,
     ) -> dict:
@@ -1540,16 +1649,17 @@ class WASession:
         (accent/case-insensitive). Exactly one must match — zero or several
         raise RuntimeError listing what was seen. With FRAGMENT, NEW_TEXT
         replaces MATCH inside the message; otherwise it replaces the whole
-        text. Nothing is changed unless the editor ends up holding exactly
-        the intended text.
+        text. The replacement is done on the editor's own prefilled text (the
+        exact message, not OCR), and nothing is changed unless the editor
+        ends up holding exactly the intended text.
         """
         import sys as _sys
         from datetime import datetime as _DT
 
         now = now or _DT.now()
-        rows = await self._page.evaluate(_CHAT_MESSAGES_JS)
-        target = _locate_message(rows, match, own_only=True)
-        sent_at = _parse_pre_plain(target["pre"])
+        target = await self._pick_message(match, own_only=True)
+        sent_at = (_DT.fromisoformat(target["timestamp"]) if target.get("timestamp")
+                   else _parse_pre_plain(target.get("pre")))
         if sent_at is not None:
             age_min = (now - sent_at).total_seconds() / 60
             if age_min > EDIT_WINDOW_MIN:
@@ -1558,28 +1668,7 @@ class WASession:
                     f"WhatsApp solo permite editar durante {EDIT_WINDOW_MIN} min."
                 )
 
-        if fragment:
-            old = target["text"]
-            if match in old:
-                intended = old.replace(match, new_text, 1)
-            else:
-                raise RuntimeError(
-                    f"'{match}' no aparece literal en el mensaje — pasá el texto "
-                    f"completo nuevo sin --fragment."
-                )
-        else:
-            intended = new_text
-
-        pos = await self._page.evaluate(_MSG_BUBBLE_POS_JS, target["id"])
-        if not pos:
-            raise RuntimeError("El mensaje dejó de estar en pantalla")
-        await self._page.mouse.move(pos["x"], pos["y"])
-        await self._page.wait_for_timeout(600)
-        if not await self._page.evaluate(_OPEN_MSG_MENU_JS, target["id"]):
-            raise RuntimeError("No se encontró el menú de opciones del mensaje")
-        await self._page.wait_for_timeout(800)
-        if not await self._page.evaluate(_CLICK_EDIT_ITEM_JS):
-            await self._page.keyboard.press("Escape")
+        if not await self._open_message_menu_item(target, ("Editar", "Edit")):
             raise RuntimeError(
                 "WhatsApp no ofrece 'Editar' para ese mensaje (pasaron más de "
                 f"{EDIT_WINDOW_MIN} min, o no es editable)."
@@ -1593,6 +1682,24 @@ class WASession:
             return f"el editor muestra {(shown or '')[:60]!r}"
 
         try:
+            # The editor opens prefilled with the exact message: the one
+            # source of truth for --fragment, and the proof we opened the
+            # message that was asked for.
+            original = await self._page.evaluate(_EDIT_DIALOG_TEXT_JS) or ""
+            if _normalize_name(match) not in _normalize_name(original):
+                raise RuntimeError(
+                    f"Se abrió el editor de otro mensaje ({original[:60]!r}) — no se cambió nada"
+                )
+            if fragment:
+                if match not in original:
+                    raise RuntimeError(
+                        f"'{match}' no aparece literal en el mensaje — pasá el texto "
+                        f"completo nuevo sin --fragment."
+                    )
+                intended = original.replace(match, new_text, 1)
+            else:
+                intended = new_text
+
             for _attempt in range(2):
                 _select_all = "Meta+a" if _sys.platform == "darwin" else "Control+a"
                 await self._page.keyboard.press(_select_all)
@@ -1620,14 +1727,15 @@ class WASession:
             await self._page.keyboard.press("Escape")
             raise RuntimeError("El diálogo de edición no se cerró — la edición no se guardó")
 
-        after = {m["id"]: m for m in await self._page.evaluate(_CHAT_MESSAGES_JS)}
-        saved = after.get(target["id"], {}).get("text")
+        own_after = [m for m in await self._page.evaluate(_CHAT_MESSAGES_JS) or [] if m.get("own")]
+        saved = next((m["text"] for m in reversed(own_after)
+                      if _same_letters(m.get("text") or "", intended)), None)
         return {
             "id": target["id"],
             "sent_at": sent_at.isoformat(timespec="minutes") if sent_at else None,
-            "before": target["text"],
+            "before": original,
             "after": saved,
-            "verified": saved is not None and _same_letters(saved, intended),
+            "verified": saved is not None,
         }
 
     async def reply_message(
@@ -1636,30 +1744,19 @@ class WASession:
         """Reply to (quote) one message of the open chat — own or someone else's.
 
         MATCH/SENDER/INDEX pick the message (see _locate_message). Nothing is
-        sent unless WA's quote panel above the compose box shows that exact
+        sent unless WA's quote panel above the compose box shows that
         message; any failure cancels the quote with Escape. TEXT then goes
         through send_message() with all of its guards.
         """
-        rows = await self._page.evaluate(_CHAT_MESSAGES_JS)
-        target = _locate_message(rows, match, sender=sender, index=index)
-        snippet = _normalize_name(target["text"])[:30]
+        target = await self._pick_message(match, sender=sender, index=index)
 
-        pos = await self._page.evaluate(_MSG_BUBBLE_POS_JS, target["id"])
-        if not pos:
-            raise RuntimeError("El mensaje dejó de estar en pantalla")
-        await self._page.mouse.move(pos["x"], pos["y"])
-        await self._page.wait_for_timeout(600)
-        if not await self._page.evaluate(_OPEN_MSG_MENU_JS, target["id"]):
-            raise RuntimeError("No se encontró el menú de opciones del mensaje")
-        await self._page.wait_for_timeout(800)
-        if not await self._page.evaluate(_CLICK_REPLY_ITEM_JS):
-            await self._page.keyboard.press("Escape")
+        if not await self._open_message_menu_item(target, ("Responder", "Reply")):
             raise RuntimeError("WhatsApp no ofrece 'Responder' para ese mensaje — no se envió nada")
         await self._page.wait_for_timeout(800)
 
         try:
             preview = await self._page.evaluate(_REPLY_PREVIEW_JS)
-            if not preview or snippet not in _normalize_name(preview):
+            if not _roughly_contains(preview, target["text"]):
                 raise RuntimeError(
                     f"La cita no muestra el mensaje elegido (muestra {(preview or '')[:60]!r}) "
                     "— no se envió nada"
@@ -1672,13 +1769,13 @@ class WASession:
             raise
         await self._page.wait_for_timeout(800)
 
-        own = [m for m in await self._page.evaluate(_CHAT_MESSAGES_JS) if m.get("own")]
+        own = [m for m in await self._page.evaluate(_CHAT_MESSAGES_JS) or [] if m.get("own")]
         last = own[-1] if own else {}
         verified = bool(last) and _same_letters(last.get("text") or "", text) \
-            and snippet in _normalize_name(last.get("quoted") or "")
+            and _roughly_contains(last.get("quoted"), target["text"])
         return {
             "quoted_id": target["id"],
-            "quoted_sender": _pre_sender(target.get("pre")) or None,
+            "quoted_sender": _row_sender(target) or None,
             "quoted_text": target["text"],
             "sent": text,
             "verified": verified,
