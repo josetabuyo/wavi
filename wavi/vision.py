@@ -19,7 +19,11 @@ from typing import Literal
 
 from PIL import Image
 
+# Apple Vision OCR helper: swift/ in a repo checkout, wavi/_ocr/ inside the
+# wheel (pyproject force-include) — without it a PyPI install had no OCR.
 SWIFT_OCR = Path(__file__).parent.parent / "swift" / "ocr_vision.swift"
+if not SWIFT_OCR.exists():
+    SWIFT_OCR = Path(__file__).parent / "_ocr" / "ocr_vision.swift"
 # Compiled binary (make ocr) — ~6x less startup overhead than interpreting the
 # script, and runs Vision natively on arm64 instead of under Rosetta.
 OCR_BIN = Path(__file__).parent.parent / "bin" / "ocr_vision"

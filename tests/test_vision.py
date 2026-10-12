@@ -650,3 +650,16 @@ async def test_detect_date_order_uses_wa_lang_not_navigator():
         assert await s.detect_date_order() is None
     finally:
         vision.set_date_order(saved)
+
+
+def test_ocr_helper_is_found():
+    """The swift OCR helper must resolve both in a checkout and in the wheel
+    (pyproject force-include → wavi/_ocr/)."""
+    import tomllib
+    from pathlib import Path
+
+    from wavi.vision import SWIFT_OCR
+    assert SWIFT_OCR.exists()
+    cfg = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
+    inc = cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    assert inc["swift/ocr_vision.swift"] == "wavi/_ocr/ocr_vision.swift"
