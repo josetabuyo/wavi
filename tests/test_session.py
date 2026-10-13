@@ -1285,3 +1285,161 @@ async def test_connect_refuses_missing_profile_without_touching_ports(tmp_path, 
     assert killed == []
     assert not (tmp_path / "no-existe").exists()
     fake_pw.stop.assert_awaited_once()
+
+
+# ── @-mentions (DataLake 2026-10-13) ─────────────────────────────────────────
+
+from wavi.session import _MENTION_ROWS_JS, _pick_mention  # noqa: E402
+
+_ROWS = [
+    {"name": "Matias Becerro", "text": "Matias Becerro\n+54 9 11 1111", "x": 300, "y": 700},
+    {"name": "Matías Cagnina", "text": "Matías Cagnina", "x": 300, "y": 760},
+    {"name": "Vito Bagni", "text": "~Vito Bagni", "x": 300, "y": 820},
+]
+
+
+class TestPickMention:
+    def test_full_name_beats_a_shared_first_name(self):
+        row, end = _pick_mention(_ROWS, "Matias Becerro te paso")
+        assert row["name"] == "Matias Becerro" and end == len("Matias Becerro")
+
+    def test_unique_first_name_is_a_prefix_match(self):
+        row, end = _pick_mention(_ROWS, "Vito, te paso")
+        assert row["name"] == "Vito Bagni" and end == len("Vito")
+
+    def test_shared_first_name_alone_is_ambiguous(self):
+        assert _pick_mention(_ROWS, "Matias te paso") is None
+
+    def test_accents_and_case_do_not_matter(self):
+        row, end = _pick_mention(_ROWS, "matias cagnina.")
+        assert row["name"] == "Matías Cagnina" and end == len("matias cagnina")
+
+    def test_unknown_name_stays_text(self):
+        assert _pick_mention(_ROWS, "Nadie fin") is None
+        assert _pick_mention([], "Vito") is None
+
+    def test_rows_js_has_no_class_or_role_selectors(self):
+        # Rows are found by geometry around the compose box, never by WA's
+        # class names — the popup's markup is not ours to depend on.
+        assert "className" not in _MENTION_ROWS_JS and "classList" not in _MENTION_ROWS_JS
+
+
+class TestTypeMentions:
+    """_type_line: "@Name" is typed as "@" + first word, the popup row is
+    clicked, the typed text resumes after the name; anything else stays
+    plain and the popup is closed so Enter still sends."""
+
+    def _session(self, rows_seq, compose_seq, focus=True):
+        s = _make_session()
+        s._page = _make_page()
+        rows = iter(rows_seq)
+        compose = iter(compose_seq)
+
+        def evaluate(js, *a):
+            if "elementFromPoint" in js:
+                return next(rows, [])
+            if "join(" in js:
+                return next(compose, None)
+            if "a.closest('footer" in js:
+                return focus
+            if "found: true" in js:
+                return {"found": True, "x": 10, "y": 20}
+            return None
+        s._page.evaluate = AsyncMock(side_effect=evaluate)
+        return s
+
+    @pytest.mark.asyncio
+    async def test_mention_is_clicked_and_text_resumes_after_the_name(self):
+        s = self._session(rows_seq=[[], _ROWS, []],
+                          compose_seq=["hola ", "hola @Matias Becerro "])
+        shown = await s._type_line("hola @Matias Becerro te paso")
+        assert shown == "hola @Matias Becerro te paso"
+        typed = [c.args[0] for c in s._page.keyboard.type.call_args_list]
+        assert typed == ["hola ", "@Matias", "te paso"]      # WA's own space after the chip
+        s._page.mouse.click.assert_awaited_once_with(300, 700)
+        assert "Escape" not in [c.args[0] for c in s._page.keyboard.press.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_short_name_expands_to_the_participant(self):
+        s = self._session(rows_seq=[[], _ROWS, []],
+                          compose_seq=["", "@Vito Bagni "])
+        shown = await s._type_line("@Vito, dale")
+        assert shown == "@Vito Bagni , dale"
+        typed = [c.args[0] for c in s._page.keyboard.type.call_args_list]
+        assert typed == ["@Vito", ", dale"]
+
+    @pytest.mark.asyncio
+    async def test_no_popup_means_plain_text(self):
+        s = self._session(rows_seq=[[], []], compose_seq=["", ""])
+        shown = await s._type_line("hola @Matias te paso")
+        assert shown == "hola @Matias te paso"
+        typed = [c.args[0] for c in s._page.keyboard.type.call_args_list]
+        assert typed == ["hola ", "@Matias", " te paso"]
+        s._page.mouse.click.assert_not_called()
+        s._page.keyboard.press.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_name_stays_text_and_closes_the_popup(self):
+        s = self._session(rows_seq=[[], _ROWS], compose_seq=["", ""])
+        shown = await s._type_line("@Matias te paso")
+        assert shown == "@Matias te paso"
+        s._page.mouse.click.assert_not_called()
+        assert [c.args[0] for c in s._page.keyboard.press.call_args_list] == ["Escape"]
+
+    @pytest.mark.asyncio
+    async def test_rows_already_there_before_the_at_are_not_the_popup(self):
+        s = self._session(rows_seq=[_ROWS, _ROWS], compose_seq=["", ""])
+        shown = await s._type_line("@Vito dale")
+        assert shown == "@Vito dale"
+        s._page.mouse.click.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_click_that_inserts_nothing_keeps_the_text(self):
+        s = self._session(rows_seq=[[], _ROWS, []], compose_seq=["", "@Vito"])
+        shown = await s._type_line("@Vito dale")
+        assert shown == "@Vito dale"
+        typed = [c.args[0] for c in s._page.keyboard.type.call_args_list]
+        assert typed == ["@Vito", " dale"]
+
+    @pytest.mark.asyncio
+    async def test_email_is_never_a_mention(self):
+        s = self._session(rows_seq=[], compose_seq=[])
+        shown = await s._type_line("escribime a jose@gmail.com")
+        assert shown == "escribime a jose@gmail.com"
+        s._page.keyboard.type.assert_awaited_once_with("escribime a jose@gmail.com", delay=30)
+        s._page.evaluate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mentions_off_types_literally(self):
+        s = self._session(rows_seq=[], compose_seq=[])
+        shown = await s._type_compose("@Vito dale", mentions=False)
+        assert shown == "@Vito dale"
+        s._page.evaluate.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_message_verifies_against_the_expanded_name(self):
+        """The box shows the participant's full name, not what was typed —
+        send_message must still send (DataLake's exact case)."""
+        s = _make_session()
+        s._page = _make_page()
+        rows = iter([[], _ROWS, []])
+        compose = iter(["", "@Matias Becerro ", "@Matias Becerro te paso"])
+        empty = iter([True, True])     # before typing, after Enter
+
+        def evaluate(js, *a):
+            if "elementFromPoint" in js:
+                return next(rows, [])
+            if "found: true" in js:
+                return {"found": True, "x": 10, "y": 20, "selector": "footer"}
+            if "if (el) return (el.innerText" in js:
+                return next(empty, True)
+            if "a.closest('footer" in js:
+                return True
+            if "join(" in js:
+                return next(compose, "")
+            return False
+        s._page.evaluate = AsyncMock(side_effect=evaluate)
+        await s.send_message("@Matias Becerro te paso")
+        presses = [c.args[0] for c in s._page.keyboard.press.call_args_list]
+        assert presses[-1] == "Enter"
+        s._page.mouse.click.assert_any_await(300, 700)

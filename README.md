@@ -10,7 +10,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi status [session]` | Check if daemon is alive and authenticated | DOM |
 | `wavi reload [session]` | **Safe reload** — about:blank flush → WA → verify auth | — |
 | `wavi get <contact>` | Extract full message history from a chat (`--grow` to page through in chunks) | **Vision** |
-| `wavi send <contact> <message>` | Send a message | DOM + keyboard |
+| `wavi send <contact> <message>` | Send a message; in a group `@Name` becomes a real mention of a participant (`--no-mentions` to type `@` literally) | DOM + keyboard |
 | `wavi edit <contact> <match> <new>` | Edit one of your own sent messages (WA's 15-min window); `--fragment` replaces only `<match>` | vision (OCR) + keyboard |
 | `wavi reply <contact> <match> <text>` | Reply quoting one message (yours or anyone's); `--from` narrows by sender, `--index N` picks among matches | vision (OCR) + keyboard |
 | `wavi draft show\|clear <contact>` | Show or empty a chat's compose-box draft (it blocks `send`); `wavi send --discard-draft` does both and sends | DOM + keyboard |

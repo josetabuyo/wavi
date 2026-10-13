@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import subprocess
 from pathlib import Path
 
@@ -307,6 +308,47 @@ _FOCUS_IN_COMPOSE_JS = """
 }
 """
 
+# Rows of WA's @-mention popup (group chats). Temporary DOM bridge (vision-first
+# policy, docs/plan-mejoras.md §4.8) — vision replacement: OCR the rows that
+# appear above the compose box after "@" (same idea as vision.find_menu_item)
+# → bbox → click. Deliberately not tied to WA class names or roles: every
+# visible, row-sized text container directly above the compose box is listed,
+# and the caller diffs it against the same listing taken before typing "@",
+# so whatever the popup is made of, its rows are the ones that appeared.
+# Rows clipped by the popup's own scroll are dropped (elementFromPoint), so a
+# returned (x, y) is always clickable.
+_MENTION_ROWS_JS = """
+() => {
+    const ed = document.querySelector('footer [contenteditable="true"]');
+    if (!ed) return [];
+    const er = ed.getBoundingClientRect();
+    const side = document.querySelector('#side');
+    const msgs = document.querySelector('#main [role="application"]');
+    const q = [];
+    const walk = (el) => {
+        if (el === side || el === ed || el === msgs) return;
+        const r = el.getBoundingClientRect();
+        if (r.width >= 120 && r.height >= 24 && r.height <= 90
+            && r.bottom <= er.top + 2 && r.bottom >= er.top - 520) {
+            const t = (el.innerText || '').trim();
+            if (t && t.length <= 80 && t.indexOf('\\n') === t.lastIndexOf('\\n')) q.push([el, r, t]);
+        }
+        for (const c of el.children) walk(c);
+    };
+    walk(document.body);
+    const rows = [];
+    for (const [el, r, t] of q) {
+        if (q.some(([o]) => o !== el && el.contains(o))) continue;   // keep the innermost container
+        const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || !(hit === el || el.contains(hit))) continue;      // clipped / covered
+        const name = t.split('\\n')[0].replace(/^~\\s*/, '').trim();
+        if (name && !rows.some(o => o.text === t && o.y === y)) rows.push({ name, text: t, x, y });
+    }
+    return rows;
+}
+"""
+
 
 def _same_letters(a: str, b: str) -> bool:
     """Compare ignoring everything but letters/digits — WA's editor rewrites
@@ -315,6 +357,60 @@ def _same_letters(a: str, b: str) -> bool:
     def keep(s: str) -> str:
         return "".join(ch for ch in s if ch.isalnum())
     return keep(a) == keep(b)
+
+
+# ── @-mentions (wavi send / reply / edit in groups) ───────────────────────────
+# "@" at a word start followed by a name. An email ("jose@gmail.com") has no
+# whitespace before its "@" and is left alone.
+_MENTION_RE = re.compile(r"(?<!\S)@(?=[^\s@])")
+_MENTION_WORD_RE = re.compile(r"[^\s@]+")
+_MENTION_MAX_WORDS = 4
+_MENTION_TRAIL_PUNCT = ",.;:!?)]}\"'"
+
+
+def _norm_name(s: str) -> str:
+    """Accent-, case- and spacing-insensitive form of a participant name
+    ("Matías  Cagnina" == "matias cagnina")."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return " ".join(s.replace("~", " ").casefold().split())
+
+
+def _pick_mention(rows: list[dict], rest: str) -> tuple[dict, int] | None:
+    """Which popup row does the text right after "@" name, and how much of
+    REST that name covers.
+
+    Tries the longest run of words first (up to _MENTION_MAX_WORDS; trailing
+    punctuation on the last word is not part of the name): an exact match
+    wins, else a prefix that matches exactly one row ("@Vito" → "Vito
+    Bagni"). Two rows for the same words ("@Matias" with Matias Becerro and
+    Matias Cagnina both present) is ambiguous → None → stays plain text.
+    Returns (row, end) with END the offset in REST just past the name.
+    """
+    words = list(_MENTION_WORD_RE.finditer(rest))[:_MENTION_MAX_WORDS]
+    # Words must be separated by plain spaces only (no tabs/newlines slipped in).
+    names = [(r, _norm_name(r.get("name") or "")) for r in rows if r.get("name")]
+    if not words or not names:
+        return None
+    cands: list[tuple[str, int]] = []
+    for k in range(len(words), 0, -1):
+        last = words[k - 1]
+        core = last.group().rstrip(_MENTION_TRAIL_PUNCT)
+        if not core:
+            continue
+        cand = _norm_name(" ".join([w.group() for w in words[:k - 1]] + [core]))
+        if cand:
+            cands.append((cand, last.start() + len(core)))
+    for cand, end in cands:                       # exact, longest first
+        hits = [r for r, n in names if n == cand]
+        if len(hits) == 1:
+            return hits[0], end
+    for cand, end in cands:                       # unique prefix, longest first
+        hits = [r for r, n in names if n.startswith(cand)]
+        if len(hits) == 1:
+            return hits[0], end
+    return None
 
 
 # ── Edit / reply (wavi edit, wavi reply) ─────────────────────────────────────
@@ -1705,9 +1801,9 @@ class WASession:
                 await self._page.keyboard.press(_select_all)
                 await self._page.keyboard.press("Delete")
                 await self._page.wait_for_timeout(200)
-                await self._type_compose(intended)
+                expected = await self._type_compose(intended)
                 shown = await self._page.evaluate(_EDIT_DIALOG_TEXT_JS)
-                if shown is not None and _same_letters(shown, intended):
+                if shown is not None and _same_letters(shown, expected):
                     break
                 print(f"[wavi] edit_message: {_cancel_reason(shown)} — reintento", file=_sys.stderr)
             else:
@@ -1729,7 +1825,7 @@ class WASession:
 
         own_after = [m for m in await self._page.evaluate(_CHAT_MESSAGES_JS) or [] if m.get("own")]
         saved = next((m["text"] for m in reversed(own_after)
-                      if _same_letters(m.get("text") or "", intended)), None)
+                      if _same_letters(m.get("text") or "", expected)), None)
         return {
             "id": target["id"],
             "sent_at": sent_at.isoformat(timespec="minutes") if sent_at else None,
@@ -1814,12 +1910,15 @@ class WASession:
                 return draft
         raise RuntimeError("No pude vaciar la caja de mensaje — el borrador sigue ahí")
 
-    async def send_message(self, text: str, *, discard_draft: bool = False) -> dict:
+    async def send_message(self, text: str, *, discard_draft: bool = False,
+                           mentions: bool = True) -> dict:
         """Type and send a message in the currently open chat.
 
         Handles multi-line text (\\n → Shift+Enter so WA doesn't send early).
         After pressing Enter, verifies compose box emptied; falls back to the
         send button if Enter was configured as new-line in this WA session.
+        MENTIONS: "@Name" becomes a real mention of a group participant
+        (see _type_mention); off, "@" is typed as plain text.
 
         Returns metadata: {selector, x, y} of the input box used.
         Raises RuntimeError if no compose input is found or send fails.
@@ -1857,14 +1956,14 @@ class WASession:
         # Type, then check the box holds exactly TEXT before pressing Enter.
         # One clean retry; if it still differs, nothing is sent.
         for _attempt in range(2):
-            await self._type_compose(text)
+            expected = await self._type_compose(text, mentions=mentions)
             typed = await self._page.evaluate(_COMPOSE_TEXT_JS)
-            if typed is None or _same_letters(typed, text):
+            if typed is None or _same_letters(typed, expected):
                 break
             import sys
             print(
                 f"[wavi] send_message: compose shows {typed[:60]!r}, expected "
-                f"{text[:60]!r} — clearing", file=sys.stderr,
+                f"{expected[:60]!r} — clearing", file=sys.stderr,
             )
             _select_all = "Meta+a" if sys.platform == "darwin" else "Control+a"
             await self._page.keyboard.press(_select_all)
@@ -1894,19 +1993,122 @@ class WASession:
         return {"selector": info.get("selector"), "x": info["x"], "y": info["y"],
                 "discarded_draft": discarded}
 
-    async def _type_compose(self, text: str) -> None:
+    async def _type_compose(self, text: str, *, mentions: bool = True) -> str:
         """Type TEXT into the focused compose box. Newlines become Shift+Enter
-        so WA doesn't send each line as a separate message."""
+        so WA doesn't send each line as a separate message.
+
+        With MENTIONS, "@Name" at a word start becomes a real mention when
+        Name is a participant of the open group (see _type_mention); the
+        rest stays plain text. Returns the text the box is expected to show
+        afterwards — a mention renders as the participant's full name, so the
+        caller must verify against this, not against TEXT.
+        """
         lines = text.split("\n")
-        for i, line in enumerate(lines):
+        expected: list[str] = []
+        for i, full in enumerate(lines):
+            line = full
             if i > 0:
                 line = await self._absorb_list_autoprefix(line)
+            shown = full[:len(full) - len(line)]          # marker WA inserted itself
             if line:
-                await self._page.keyboard.type(line, delay=30)
+                shown += await self._type_line(line, mentions=mentions)
+            expected.append(shown)
             if i < len(lines) - 1:
                 await self._page.keyboard.press("Shift+Enter")
                 await self._page.wait_for_timeout(150)
         await self._page.wait_for_timeout(500)
+        return "\n".join(expected)
+
+    async def _type_line(self, line: str, *, mentions: bool = True) -> str:
+        """Type one line; each "@Name" goes through _type_mention. Returns
+        what the box is expected to show for it."""
+        if not mentions or "@" not in line:
+            await self._page.keyboard.type(line, delay=30)
+            return line
+        shown = ""
+        pos = 0
+        for m in _MENTION_RE.finditer(line):
+            if m.start() < pos:
+                continue
+            chunk = line[pos:m.start()]
+            if chunk:
+                await self._page.keyboard.type(chunk, delay=30)
+                shown += chunk
+            rendered, pos = await self._type_mention(line, m.start())
+            shown += rendered
+        tail = line[pos:]
+        if tail:
+            await self._page.keyboard.type(tail, delay=30)
+            shown += tail
+        return shown
+
+    async def _type_mention(self, line: str, at: int) -> tuple[str, int]:
+        """Type the "@Name" that starts at LINE[AT] as a real mention when it
+        names a participant of the open group (DataLake 2026-10-13: typed as
+        plain text, WA's popup stayed open and ate characters).
+
+        Types "@" + the first word, reads the popup rows that appeared
+        (_MENTION_ROWS_JS, diffed against the box's surroundings before the
+        "@"), picks the row the following words name (_pick_mention) and
+        clicks it — WA replaces the typed word with the mention chip. No
+        popup, no match, or a click that changed nothing: the text stays as
+        written (popup closed with Escape so the next Enter sends instead of
+        picking a row). Returns (what the box shows for it, offset in LINE
+        where plain typing resumes).
+        """
+        rest = line[at + 1:]
+        first = _MENTION_WORD_RE.match(rest)
+        # Only the word's core goes to WA's filter ("@Vito," would match nobody);
+        # the punctuation is typed back as plain text either way.
+        core = first.group().rstrip(_MENTION_TRAIL_PUNCT) if first else ""
+        if not core:
+            await self._page.keyboard.type("@", delay=30)
+            return "@", at + 1
+        plain = "@" + core
+        plain_end = at + 1 + len(core)
+
+        before_rows = await self._page.evaluate(_MENTION_ROWS_JS) or []
+        before_text = await self._page.evaluate(_COMPOSE_TEXT_JS)
+        await self._page.keyboard.type(plain, delay=30)
+        await self._page.wait_for_timeout(600)
+        seen = {(r.get("text"), r.get("y")) for r in before_rows}
+        rows = [r for r in (await self._page.evaluate(_MENTION_ROWS_JS) or [])
+                if (r.get("text"), r.get("y")) not in seen]
+        if not rows:
+            return plain, plain_end          # not a group / popup not detected
+
+        pick = _pick_mention(rows, rest)
+        if pick is None:
+            await self._page.keyboard.press("Escape")   # leave "@word" as text
+            await self._page.wait_for_timeout(200)
+            return plain, plain_end
+        row, end = pick
+
+        await self._page.mouse.click(row["x"], row["y"])
+        await self._page.wait_for_timeout(500)
+        after_text = await self._page.evaluate(_COMPOSE_TEXT_JS)
+        rendered = None
+        if isinstance(before_text, str) and isinstance(after_text, str) \
+                and after_text.startswith(before_text):
+            rendered = after_text[len(before_text):]
+        if rendered is None:
+            rendered = "@" + row["name"] + " "     # unknown editor DOM — best guess
+        elif _same_letters(rendered, plain):
+            # The click inserted nothing: keep what was typed, type the rest.
+            if await self._page.evaluate(_MENTION_ROWS_JS):
+                await self._page.keyboard.press("Escape")
+                await self._page.wait_for_timeout(200)
+            return plain, plain_end
+        if not await self._page.evaluate(_FOCUS_IN_COMPOSE_JS):
+            info = await self._page.evaluate(_FIND_COMPOSE_INPUT_JS)
+            if info.get("found"):
+                await self._page.mouse.click(info["x"], info["y"])
+                await self._page.keyboard.press("End")
+                await self._page.wait_for_timeout(200)
+        pos = at + 1 + end
+        if rendered.endswith(" ") and line[pos:pos + 1] == " ":
+            pos += 1                         # WA already put the space after the chip
+        return rendered, pos
 
     async def _absorb_list_autoprefix(self, line: str) -> str:
         """Reconcile LINE with whatever WA auto-inserted on the new line.

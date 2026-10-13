@@ -39,6 +39,7 @@ cualquier señal (regla anti-drift).
 | Botón scroll-to-bottom | **DOM**: heurística posicional en `#main` | botón redondo abajo-derecha por visión | 📋 (`session.py` inventario) | — |
 | Compose box | **DOM**: `footer [contenteditable]` → coords | franja inferior por posición | 📋 | `test_session.py` |
 | Enviar (botón send) | **DOM**: `span[data-icon="send"]` | ícono flecha por visión | 📋 | `test_session.py` |
+| Menciones `@Nombre` en grupos | **DOM** (geometría, sin clases): filas que aparecen sobre el compose tras "@" → click | OCR de las filas del popup (como `find_menu_item`) | 📋 | `test_session.py::TestTypeMentions` |
 | Botón play de audio | **DOM**: `button[aria-label*="Reproducir"]` | triángulo por template matching | 🔮 Fase 3 | `test_runner.py::TestMatchBubbleToButton` |
 
 ## Sidebar y contactos

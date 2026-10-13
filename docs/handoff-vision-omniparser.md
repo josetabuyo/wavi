@@ -126,6 +126,7 @@ De las 16 señales documentadas ahí, este es el estado real a 2026-09-18:
 | Señal DOM | Estado |
 |---|---|
 | `_FIND_COMPOSE_INPUT_JS` / `_CHECK_COMPOSE_EMPTY_JS` / `_CLICK_SEND_BTN_JS` | ⚠️ `locate_compose_area()` existe, no cableada |
+| `_MENTION_ROWS_JS` (filas del popup de @menciones, 2026-10-13) | ⚠️ Puente DOM por geometría (sin clases ni roles: diff de contenedores de texto sobre el compose antes/después de "@"). Reemplazo: OCR de esas filas como `find_menu_item()` → bbox → click |
 | `_EXTRACT_SIDEBAR_UPDATES_JS` | ⚠️ `parse_sidebar_rows()` existe (incl. `direction`), no cableada |
 | `_EXTRACT_CONTACTS_JS` / `_EXTRACT_VISIBLE_CONTACTS_JS` | ⚠️ `parse_contacts_panel_rows()` existe, no cableada |
 | `_FETCH_BLOB_JS` / `_DRAIN_JS` | N/A — API de browser pura, nunca necesita visión |

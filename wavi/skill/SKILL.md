@@ -169,6 +169,17 @@ text doesn't match the message (lost/extra characters) after one retry.
 Numbered/bulleted lists are typed once (WA auto-continues them; wavi doesn't
 duplicate "2. 2.").
 
+### Mentions in groups
+
+In a group, `@Name` at a word start becomes a real WhatsApp mention when
+Name is a participant: wavi types `@` + the first word, picks the matching
+row in WA's popup and keeps typing after the name. `@Vito` expands to
+"Vito Bagni" if only one Vito is there; `@Matias Becerro` picks that one even
+with another Matias present; a bare `@Matias` with two Matias is ambiguous
+and stays plain text (popup closed, Enter still sends). Unknown names and
+emails (`jose@gmail.com`) are typed literally. `--no-mentions` turns it off.
+The verification tolerates the expansion (the box shows the full name).
+
 ## A draft blocks the send
 
 `wavi send` refuses when the chat's compose box already holds text (it would
