@@ -981,6 +981,21 @@ def _normalize_name(s: str) -> str:
     return " ".join(s.lower().split())
 
 
+# Initials avatar text: 1-3 uppercase letters, no spaces ("LC", "JT", "M").
+_INITIALS_RE = re.compile(r"^[^\W\d_]{1,3}$")
+
+
+def _header_title(lines: list[str]) -> str | None:
+    """The chat's display name among the header LINES: the first line, unless
+    it is an initials avatar and a real name follows it."""
+    if not lines:
+        return None
+    first = lines[0]
+    if len(lines) > 1 and _INITIALS_RE.match(first) and first.isupper():
+        return lines[1]
+    return first
+
+
 def _name_matches(query: str, candidate_name: str) -> bool:
     """True if CANDIDATE_NAME could plausibly be what QUERY refers to.
 
@@ -1356,28 +1371,36 @@ class WASession:
         await self._page.wait_for_timeout(1500)
         if expected_name is None:
             return True
-        title = await self.open_chat_title()
-        if title and _name_matches(expected_name, title):
+        lines = await self.open_chat_header_lines()
+        # The name is the first or second line (initials avatar first when
+        # the contact has no photo) — never the status line below it.
+        if any(_name_matches(expected_name, ln) for ln in lines[:2]):
             return True
         import sys
         print(
-            f"[wavi] open_search_result: header shows {title!r}, expected "
+            f"[wavi] open_search_result: header shows {_header_title(lines)!r}, expected "
             f"{expected_name!r} — click did not open the chat", file=sys.stderr,
         )
         return False
 
-    async def open_chat_title(self) -> str | None:
-        """Display name in the header of the currently open chat (first line
-        of `#main header`), or None if no chat is open."""
+    async def open_chat_header_lines(self) -> list[str]:
+        """Non-empty lines of `#main header` (avatar initials, name, status
+        line...), or [] if no chat is open."""
         try:
             text = await self._page.evaluate(
                 "() => document.querySelector('#main header')?.innerText || null"
             )
         except Exception:
-            return None
-        if not text:
-            return None
-        return text.strip().split("\n", 1)[0].strip() or None
+            return []
+        return [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
+
+    async def open_chat_title(self) -> str | None:
+        """Display name in the header of the currently open chat, or None if
+        no chat is open. A contact without a profile photo gets an initials
+        avatar ("LC") that comes first in the header text — skipped so the
+        name itself is returned (TechVentas 2026-10-15, "Lucas Campos (1109)"
+        verified as "LC")."""
+        return _header_title(await self.open_chat_header_lines())
 
     async def _resolve_contact(self, contact: str, pick: int | None = None) -> dict:
         """Find CONTACT's chat/entry, disambiguating with a human when more

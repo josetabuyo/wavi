@@ -1443,3 +1443,36 @@ class TestTypeMentions:
         presses = [c.args[0] for c in s._page.keyboard.press.call_args_list]
         assert presses[-1] == "Enter"
         s._page.mouse.click.assert_any_await(300, 700)
+
+
+
+# ── Header title vs initials avatar (TechVentas 2026-10-15) ──────────────────
+
+from wavi.session import _header_title  # noqa: E402
+
+
+class TestHeaderTitle:
+    def test_initials_avatar_is_skipped(self):
+        assert _header_title(["LC", "Lucas Campos (1109)", "haz clic aquí para info"]) == "Lucas Campos (1109)"
+
+    def test_photo_contact_has_name_first(self):
+        assert _header_title(["Lucas Campos (1109)", "en línea"]) == "Lucas Campos (1109)"
+
+    def test_short_uppercase_name_alone_is_the_title(self):
+        assert _header_title(["LC"]) == "LC"
+        assert _header_title([]) is None
+
+    @pytest.mark.asyncio
+    async def test_open_search_result_accepts_initials_header(self):
+        s = _make_session()
+        s._page = _make_page()
+        s._page.evaluate = AsyncMock(return_value="LC\nLucas Campos (1109)\nhaz clic aquí para info")
+        assert await s.open_search_result(10, 20, expected_name="Lucas Campos (1109)")
+        assert await s.open_chat_title() == "Lucas Campos (1109)"
+
+    @pytest.mark.asyncio
+    async def test_open_search_result_still_rejects_a_stale_chat(self):
+        s = _make_session()
+        s._page = _make_page()
+        s._page.evaluate = AsyncMock(return_value="MB\nMatias Becerro\nen línea")
+        assert not await s.open_search_result(10, 20, expected_name="Lucas Campos (1109)")
