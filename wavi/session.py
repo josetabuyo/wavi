@@ -308,6 +308,80 @@ _FOCUS_IN_COMPOSE_JS = """
 }
 """
 
+# Attachments go in the way a user's Cmd+V does: a paste event carrying the
+# files, on the compose box. WA answers with its own preview (caption box +
+# send button), so no attach-menu icon has to be found (verified live
+# 2026-10-19). Playwright fills a throwaway <input type=file> by path — no
+# file bytes through evaluate() — and the page moves them into the paste.
+_ATTACH_INPUT_ID = "__wavi_attach"
+
+_ADD_ATTACH_INPUT_JS = """
+(id) => {
+    const i = document.createElement('input');
+    i.type = 'file'; i.multiple = true; i.id = id; i.style.display = 'none';
+    document.body.appendChild(i);
+}
+"""
+
+_PASTE_FILES_JS = """
+(id) => {
+    const input = document.getElementById(id);
+    if (!input) return 0;
+    const dt = new DataTransfer();
+    for (const f of input.files) dt.items.add(f);
+    input.remove();
+    const box = document.querySelector('footer [contenteditable="true"]');
+    if (!box) return 0;
+    box.focus();
+    box.dispatchEvent(new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true}));
+    return dt.files.length;
+}
+"""
+
+# The preview's caption box: the one editor outside the chat footer and the
+# sidebar (WA labels it "Escribe un mensaje" / "Type a message").
+_CAPTION_EDITOR = """
+    const cap = [...document.querySelectorAll('[contenteditable="true"]')]
+        .find(e => !e.closest('footer') && !e.closest('#side'));
+"""
+
+_CAPTION_BOX_JS = """
+() => {""" + _CAPTION_EDITOR + """
+    if (!cap) return null;
+    const r = cap.getBoundingClientRect();
+    return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
+}
+"""
+
+_FOCUS_IN_CAPTION_JS = """
+() => {""" + _CAPTION_EDITOR + """
+    return !!(cap && cap.contains(document.activeElement));
+}
+"""
+
+_CAPTION_TEXT_JS = """
+() => {""" + _CAPTION_EDITOR + """
+    const ps = cap ? cap.querySelectorAll('p') : [];
+    if (!ps.length) return null;  // unknown editor DOM — can't verify
+    return [...ps].map(p => p.innerText.replace(/\\n$/, '')).join('\\n');
+}
+"""
+
+# Escape on the preview asks "¿Quieres descartar la selección?" — confirm it.
+_CONFIRM_DISCARD_JS = """
+() => {
+    const b = [...document.querySelectorAll('[role="dialog"] button')]
+        .find(b => /descartar|discard/i.test(b.innerText || ''));
+    if (b) b.click();
+    return !!b;
+}
+"""
+
+# An outgoing message still on its way shows the clock tick.
+_PENDING_SEND_JS = """
+() => !!document.querySelector('#main span[data-icon="msg-time"]')
+"""
+
 # Rows of WA's @-mention popup (group chats). Temporary DOM bridge (vision-first
 # policy, docs/plan-mejoras.md §4.8) — vision replacement: OCR the rows that
 # appear above the compose box after "@" (same idea as vision.find_menu_item)
@@ -1946,6 +2020,92 @@ class WASession:
         Returns metadata: {selector, x, y} of the input box used.
         Raises RuntimeError if no compose input is found or send fails.
         """
+        info, discarded = await self._focus_empty_compose(discard_draft)
+        await self._type_verified(text, mentions=mentions, read_js=_COMPOSE_TEXT_JS)
+
+        await self._page.keyboard.press("Enter")
+        await self._page.wait_for_timeout(1000)
+
+        # Verify the compose box is now empty (message was sent, not just new-lined).
+        sent = await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS)
+        if not sent:
+            # WA may be configured to use Enter as new-line — click the send button.
+            clicked = await self._page.evaluate(_CLICK_SEND_BTN_JS)
+            await self._page.wait_for_timeout(800)
+            if not clicked:
+                raise RuntimeError("No se pudo enviar el mensaje: Enter no envió y no se encontró botón Send")
+            still_there = not await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS)
+            if still_there:
+                raise RuntimeError("Mensaje sigue en el compose box después de intentar Send — no fue enviado")
+
+        return {"selector": info.get("selector"), "x": info["x"], "y": info["y"],
+                "discarded_draft": discarded}
+
+    PREVIEW_TIMEOUT_MS = 30_000
+
+    async def send_files(self, paths: list[Path], caption: str = "", *,
+                         discard_draft: bool = False, mentions: bool = True) -> dict:
+        """Send PATHS as attachments in the currently open chat, CAPTION on
+        the first one. Same guards as send_message: no glued draft, focus
+        before typing, caption verified before Enter. Waits until WA has
+        finished uploading (the clock tick is gone), so a lazy Chrome isn't
+        stopped mid-upload. Any failure with the preview open discards it —
+        nothing is left half-done.
+
+        Returns metadata: {files, discarded_draft}.
+        """
+        _info, discarded = await self._focus_empty_compose(discard_draft)
+        await self._page.evaluate(_ADD_ATTACH_INPUT_JS, _ATTACH_INPUT_ID)
+        await self._page.set_input_files(f"#{_ATTACH_INPUT_ID}", [str(p) for p in paths])
+        if await self._page.evaluate(_PASTE_FILES_JS, _ATTACH_INPUT_ID) != len(paths):
+            raise RuntimeError("No se pudieron pegar los archivos en el chat — no se envió nada")
+
+        box = await self._wait_for(_CAPTION_BOX_JS, self.PREVIEW_TIMEOUT_MS)
+        if not box:
+            raise RuntimeError("WhatsApp no abrió la vista previa de los adjuntos — no se envió nada")
+        try:
+            await self._page.mouse.click(box["x"], box["y"])
+            await self._page.wait_for_timeout(300)
+            if not await self._page.evaluate(_FOCUS_IN_CAPTION_JS):
+                raise RuntimeError("La caja del texto del adjunto no tomó el foco — no se envió nada")
+            if caption:
+                await self._type_verified(caption, mentions=mentions, read_js=_CAPTION_TEXT_JS)
+            await self._page.keyboard.press("Enter")
+            if not await self._wait_for(f"() => !({_CAPTION_BOX_JS})()", 5_000):
+                raise RuntimeError("La vista previa sigue abierta después de Enter — no se envió nada")
+        except Exception:
+            await self._discard_preview()
+            raise
+
+        # Uploads run in the background after the preview closes; the clock
+        # tick may take a moment to show up, so give it a chance first.
+        await self._wait_for(_PENDING_SEND_JS, 3_000)
+        size_mb = sum(p.stat().st_size for p in paths) / 1e6
+        if not await self._wait_for(f"() => !({_PENDING_SEND_JS})()", int(120_000 + 10_000 * size_mb)):
+            raise RuntimeError("El adjunto sigue subiendo (reloj en el mensaje) — revisá el chat")
+        return {"files": len(paths), "discarded_draft": discarded}
+
+    async def _wait_for(self, js: str, timeout_ms: int, step_ms: int = 500):
+        """Poll JS until it returns something truthy (returned) or TIMEOUT_MS
+        passes (None)."""
+        for _ in range(max(1, timeout_ms // step_ms)):
+            result = await self._page.evaluate(js)
+            if result:
+                return result
+            await self._page.wait_for_timeout(step_ms)
+        return None
+
+    async def _discard_preview(self) -> None:
+        """Close WA's attachment preview without sending (Escape → Descartar)."""
+        await self._page.keyboard.press("Escape")
+        await self._page.wait_for_timeout(500)
+        await self._page.evaluate(_CONFIRM_DISCARD_JS)
+        await self._page.wait_for_timeout(500)
+
+    async def _focus_empty_compose(self, discard_draft: bool) -> tuple[dict, str]:
+        """Find the open chat's compose box, make sure it holds no draft
+        (discarding it only with DISCARD_DRAFT) and give it focus.
+        Returns (box info, discarded draft text)."""
         info = await self._page.evaluate(_FIND_COMPOSE_INPUT_JS)
         if not info.get("found"):
             raise RuntimeError("No se encontró el input de mensajes (compose box) en el chat actual")
@@ -1975,12 +2135,16 @@ class WASession:
                 break
         else:
             raise RuntimeError("La caja de mensaje no tomó el foco — no se envió nada")
+        return info, discarded
 
+    async def _type_verified(self, text: str, *, mentions: bool, read_js: str) -> None:
+        """Type TEXT into the focused editor and check READ_JS shows exactly
+        that before anything is sent. One clean retry; else RuntimeError."""
         # Type, then check the box holds exactly TEXT before pressing Enter.
         # One clean retry; if it still differs, nothing is sent.
         for _attempt in range(2):
             expected = await self._type_compose(text, mentions=mentions)
-            typed = await self._page.evaluate(_COMPOSE_TEXT_JS)
+            typed = await self._page.evaluate(read_js)
             if typed is None or _same_letters(typed, expected):
                 break
             import sys
@@ -1997,24 +2161,6 @@ class WASession:
                 "El texto en la caja de mensaje no coincide con el mensaje "
                 "(se perdieron o cambiaron caracteres) — no se envió nada"
             )
-
-        await self._page.keyboard.press("Enter")
-        await self._page.wait_for_timeout(1000)
-
-        # Verify the compose box is now empty (message was sent, not just new-lined).
-        sent = await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS)
-        if not sent:
-            # WA may be configured to use Enter as new-line — click the send button.
-            clicked = await self._page.evaluate(_CLICK_SEND_BTN_JS)
-            await self._page.wait_for_timeout(800)
-            if not clicked:
-                raise RuntimeError("No se pudo enviar el mensaje: Enter no envió y no se encontró botón Send")
-            still_there = not await self._page.evaluate(_CHECK_COMPOSE_EMPTY_JS)
-            if still_there:
-                raise RuntimeError("Mensaje sigue en el compose box después de intentar Send — no fue enviado")
-
-        return {"selector": info.get("selector"), "x": info["x"], "y": info["y"],
-                "discarded_draft": discarded}
 
     async def _type_compose(self, text: str, *, mentions: bool = True) -> str:
         """Type TEXT into the focused compose box. Newlines become Shift+Enter

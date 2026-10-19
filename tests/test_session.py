@@ -950,6 +950,108 @@ class TestSendMessageGuards:
         assert s._page.keyboard.type.call_count == 2   # one clean retry
 
 
+class TestSendFiles:
+    """send_files pastes the files into the compose box, captions WA's
+    preview and waits for the upload — with send_message's guards, and the
+    preview discarded on any failure (RuGIAR 2026-10-19: a deck had to go
+    out by Gmail because wavi was text-only)."""
+
+    def _session(self, *, draft=False, preview=True, caption_shown=None):
+        s = _make_session()
+        s._page = _make_page(selector_found=True)
+        s._page.set_input_files = AsyncMock()
+        state = {"open": False}
+
+        def evaluate(js, *a):
+            if "ClipboardEvent" in js:
+                state["open"] = preview
+                return len(s._page.set_input_files.call_args.args[1])
+            if "descartar" in js:
+                state["open"] = False
+                return True
+            if "msg-time" in js:
+                return js.startswith("() => !(")  # never pending
+            if "const cap" in js:          # caption box / focus / text
+                if js.startswith("() => !("):
+                    return not state["open"]
+                if "getBoundingClientRect" in js:
+                    return {"x": 5, "y": 6} if state["open"] else None
+                if "activeElement" in js:
+                    return state["open"]
+                return caption_shown
+            if "found: true" in js:
+                return {"found": True, "x": 10, "y": 20, "selector": "footer"}
+            if "if (el) return (el.innerText" in js:
+                return not draft
+            if "a.closest('footer" in js:
+                return True
+            if "join(" in js:
+                return "borrador"
+            return None
+        s._page.evaluate = AsyncMock(side_effect=evaluate)
+
+        async def press(key):
+            if key == "Enter":
+                state["open"] = False
+        s._page.keyboard.press = AsyncMock(side_effect=press)
+        return s
+
+    def _presses(self, s):
+        return [c.args[0] for c in s._page.keyboard.press.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_sends_files_with_caption(self, tmp_path):
+        files = [tmp_path / "deck.pptx", tmp_path / "notas.pdf"]
+        for f in files:
+            f.write_bytes(b"x")
+        s = self._session(caption_shown="la presentación")
+        meta = await s.send_files(files, "la presentación")
+        assert meta["files"] == 2
+        s._page.set_input_files.assert_awaited_once_with(
+            "#__wavi_attach", [str(f) for f in files])
+        s._page.keyboard.type.assert_called()
+        assert self._presses(s)[-1] == "Enter"
+
+    @pytest.mark.asyncio
+    async def test_no_caption_types_nothing(self, tmp_path):
+        f = tmp_path / "a.pdf"
+        f.write_bytes(b"x")
+        s = self._session()
+        await s.send_files([f])
+        s._page.keyboard.type.assert_not_called()
+        assert self._presses(s) == ["Enter"]
+
+    @pytest.mark.asyncio
+    async def test_refuses_on_draft_before_pasting(self, tmp_path):
+        f = tmp_path / "a.pdf"
+        f.write_bytes(b"x")
+        s = self._session(draft=True)
+        with pytest.raises(RuntimeError, match="borrador"):
+            await s.send_files([f], "hola")
+        s._page.set_input_files.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_preview_sends_nothing(self, tmp_path):
+        f = tmp_path / "a.pdf"
+        f.write_bytes(b"x")
+        s = self._session(preview=False)
+        s.PREVIEW_TIMEOUT_MS = 1_000
+        with pytest.raises(RuntimeError, match="vista previa"):
+            await s.send_files([f], "hola")
+        assert "Enter" not in self._presses(s)
+
+    @pytest.mark.asyncio
+    async def test_wrong_caption_discards_preview(self, tmp_path):
+        f = tmp_path / "a.pdf"
+        f.write_bytes(b"x")
+        s = self._session(caption_shown="ola")
+        with pytest.raises(RuntimeError, match="no coincide"):
+            await s.send_files([f], "hola")
+        presses = self._presses(s)
+        assert "Enter" not in presses and presses[-1] == "Escape"
+        assert any("descartar" in c.args[0] for c in s._page.evaluate.call_args_list)
+
+
 def test_same_letters_tolerates_list_markers_only():
     assert _same_letters("• a\n• b", "- a\n- b")
     assert not _same_letters("atías", "Matías")

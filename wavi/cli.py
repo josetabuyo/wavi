@@ -1305,7 +1305,10 @@ def reply(session: str, contact: str, match: str, message: str, sender: str | No
 @main.command("send")
 @click.argument("session", default="default")
 @click.argument("contact")
-@click.argument("message")
+@click.argument("message", default="")
+@click.option("--attach", "attachments", multiple=True,
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="File to send (repeatable). MESSAGE becomes its caption.")
 @click.option("--screenshot-out", default=None, help="Save a screenshot of the chat after sending.")
 @click.option("--pick", type=int, default=None,
               help="Pick option N (1-based) when CONTACT is ambiguous, without needing a TTY — see the numbered list a prior ambiguous call printed.")
@@ -1314,20 +1317,28 @@ def reply(session: str, contact: str, match: str, message: str, sender: str | No
 @click.option("--no-mentions", is_flag=True,
               help="Type every '@' literally instead of turning '@Name' into a mention of a group participant.")
 def send(session: str, contact: str, message: str, screenshot_out: str | None, pick: int | None,
-         discard_draft: bool, no_mentions: bool):
+         discard_draft: bool, no_mentions: bool, attachments: tuple[Path, ...]):
     """Send MESSAGE to CONTACT via WhatsApp.
 
     Opens the chat with CONTACT, types MESSAGE, and presses Enter.
     Use your own phone number as CONTACT to send a self-message for testing.
+
+    With --attach (repeatable) the files go out as attachments — PDF, PPT,
+    any document, also images — with MESSAGE (optional) as the caption of
+    the first one. wavi waits until WhatsApp has finished uploading them.
 
     In a group, "@Name" (at a word start) becomes a real mention when Name is
     one of the participants — "@Vito" picks "Vito Bagni", "@Matias Becerro"
     picks that one even if another Matias is there; an ambiguous or unknown
     name stays as plain text. Emails (jose@gmail.com) are never touched.
 
-    Example:
+    \b
+    Examples:
       wavi send default "+54 9 11 5561 2767" "hola mundo"
+      wavi send default "Familia" "la presentación" --attach deck.pptx --attach notas.pdf
     """
+    if not message and not attachments:
+        raise click.UsageError("Nada para enviar: pasá MESSAGE y/o --attach.")
     profile = _profile(session)
 
     async def _go():
@@ -1339,11 +1350,18 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None, p
                 raise RuntimeError(f"Sesión no autenticada (estado={status}). Ejecutá 'wavi connect' primero.")
 
             await s.navigate_to_contact(contact, pick=pick)
-            meta = await s.send_message(message, discard_draft=discard_draft,
-                                        mentions=not no_mentions)
+            if attachments:
+                meta = await s.send_files(list(attachments), message, discard_draft=discard_draft,
+                                          mentions=not no_mentions)
+            else:
+                meta = await s.send_message(message, discard_draft=discard_draft,
+                                            mentions=not no_mentions)
             if meta.get("discarded_draft"):
                 click.echo(f"Borrador descartado: {meta['discarded_draft']!r}")
-            click.echo(f"Mensaje enviado a '{contact}' (input @ {meta['x']},{meta['y']})")
+            if attachments:
+                click.echo(f"{meta['files']} adjunto(s) enviado(s) a '{contact}'")
+            else:
+                click.echo(f"Mensaje enviado a '{contact}' (input @ {meta['x']},{meta['y']})")
 
             if screenshot_out:
                 shot_path = Path(screenshot_out)

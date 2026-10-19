@@ -159,9 +159,21 @@ audio track to transcribe it.
 wavi send [session] "Contact Name" "message text"
 ```
 
-There is currently no way to send file attachments (images, PDFs, etc.)
-through `wavi send` — text only. `--screenshot-out` only saves a screenshot
-*after* sending for confirmation; it does not attach anything to the message.
+### Attachments
+
+```bash
+wavi send [session] "Contact Name" "caption (optional)" --attach deck.pptx --attach notes.pdf
+```
+
+`--attach` (repeatable) sends files — PDF, PPT, any document, also images —
+pasted into the chat the way Cmd+V does; MESSAGE becomes the caption of the
+first file and may be omitted. Same guards as text (draft, focus, caption
+verified before Enter); any failure discards WA's preview, so nothing goes
+out half-done. `send` returns only once WA has finished uploading (the clock
+tick on the message is gone) — several MB take a few seconds.
+
+`--screenshot-out` only saves a screenshot *after* sending for confirmation;
+it does not attach anything to the message.
 
 `send` refuses rather than send something wrong: it fails if the chat already
 has a draft in the compose box, if the box never takes focus, or if the typed
