@@ -1191,6 +1191,30 @@ class TestEditMessage:
             with pytest.raises(RuntimeError, match="no ofrece 'Editar'"):
                 await env.edit_message("atías, ya", "x", now=self.NOW)
         assert env._page.keyboard.press.call_args_list[-1].args[0] == "Escape"
+        # same spot twice → genuinely not offered, no endless retry
+        assert env._vision_messages.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_chat_moved_before_right_click_retries(self, env):
+        """DataLake 2026-10-20: incoming messages pushed the chat up between
+        the screenshot and the right-click, which hit another bubble — no
+        'Editar', reported as "más de 15 min" one minute after sending."""
+        moved = [{**r, "click_y": r["click_y"] - 300} for r in self.ROWS]
+        env._vision_messages = AsyncMock(side_effect=[self.ROWS, moved])
+        offers = iter([None, (900, 800)])
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+                "wavi.vision.find_menu_item", lambda shot, labels: next(offers)):
+            r = await env.edit_message("atías, ya", "Matías, ya", fragment=True, now=self.NOW)
+        assert r["verified"]
+        assert env._vision_messages.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_entry_within_window_does_not_blame_the_clock(self, env):
+        with __import__("unittest.mock", fromlist=["patch"]).patch(
+                "wavi.vision.find_menu_item", lambda shot, labels: None):
+            with pytest.raises(RuntimeError) as e:
+                await env.edit_message("atías, ya", "x", now=self.NOW)
+        assert "15 min" not in str(e.value) and "16:38" in str(e.value)
 
 
 class TestLocateMessage:

@@ -163,7 +163,43 @@ def detect_bubbles(img: Image.Image, footer_px: int = 70) -> list[dict]:
     # (puede ocurrir si un bubble tiene texto largo que fragmenta la máscara)
     results = _merge_overlapping(results)
 
-    return results
+    masks = {"me": mask_me_raw, "other": mask_other_raw}
+    return [piece for b in results for piece in _split_stacked(b, masks[b["type"]])]
+
+
+# Consecutive bubbles of one sender now sit only ~2px apart (WA 2026-10):
+# the closing above and _merge_overlapping bridge that, so two messages came
+# out as one (DataLake 2026-10-20: the merged row took the older one's time).
+# Inside a bubble every row keeps some bubble colour (side padding, image
+# border); a short run of rows with none is the gap between two bubbles.
+# Long runs (a photo edge to edge) are not cut.
+SPLIT_MAX_GAP_PX = 6
+
+
+def _split_stacked(b: dict, mask: np.ndarray) -> list[dict]:
+    rows = mask[b["y"]:b["y"] + b["h"], b["x"]:b["x"] + b["w"]].sum(axis=1)
+    empty = np.flatnonzero(rows == 0)
+    if not len(empty):
+        return [b]
+    cuts, run = [], [empty[0]]
+    for r in empty[1:]:
+        if r == run[-1] + 1:
+            run.append(r)
+            continue
+        cuts.append(run)
+        run = [r]
+    cuts.append(run)
+
+    pieces, top = [], 0
+    for run in cuts:
+        if len(run) > SPLIT_MAX_GAP_PX or run[0] - top < 30 or b["h"] - run[-1] - 1 < 30:
+            continue
+        pieces.append({**b, "y": b["y"] + top, "h": int(run[0] - top)})
+        top = int(run[-1] + 1)
+    if not pieces:
+        return [b]
+    pieces.append({**b, "y": b["y"] + top, "h": b["h"] - top})
+    return pieces
 
 
 def _merge_overlapping(bubbles: list[dict]) -> list[dict]:

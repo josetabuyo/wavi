@@ -718,6 +718,17 @@ class TestMessageBubbleVision:
         assert (x, y) == (int(0.88 * 1280), int(0.785 * 1920))
         assert vision.find_menu_item(shot, ("Editar", "Edit")) is None
 
+    def test_menu_label_tolerates_the_entry_icon(self):
+        """WA draws an icon per entry; OCR reads "@ Editar", "4 Fijar"
+        (DataLake 2026-10-20). Chat text like "ok editar" is not an entry."""
+        from wavi.vision import _is_menu_label
+        want = {"editar", "edit"}
+        assert _is_menu_label("@ Editar", want)
+        assert _is_menu_label("Editar", want)
+        assert _is_menu_label("* Responder", {"responder"})
+        assert not _is_menu_label("ok editar", want)
+        assert not _is_menu_label("@ Editar mensaje", want)
+
     def test_read_message_bubbles_splits_quote_and_inherits_sender(self, tmp_path, monkeypatch):
         from PIL import ImageDraw
 
@@ -774,3 +785,28 @@ def test_ocr_helper_is_found():
     cfg = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
     inc = cfg["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
     assert inc["swift/ocr_vision.swift"] == "wavi/_ocr/ocr_vision.swift"
+
+
+class TestSplitStacked:
+    """Same-sender bubbles ~2px apart came out as one (DataLake 2026-10-20)."""
+
+    @staticmethod
+    def _mask(*spans, h=200, w=100):
+        import numpy as np
+        m = np.zeros((h, w), dtype=np.uint8)
+        for y0, y1 in spans:
+            m[y0:y1, 5:95] = 1
+        return m
+
+    def test_short_gap_splits(self):
+        from wavi.element_detector import _split_stacked
+        b = {"x": 0, "y": 10, "w": 100, "h": 82, "type": "me"}
+        pieces = _split_stacked(b, self._mask((10, 50), (52, 92)))
+        assert [(p["y"], p["h"]) for p in pieces] == [(10, 40), (52, 40)]
+
+    def test_long_gap_and_short_pieces_stay_whole(self):
+        from wavi.element_detector import _split_stacked
+        photo = {"x": 0, "y": 10, "w": 100, "h": 100, "type": "me"}
+        assert _split_stacked(photo, self._mask((10, 40), (80, 110))) == [photo]
+        thin = {"x": 0, "y": 10, "w": 100, "h": 42, "type": "me"}
+        assert _split_stacked(thin, self._mask((10, 30), (32, 52))) == [thin]

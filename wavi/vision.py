@@ -917,14 +917,25 @@ def read_message_bubbles(screenshot_path: Path, work_dir: Path | None = None) ->
     return out
 
 
+def _is_menu_label(text: str, want: set[str]) -> bool:
+    """TEXT is one of WANT, alone or after the entry's icon — WA draws one
+    per entry and OCR reads it as a glyph or two ("@ Editar", "* Responder",
+    "4 Fijar"; DataLake 2026-10-20: exact matching never found 'Editar')."""
+    t = text.strip().lower()
+    if t in want:
+        return True
+    icon, _, label = t.partition(" ")
+    return label.strip() in want and len(icon) <= 2 and not any(c.isalpha() for c in icon)
+
+
 def find_menu_item(screenshot_path: Path, labels: tuple[str, ...]) -> tuple[int, int] | None:
-    """Page coordinates of a context-menu entry whose OCR text is exactly one
-    of LABELS (case-insensitive), or None."""
+    """Page coordinates of a context-menu entry whose OCR text is one of
+    LABELS (case-insensitive, icon glyph tolerated), or None."""
     with Image.open(screenshot_path) as im:
         w, h = im.size
     want = {lbl.lower() for lbl in labels}
     for blk in _run_ocr(screenshot_path):
-        if blk["text"].strip().lower() in want:
+        if _is_menu_label(blk["text"], want):
             return int((blk["x"] + blk["w"] / 2) * w), int((blk["y"] + blk["h"] / 2) * h)
     return None
 

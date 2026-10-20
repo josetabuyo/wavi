@@ -1808,6 +1808,7 @@ class WASession:
             pos = await _asyncio.to_thread(vision.find_menu_item, shot, labels)
             if not pos:
                 await self._page.keyboard.press("Escape")
+                await self._page.wait_for_timeout(600)   # menu fades out
                 return False
             await self._page.mouse.click(*pos)
             return True
@@ -1832,6 +1833,39 @@ class WASession:
         rows = await self._page.evaluate(_CHAT_MESSAGES_JS)
         return _locate_message(rows, match, **kw)
 
+    MENU_ATTEMPTS = 3
+
+    async def _pick_and_open_menu(
+        self, match: str, labels: tuple[str, ...], *, before_open=None, **kw,
+    ) -> tuple[dict, bool]:
+        """Locate the message MATCH picks and click its menu entry LABELS.
+
+        The chat can move between the screenshot and the right-click —
+        incoming messages push it up and the click lands on another bubble
+        (DataLake 2026-10-20: 'Editar' "missing" one minute after sending).
+        So a missing entry is retried on a fresh locate; only a message found
+        at the same spot twice without the entry really lacks it.
+        BEFORE_OPEN(target) runs before each right-click (may raise).
+        Returns (target, whether the entry was clicked).
+        """
+        target = await self._pick_message(match, **kw)
+        last = None
+        for attempt in range(self.MENU_ATTEMPTS):
+            if attempt:
+                try:
+                    target = await self._pick_message(match, **kw)
+                except MessageNotFound:
+                    break   # keep the first sighting: "not offered" is the real news
+            if before_open:
+                before_open(target)
+            if await self._open_message_menu_item(target, labels):
+                return target, True
+            spot = (target.get("click_x"), target.get("click_y"))
+            if spot == last:
+                break
+            last = spot
+        return target, False
+
     async def edit_message(
         self, match: str, new_text: str, *, fragment: bool = False, now=None,
     ) -> dict:
@@ -1850,21 +1884,28 @@ class WASession:
         from datetime import datetime as _DT
 
         now = now or _DT.now()
-        target = await self._pick_message(match, own_only=True)
-        sent_at = (_DT.fromisoformat(target["timestamp"]) if target.get("timestamp")
-                   else _parse_pre_plain(target.get("pre")))
-        if sent_at is not None:
-            age_min = (now - sent_at).total_seconds() / 60
-            if age_min > EDIT_WINDOW_MIN:
-                raise RuntimeError(
-                    f"El mensaje se envió a las {sent_at:%H:%M} ({age_min:.0f} min) — "
-                    f"WhatsApp solo permite editar durante {EDIT_WINDOW_MIN} min."
-                )
 
-        if not await self._open_message_menu_item(target, ("Editar", "Edit")):
+        def _sent_at(target: dict):
+            return (_DT.fromisoformat(target["timestamp"]) if target.get("timestamp")
+                    else _parse_pre_plain(target.get("pre")))
+
+        def _within_window(target: dict) -> None:
+            sent_at = _sent_at(target)
+            if sent_at is not None:
+                age_min = (now - sent_at).total_seconds() / 60
+                if age_min > EDIT_WINDOW_MIN:
+                    raise RuntimeError(
+                        f"El mensaje se envió a las {sent_at:%H:%M} ({age_min:.0f} min) — "
+                        f"WhatsApp solo permite editar durante {EDIT_WINDOW_MIN} min."
+                    )
+
+        target, opened = await self._pick_and_open_menu(
+            match, ("Editar", "Edit"), before_open=_within_window, own_only=True)
+        sent_at = _sent_at(target)
+        if not opened:
+            when = f" (enviado a las {sent_at:%H:%M})" if sent_at else ""
             raise RuntimeError(
-                "WhatsApp no ofrece 'Editar' para ese mensaje (pasaron más de "
-                f"{EDIT_WINDOW_MIN} min, o no es editable)."
+                f"WhatsApp no ofrece 'Editar' para ese mensaje{when} — no se cambió nada."
             )
         await self._page.wait_for_timeout(1200)
         if not await self._page.evaluate(_EDIT_DIALOG_FOCUS_JS):
@@ -1941,9 +1982,9 @@ class WASession:
         message; any failure cancels the quote with Escape. TEXT then goes
         through send_message() with all of its guards.
         """
-        target = await self._pick_message(match, sender=sender, index=index)
-
-        if not await self._open_message_menu_item(target, ("Responder", "Reply")):
+        target, opened = await self._pick_and_open_menu(
+            match, ("Responder", "Reply"), sender=sender, index=index)
+        if not opened:
             raise RuntimeError("WhatsApp no ofrece 'Responder' para ese mensaje — no se envió nada")
         await self._page.wait_for_timeout(800)
 
