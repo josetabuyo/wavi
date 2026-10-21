@@ -127,8 +127,8 @@ wavi list-contacts [session]                  # list all contacts
 ```
 
 `wavi get`/`check-updates` read text via OCR over screenshots of the chat
-(voice notes are downloaded and transcribed). Photos and videos are not part
-of `get` — use `wavi media` for those.
+(voice notes are downloaded and transcribed). Photos, videos and documents
+are not part of `get` — use `wavi media` for those.
 
 ### Where captures are saved
 
@@ -138,18 +138,21 @@ otherwise, or `$WAVI_OUTPUT_DIR`. `wavi get` prints the exact path when it
 finishes. Captures copy chat text verbatim (credentials included) — don't
 copy them into other repos.
 
-## Media — photos and videos (full files)
+## Media — photos, videos and documents (full files)
 
 ```bash
-wavi media [session] "Contact Name"                                  # all photos + videos
+wavi media [session] "Contact Name"                                  # photos + videos + documents
 wavi media [session] "Contact Name" --type video --from 2026-10-08   # videos since a date
+wavi media [session] "Contact Name" --type document --from 2026-10-21  # zip/xlsx/pdf… since a date
 wavi media [session] "Contact Name" --limit 5 --json-out
 ```
 
 Walks the chat's media viewer newest → oldest and saves the original files
 (not thumbnails) to `<output>/<session>/<contact>/media/` as
 `<date>_<time>_<sender>_<hash>.<ext>`, plus `media.json` (sender, timestamp,
-bytes, sha1). Re-runs skip files already downloaded. Typical follow-up:
+bytes, sha1). Documents keep their original name:
+`<date>_<time>_<sender>_<file name>`; big ones (hundreds of MB) are written by
+Chrome straight to disk. Re-runs skip files already downloaded. Typical follow-up:
 `ffmpeg -ss 10 -i video.mp4 -frames:v 1 frame.jpg` for stills, or extract the
 audio track to transcribe it.
 

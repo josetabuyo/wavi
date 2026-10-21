@@ -1413,6 +1413,54 @@ async def test_connect_refuses_missing_profile_without_touching_ports(tmp_path, 
     fake_pw.stop.assert_awaited_once()
 
 
+def _daemon_session(tmp_path, monkeypatch, *, listening: bool):
+    """A session whose daemon PID is alive but whose CDP never answers."""
+    import playwright.async_api as pw_api
+
+    import wavi.session as ws
+    killed = []
+    monkeypatch.setattr(ws, "_kill_port", lambda port: killed.append(port))
+    monkeypatch.setattr(ws, "_is_process_alive", lambda pid: True)
+    monkeypatch.setattr(ws, "_port_listening", lambda port: listening)
+    fake_pw = MagicMock()
+    fake_pw.stop = AsyncMock()
+    fake_pw.chromium.connect_over_cdp = AsyncMock(side_effect=TimeoutError("Timeout 5000ms"))
+    starter = MagicMock()
+    starter.start = AsyncMock(return_value=fake_pw)
+    monkeypatch.setattr(pw_api, "async_playwright", lambda: starter)
+    (tmp_path / "chrome_daemon.pid").write_text("4242")
+    return WASession(tmp_path), fake_pw, killed
+
+
+@pytest.mark.asyncio
+async def test_connect_waits_for_a_busy_daemon_and_never_kills_it(tmp_path, monkeypatch):
+    """DataLake 2026-10-21: CDP took >5s, the headless fallback killed the
+    live daemon. A Chrome still holding the port is retried, then reported."""
+    import wavi.session as ws
+    s, fake_pw, killed = _daemon_session(tmp_path, monkeypatch, listening=True)
+    with pytest.raises(RuntimeError, match="no se tocó nada"):
+        await s.connect()
+    timeouts = [c.kwargs["timeout"] for c in fake_pw.chromium.connect_over_cdp.await_args_list]
+    assert timeouts == list(ws.CDP_CONNECT_TIMEOUTS_MS)
+    assert killed == []
+    fake_pw.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connect_replaces_a_daemon_with_nothing_on_its_port(tmp_path, monkeypatch):
+    """Stale PID (reused by another process), nothing on the port: the
+    headless fallback still takes over."""
+    import subprocess
+    from unittest.mock import patch
+
+    s, fake_pw, killed = _daemon_session(tmp_path, monkeypatch, listening=False)
+    monkeypatch.setattr(subprocess, "Popen", MagicMock())
+    with pytest.raises(RuntimeError, match="did not expose CDP"):
+        with patch("asyncio.sleep", AsyncMock()):
+            await s.connect()
+    assert killed == [s._port]
+
+
 # ── @-mentions (DataLake 2026-10-13) ─────────────────────────────────────────
 
 from wavi.session import _MENTION_ROWS_JS, _pick_mention  # noqa: E402

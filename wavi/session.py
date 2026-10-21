@@ -21,6 +21,8 @@ REAL_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 CDP_PORT    = 9222
 PID_FILE    = "chrome_daemon.pid"
 PORT_FILE   = "chrome_daemon.port"
+# Successive waits for a live daemon's CDP before giving up (never killing it).
+CDP_CONNECT_TIMEOUTS_MS = (5_000, 15_000, 30_000)
 
 # Viewport size for headless daemon. Width=1280 is the calibrated base for the
 # sidebar crop formula (vision.py: sidebar_x = w * SIDEBAR_PX/1280).
@@ -1166,18 +1168,34 @@ class WASession:
         from playwright.async_api import async_playwright
         self._pw = await async_playwright().start()
 
-        # Try to connect to existing daemon first
+        # Try to connect to existing daemon first. A busy Chrome (WA decrypting
+        # a big file, many tabs) can take longer than 5s to answer CDP: wait
+        # for it rather than fall through, because the fallback below kills
+        # whatever holds the port — real case 2026-10-21: a slow answer
+        # replaced the visible daemon with a headless Chrome.
         pid = self._load_pid()
         if pid and _is_process_alive(pid):
-            try:
-                self._browser = await self._pw.chromium.connect_over_cdp(
-                    f"http://localhost:{self._port}", timeout=5_000
+            import sys
+            for timeout in CDP_CONNECT_TIMEOUTS_MS:
+                try:
+                    self._browser = await self._pw.chromium.connect_over_cdp(
+                        f"http://localhost:{self._port}", timeout=timeout
+                    )
+                    return await self._setup_page()
+                except Exception as e:
+                    if not _port_listening(self._port):
+                        print(f"⚠️  Daemon PID {pid} sin Chrome en el puerto {self._port} — "
+                              f"se reemplaza.", file=sys.stderr)
+                        break
+                    print(f"⚠️  Daemon vivo (PID {pid}) pero CDP no responde en {timeout // 1000}s: {e}",
+                          file=sys.stderr)
+            else:
+                await self._pw.stop()
+                self._pw = None
+                raise RuntimeError(
+                    f"Chrome de la sesión (PID {pid}, puerto {self._port}) está vivo pero no "
+                    f"responde — no se tocó nada. Reintentá en un rato o probá 'wavi reload'."
                 )
-                return await self._setup_page()
-            except Exception as e:
-                import sys
-                print(f"⚠️  Daemon vivo (PID {pid}) pero CDP no responde: {e}", file=sys.stderr)
-                pass  # daemon alive but CDP not responding — fall through
 
         # A session that doesn't exist (dangling alias, wrong path) has no
         # port file → CDP_PORT, which may be another session's live daemon:
@@ -2461,6 +2479,13 @@ class WASession:
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _port_listening(port: int) -> bool:
+    import socket
+    with socket.socket() as sock:
+        sock.settimeout(1)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
 
 def _kill_port(port: int) -> None:
     """Kill any process listening on port (cleanup zombie Chromes)."""

@@ -1110,8 +1110,8 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
 @main.command("media")
 @click.argument("session", default="default")
 @click.argument("contact")
-@click.option("--type", "kind", type=click.Choice(["all", "video", "image"]), default="all",
-              show_default=True, help="Qué bajar: videos, fotos o ambos.")
+@click.option("--type", "kind", type=click.Choice(["all", "video", "image", "document"]), default="all",
+              show_default=True, help="Qué bajar: videos, fotos, documentos (zip, xlsx, pdf…) o todo.")
 @click.option("--from", "from_date", default=None,
               help="Solo media en o después de esta fecha (YYYY-MM-DD).")
 @click.option("--limit", type=int, default=None, help="Máximo de archivos nuevos a bajar.")
@@ -1122,20 +1122,23 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
 @click.option("--json-out", is_flag=True, help="Imprimir las entradas nuevas como JSON.")
 def media(session: str, contact: str, kind: str, from_date: str | None, limit: int | None,
           assets: str | None, pick: int | None, json_out: bool):
-    """Bajar videos y fotos de un chat (archivo completo, no la miniatura).
+    """Bajar videos, fotos y documentos de un chat (archivo completo, no la miniatura).
 
-    Recorre el visor de WhatsApp del más nuevo al más viejo. Guarda cada archivo
-    como <fecha>_<hora>_<remitente>_<hash>.<ext> y un media.json con remitente,
-    fecha y tamaño. Los ya bajados se saltean.
+    Recorre el chat del más nuevo al más viejo. Guarda fotos y videos como
+    <fecha>_<hora>_<remitente>_<hash>.<ext>, documentos como
+    <fecha>_<hora>_<remitente>_<nombre original>, y un media.json con remitente,
+    fecha y tamaño. Los ya bajados se saltean. Documentos grandes (cientos de
+    MB) los escribe Chrome directo al disco.
 
     \b
     Ejemplos:
       wavi media default "DATA LAKE - Técnico" --type video --from 2026-10-08
+      wavi media default "Matias Becerro" --type document --from 2026-10-21
       wavi media default "Juan" --limit 5
     """
     from datetime import date as _Date
 
-    from wavi.media import download_chat_media
+    from wavi.media import download_chat_documents, download_chat_media
     from wavi.queue import is_locked, session_lock
     from wavi.session import WASession
 
@@ -1149,14 +1152,23 @@ def media(session: str, contact: str, kind: str, from_date: str | None, limit: i
         except ValueError:
             click.echo(f"Error: --from debe ser YYYY-MM-DD, recibido: {from_date}", err=True)
             sys.exit(1)
-    kinds = ("video", "image") if kind == "all" else (kind,)
+    kinds = ("video", "image", "document") if kind == "all" else (kind,)
 
     async def _go():
         s = WASession(profile_dir)
         await s.connect()
         try:
             await s.navigate_to_contact(contact, pick=pick)
-            return await download_chat_media(s, out_dir, kinds=kinds, from_date=from_date_obj, limit=limit)
+            entries = []
+            if "document" in kinds:
+                entries += await download_chat_documents(
+                    s, out_dir, from_date=from_date_obj, limit=limit, chat_name=contact)
+            viewer_kinds = tuple(k for k in kinds if k != "document")
+            left = limit - len(entries) if limit else None
+            if viewer_kinds and left != 0:
+                entries += await download_chat_media(
+                    s, out_dir, kinds=viewer_kinds, from_date=from_date_obj, limit=left)
+            return entries
         finally:
             await s.close()
 
@@ -1175,7 +1187,7 @@ def media(session: str, contact: str, kind: str, from_date: str | None, limit: i
         return
     click.echo(f"{len(entries)} archivo(s) nuevo(s) en {out_dir.resolve()}")
     for e in entries:
-        click.echo(f"  {e['kind']:5s} {e['timestamp'] or '?':16s} {e['sender'][:20]:20s} "
+        click.echo(f"  {e['kind']:8s} {e['timestamp'] or '?':16s} {e['sender'][:20]:20s} "
                    f"{e['bytes'] // 1024:>7} KB  {e['file']}")
 
 

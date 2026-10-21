@@ -14,7 +14,7 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi edit <contact> <match> <new>` | Edit one of your own sent messages (WA's 15-min window); `--fragment` replaces only `<match>` | vision (OCR) + keyboard |
 | `wavi reply <contact> <match> <text>` | Reply quoting one message (yours or anyone's); `--from` narrows by sender, `--index N` picks among matches | vision (OCR) + keyboard |
 | `wavi draft show\|clear <contact>` | Show or empty a chat's compose-box draft (it blocks `send`); `wavi send --discard-draft` does both and sends | DOM + keyboard |
-| `wavi media <contact>` | Download a chat's videos and photos (full files) + `media.json` | Media viewer (DOM) |
+| `wavi media <contact>` | Download a chat's videos, photos and documents (full files) + `media.json` | Media viewer / chat (DOM) |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |
 | `wavi list-contacts [session]` | List all contacts in the "New chat" panel | DOM |
 | `wavi queue [session]` | Show operation queue status | — |
@@ -147,13 +147,16 @@ Finds — by vision: OCR of the chat, scrolling up to 4 screens — the one mess
 
 ```bash
 wavi media default "DATA LAKE - Técnico" --type video --from 2026-10-08
+wavi media default "Matias Becerro" --type document --from 2026-10-21
 ```
 
-Opens the newest photo/video in the chat's media viewer and walks it with ← (newest → oldest), saving the **full file** (not the bubble thumbnail): photos from the viewer's blob image, videos from WA's `/stream/video` endpoint read range by range. Files land in `<wavi output dir>/<session>/<contact>/media/` as `<date>_<time>_<sender>_<hash>.<ext>`, with `media.json` (sender, timestamp, bytes, sha1). Re-runs skip what's already there.
+**Photos and videos:** opens the newest photo/video in the chat's media viewer and walks it with ← (newest → oldest), saving the **full file** (not the bubble thumbnail): photos from the viewer's blob image, videos from WA's `/stream/video` endpoint read range by range. Files land in `<wavi output dir>/<session>/<contact>/media/` as `<date>_<time>_<sender>_<hash>.<ext>`, with `media.json` (sender, timestamp, bytes, sha1). Re-runs skip what's already there.
+
+**Documents** (zip, xlsx, pdf, pptx…): walks the chat itself newest → oldest and clicks each document bubble; WA fetches and decrypts it and Chrome writes it straight to disk (CDP download, so a 500 MB zip never passes through Python). Saved as `<date>_<time>_<sender>_<original name>` in the same folder and `media.json` (`kind: "document"`, keyed by message id). The wait scales with the size shown on the bubble.
 
 | Flag | Meaning |
 |---|---|
-| `--type all\|video\|image` | What to download (default `all`). |
+| `--type all\|video\|image\|document` | What to download (default `all` = all three). |
 | `--from YYYY-MM-DD` | Stop at the first item older than this date. |
 | `--limit N` | At most N new files. |
 | `--assets DIR` | Override the output directory. |
