@@ -959,13 +959,13 @@ class TestSendFiles:
     def _session(self, *, draft=False, preview=True, caption_shown=None):
         s = _make_session()
         s._page = _make_page(selector_found=True)
-        s._page.set_input_files = AsyncMock()
+        s._set_input_files_by_path = AsyncMock()
         state = {"open": False}
 
         def evaluate(js, *a):
             if "ClipboardEvent" in js:
                 state["open"] = preview
-                return len(s._page.set_input_files.call_args.args[1])
+                return len(s._set_input_files_by_path.call_args.args[1])
             if "descartar" in js:
                 state["open"] = False
                 return True
@@ -1007,8 +1007,7 @@ class TestSendFiles:
         s = self._session(caption_shown="la presentación")
         meta = await s.send_files(files, "la presentación")
         assert meta["files"] == 2
-        s._page.set_input_files.assert_awaited_once_with(
-            "#__wavi_attach", [str(f) for f in files])
+        s._set_input_files_by_path.assert_awaited_once_with("#__wavi_attach", files)
         s._page.keyboard.type.assert_called()
         assert self._presses(s)[-1] == "Enter"
 
@@ -1028,7 +1027,7 @@ class TestSendFiles:
         s = self._session(draft=True)
         with pytest.raises(RuntimeError, match="borrador"):
             await s.send_files([f], "hola")
-        s._page.set_input_files.assert_not_called()
+        s._set_input_files_by_path.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_preview_sends_nothing(self, tmp_path):
@@ -1050,6 +1049,30 @@ class TestSendFiles:
         presses = self._presses(s)
         assert "Enter" not in presses and presses[-1] == "Escape"
         assert any("descartar" in c.args[0] for c in s._page.evaluate.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_input_files_go_by_path_so_size_has_no_limit(tmp_path):
+    """Chrome gets the paths over CDP and reads the files itself — no
+    bytes shipped, so Playwright's 50 MB cap doesn't apply."""
+    f = tmp_path / "deck.pptx"
+    f.write_bytes(b"x")
+    s = _make_session()
+    s._page = _make_page(selector_found=True)
+    cdp = MagicMock()
+    cdp.detach = AsyncMock()
+
+    async def send(method, params):
+        return {"DOM.getDocument": {"root": {"nodeId": 1}},
+                "DOM.querySelector": {"nodeId": 7}}.get(method, {})
+    cdp.send = AsyncMock(side_effect=send)
+    s._page.context.new_cdp_session = AsyncMock(return_value=cdp)
+
+    await s._set_input_files_by_path("#__wavi_attach", [f])
+
+    cdp.send.assert_any_await("DOM.setFileInputFiles",
+                              {"nodeId": 7, "files": [str(f.resolve())]})
+    cdp.detach.assert_awaited_once()
 
 
 def test_same_letters_tolerates_list_markers_only():

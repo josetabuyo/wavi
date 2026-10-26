@@ -313,8 +313,8 @@ _FOCUS_IN_COMPOSE_JS = """
 # Attachments go in the way a user's Cmd+V does: a paste event carrying the
 # files, on the compose box. WA answers with its own preview (caption box +
 # send button), so no attach-menu icon has to be found (verified live
-# 2026-10-19). Playwright fills a throwaway <input type=file> by path — no
-# file bytes through evaluate() — and the page moves them into the paste.
+# 2026-10-19). A throwaway <input type=file> is filled by path — no file
+# bytes through evaluate() — and the page moves them into the paste.
 _ATTACH_INPUT_ID = "__wavi_attach"
 
 _ADD_ATTACH_INPUT_JS = """
@@ -2115,7 +2115,7 @@ class WASession:
         """
         _info, discarded = await self._focus_empty_compose(discard_draft)
         await self._page.evaluate(_ADD_ATTACH_INPUT_JS, _ATTACH_INPUT_ID)
-        await self._page.set_input_files(f"#{_ATTACH_INPUT_ID}", [str(p) for p in paths])
+        await self._set_input_files_by_path(f"#{_ATTACH_INPUT_ID}", paths)
         if await self._page.evaluate(_PASTE_FILES_JS, _ATTACH_INPUT_ID) != len(paths):
             raise RuntimeError("No se pudieron pegar los archivos en el chat — no se envió nada")
 
@@ -2143,6 +2143,21 @@ class WASession:
         if not await self._wait_for(f"() => !({_PENDING_SEND_JS})()", int(120_000 + 10_000 * size_mb)):
             raise RuntimeError("El adjunto sigue subiendo (reloj en el mensaje) — revisá el chat")
         return {"files": len(paths), "discarded_draft": discarded}
+
+    async def _set_input_files_by_path(self, selector: str, paths: list[Path]) -> None:
+        """Point the file input at PATHS on disk. Chrome runs on this same
+        machine, so CDP hands it the paths and it reads the files itself.
+        Playwright's set_input_files over connect_over_cdp ships the bytes
+        instead and refuses more than 50 MB per call (RuGIAR 2026-10-26: a
+        97 MB deck couldn't go out)."""
+        cdp = await self._page.context.new_cdp_session(self._page)
+        try:
+            root = (await cdp.send("DOM.getDocument", {"depth": 0}))["root"]["nodeId"]
+            node = await cdp.send("DOM.querySelector", {"nodeId": root, "selector": selector})
+            await cdp.send("DOM.setFileInputFiles", {
+                "nodeId": node["nodeId"], "files": [str(p.resolve()) for p in paths]})
+        finally:
+            await cdp.detach()
 
     async def _wait_for(self, js: str, timeout_ms: int, step_ms: int = 500):
         """Poll JS until it returns something truthy (returned) or TIMEOUT_MS
