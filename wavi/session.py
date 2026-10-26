@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import re
 import subprocess
 from pathlib import Path
@@ -2138,11 +2139,35 @@ class WASession:
 
         # Uploads run in the background after the preview closes; the clock
         # tick may take a moment to show up, so give it a chance first.
-        await self._wait_for(_PENDING_SEND_JS, 3_000)
         size_mb = sum(p.stat().st_size for p in paths) / 1e6
-        if not await self._wait_for(f"() => !({_PENDING_SEND_JS})()", int(120_000 + 10_000 * size_mb)):
+        await self._survive_disconnects(lambda: self._wait_for(_PENDING_SEND_JS, 3_000))
+        if not await self._survive_disconnects(lambda: self._wait_for(
+                f"() => !({_PENDING_SEND_JS})()", int(120_000 + 10_000 * size_mb))):
             raise RuntimeError("El adjunto sigue subiendo (reloj en el mensaje) — revisá el chat")
         return {"files": len(paths), "discarded_draft": discarded}
+
+    MAX_RECONNECTS = 5
+
+    async def _survive_disconnects(self, step):
+        """Run STEP, reconnecting and running it again when Playwright loses
+        Chrome. A big upload makes Chrome report the request body over CDP,
+        a message larger than Playwright accepts, so Playwright drops the
+        connection while Chrome and WA carry on (seen live 2026-10-26: 62
+        and 97 MB files, ~40 s after Enter). The message is already out by
+        then — failing would invite a duplicate resend."""
+        from playwright.async_api import Error as PlaywrightError
+        for attempt in range(self.MAX_RECONNECTS + 1):
+            try:
+                return await step()
+            except PlaywrightError as e:
+                if "closed" not in str(e) or attempt == self.MAX_RECONNECTS:
+                    raise
+            import sys as _sys
+            print("[wavi] Se perdió la conexión con Chrome durante la subida — reconectando",
+                  file=_sys.stderr)
+            with contextlib.suppress(Exception):
+                await self.close()
+            await self.connect()
 
     async def _set_input_files_by_path(self, selector: str, paths: list[Path]) -> None:
         """Point the file input at PATHS on disk. Chrome runs on this same

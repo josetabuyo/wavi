@@ -1052,6 +1052,33 @@ class TestSendFiles:
 
 
 @pytest.mark.asyncio
+async def test_upload_wait_reconnects_when_playwright_drops_chrome():
+    """A big upload makes Playwright drop Chrome after the message is out
+    (RuGIAR 2026-10-26: exit 1 on a 97 MB deck that did go out): reconnect
+    and keep waiting instead of failing."""
+    from playwright.async_api import Error as PlaywrightError
+    s = _make_session()
+    s.close = AsyncMock()
+    s.connect = AsyncMock(return_value="restored")
+    step = AsyncMock(side_effect=[
+        PlaywrightError("Target page, context or browser has been closed"), True])
+    assert await s._survive_disconnects(step) is True
+    s.connect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_wait_gives_up_after_max_reconnects():
+    from playwright.async_api import Error as PlaywrightError
+    s = _make_session()
+    s.close = AsyncMock()
+    s.connect = AsyncMock(return_value="restored")
+    step = AsyncMock(side_effect=PlaywrightError("Target closed"))
+    with pytest.raises(PlaywrightError):
+        await s._survive_disconnects(step)
+    assert s.connect.await_count == s.MAX_RECONNECTS
+
+
+@pytest.mark.asyncio
 async def test_input_files_go_by_path_so_size_has_no_limit(tmp_path):
     """Chrome gets the paths over CDP and reads the files itself — no
     bytes shipped, so Playwright's 50 MB cap doesn't apply."""
