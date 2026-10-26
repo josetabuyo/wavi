@@ -26,6 +26,7 @@ is no vision path to a file's bytes.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import re
@@ -73,7 +74,11 @@ _VIEWER_STATE_JS = """
         if (src.startsWith('blob:') && w > best) { best = w; image = src; }
     }
     const header = (m.innerText || '').split('\\n').map(s => s.trim()).filter(Boolean).slice(0, 2);
-    return {header, video, image};
+    // A video WA hasn't fetched yet ("No se puede reproducir el video") has
+    // no src, only its blurred thumbnail — which tells items apart.
+    const mv = m.querySelector('[data-testid="media-video"] [style*="background-image"]');
+    const thumb = mv ? mv.style.backgroundImage : null;
+    return {header, video, image, thumb};
 }
 """
 
@@ -159,9 +164,10 @@ _DOCUMENT_POS_JS = """
 }
 """
 
-# The preview WA opens for PDFs instead of downloading: click its download
-# button. Returns whether a preview was there.
-_PREVIEW_DOWNLOAD_JS = """
+# Press the media viewer's own download button — the viewer WA opens for a
+# PDF instead of downloading it, or one showing a video WA hasn't fetched.
+# Returns whether the viewer was there.
+_VIEWER_DOWNLOAD_JS = """
 () => {
     const m = document.querySelector('[data-testid="media-viewer-modal"]');
     if (!m) return false;
@@ -171,6 +177,10 @@ _PREVIEW_DOWNLOAD_JS = """
     return true;
 }
 """
+
+# A playable video gets its src within ~1-2s; one still without src after
+# this long is a video WA hasn't fetched: saved through the viewer's button.
+UNFETCHED_VIDEO_MS = 3_000
 
 _HEADER_SPLIT_RE = re.compile(r"\s+(?:a\s+la\(s\)|a\s+las?|at)\s+", re.I)
 _RANGE_TOTAL_RE = re.compile(r"/(\d+)\s*$")
@@ -254,24 +264,32 @@ async def _fetch_stream(page, url: str) -> bytes | None:
 
 async def _wait_viewer_item(page, prev_key: str | None, timeout_ms: int = 15_000) -> dict | None:
     """Poll the viewer until it shows a loaded item different from PREV_KEY.
-    Returns the state (with "key"), or None on timeout (= no newer item)."""
+    Returns the state (with "key", "kind", and "fetch": False for a video the
+    browser can't stream yet), or None on timeout (= no newer item)."""
     waited = 0
     while waited < timeout_ms:
         st = await page.evaluate(_VIEWER_STATE_JS)
         if st:
             src = st.get("video") or st.get("image")
-            if src:
-                key = st.get("video") or ("|".join(st["header"]) + "|" + st["image"])
+            unfetched = not src and st.get("thumb") and waited >= UNFETCHED_VIDEO_MS
+            if src or unfetched:
+                if st.get("video"):
+                    key = st["video"]
+                elif unfetched:
+                    key = "thumb:" + hashlib.sha1(st["thumb"].encode()).hexdigest()[:16]
+                else:
+                    key = "|".join(st["header"]) + "|" + st["image"]
                 if key != prev_key:
                     # Header and media swap at different moments: only trust
                     # a state that reads the same twice in a row.
                     await page.wait_for_timeout(500)
                     again = await page.evaluate(_VIEWER_STATE_JS)
-                    if again != {k: st[k] for k in ("header", "video", "image")}:
+                    if again != {k: st[k] for k in ("header", "video", "image", "thumb")}:
                         waited += 500
                         continue
                     st["key"] = key
-                    st["kind"] = "video" if st.get("video") else "image"
+                    st["kind"] = "video" if st.get("video") or unfetched else "image"
+                    st["fetch"] = not unfetched
                     return st
         await page.wait_for_timeout(300)
         waited += 300
@@ -324,6 +342,8 @@ async def download_chat_media(
 
     new_entries: list[dict] = []
     prev_key: str | None = None
+    downloads = None             # opened on the first video WA hasn't fetched
+    stack = contextlib.AsyncExitStack()
     try:
         while True:
             st = await _wait_viewer_item(page, prev_key)
@@ -338,7 +358,11 @@ async def download_chat_media(
                 break
 
             if st["kind"] in kinds and st["key"] not in known_keys:
-                if st["kind"] == "video":
+                if not st["fetch"]:
+                    downloads = downloads or await stack.enter_async_context(
+                        _ChromeDownloads(page, out_dir / ".partial"))
+                    data = await _download_from_viewer(page, downloads, f"video de {sender}")
+                elif st["kind"] == "video":
                     data = await _fetch_stream(page, st["video"])
                 else:
                     data = await session.fetch_blob(st["image"])
@@ -371,6 +395,7 @@ async def download_chat_media(
             await page.keyboard.press("ArrowLeft")
             await page.wait_for_timeout(500)
     finally:
+        await stack.aclose()
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(500)
         manifest.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
@@ -393,11 +418,67 @@ def document_when(doc: dict, today: _Date) -> _DateTime | None:
     return _DateTime(day.year, day.month, day.day, h, m)
 
 
-async def _download_document(page, dl: dict, doc: dict, dest_dir: Path) -> Path | None:
-    """Click DOC and wait for Chrome to finish writing it into DEST_DIR.
-    DL is filled by the CDP download listeners. Returns the written file
-    (named by Chrome's download guid), or None."""
-    dl.clear()
+class _ChromeDownloads:
+    """Chrome saves downloads into DEST (named by guid) while active, via CDP;
+    its default download behaviour is restored on exit."""
+
+    def __init__(self, page, dest: Path):
+        self.page, self.dest, self.state = page, Path(dest), {}
+
+    async def __aenter__(self):
+        self.dest.mkdir(parents=True, exist_ok=True)
+        self.cdp = await self.page.context.browser.new_browser_cdp_session()
+        await self.cdp.send("Browser.setDownloadBehavior", {
+            "behavior": "allowAndName", "downloadPath": str(self.dest.resolve()), "eventsEnabled": True})
+        self.cdp.on("Browser.downloadWillBegin", self._begin)
+        self.cdp.on("Browser.downloadProgress", self._progress)
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.cdp.send("Browser.setDownloadBehavior", {"behavior": "default"})
+        await self.cdp.detach()
+        if not any(self.dest.iterdir()):
+            self.dest.rmdir()
+
+    def _begin(self, e):
+        self.state.setdefault("guid", e["guid"])
+        self.state["at"] = time.monotonic()
+
+    def _progress(self, e):
+        if e["guid"] == self.state.get("guid"):
+            self.state.update(state=e["state"], got=e.get("receivedBytes", 0), at=time.monotonic())
+
+    async def wait(self, label: str, begin_within_s: float, poke=None) -> Path | None:
+        """Wait for the download started after the last start(). Until it
+        begins, await POKE() every round (to click again, etc.). Returns the
+        written file, or None (not delivered in time, stalled, canceled)."""
+        dl, deadline = self.state, time.monotonic() + begin_within_s
+        while True:
+            await self.page.wait_for_timeout(500)
+            if dl.get("state") == "completed":
+                return self.dest / dl["guid"]
+            if dl.get("state") == "canceled":
+                print(f"[wavi] media: Chrome canceló la descarga de {label}", file=sys.stderr)
+                return None
+            if "guid" in dl:
+                if time.monotonic() - dl["at"] > DOC_STALL_S:
+                    print(f"[wavi] media: la descarga de {label} se trabó en "
+                          f"{dl.get('got', 0) // (1 << 20)} MB", file=sys.stderr)
+                    return None
+                continue
+            if time.monotonic() > deadline:
+                print(f"[wavi] media: WA no entregó {label} a tiempo", file=sys.stderr)
+                return None
+            if poke:
+                await poke()
+
+    def start(self):
+        self.state.clear()
+
+
+async def _download_document(page, downloads: _ChromeDownloads, doc: dict) -> Path | None:
+    """Click DOC and wait for Chrome to write it. Returns the file, or None."""
+    downloads.start()
     pos = await page.evaluate(_DOCUMENT_POS_JS, doc["id"])
     if not pos:
         print(f"[wavi] media: no encuentro el documento {doc['file']} en el chat", file=sys.stderr)
@@ -405,63 +486,45 @@ async def _download_document(page, dl: dict, doc: dict, dest_dir: Path) -> Path 
     idle = pos["text"]
     await page.wait_for_timeout(300)
     await page.mouse.click(pos["x"], pos["y"])
-    clicks, clicked_at = 1, time.monotonic()
+    clicks, clicked_at, preview = 1, time.monotonic(), False
+
+    async def poke():
+        nonlocal clicks, clicked_at, preview
+        if not preview:
+            preview = await page.evaluate(_VIEWER_DOWNLOAD_JS)
+        if preview or clicks >= DOC_MAX_CLICKS or time.monotonic() - clicked_at < DOC_RECLICK_S:
+            return
+        again = await page.evaluate(_DOCUMENT_POS_JS, doc["id"])
+        if again and again["text"] == idle:
+            await page.mouse.click(again["x"], again["y"])
+            clicks, clicked_at = clicks + 1, time.monotonic()
+
     size_mb = (parse_size(doc.get("size")) or 0) / (1 << 20)
-    begin_deadline = time.monotonic() + DOC_BEGIN_BASE_S + DOC_BEGIN_PER_MB_S * size_mb
-    preview = False
     try:
-        while True:
-            await page.wait_for_timeout(500)
-            if dl.get("state") == "completed":
-                return dest_dir / dl["guid"]
-            if dl.get("state") == "canceled":
-                print(f"[wavi] media: Chrome canceló la descarga de {doc['file']}", file=sys.stderr)
-                return None
-            if "guid" in dl:
-                if time.monotonic() - dl.get("at", time.monotonic()) > DOC_STALL_S:
-                    print(f"[wavi] media: la descarga de {doc['file']} se trabó en "
-                          f"{dl.get('got', 0) // (1 << 20)} MB", file=sys.stderr)
-                    return None
-                continue
-            if time.monotonic() > begin_deadline:
-                print(f"[wavi] media: WA no entregó {doc['file']} a tiempo", file=sys.stderr)
-                return None
-            if not preview:
-                preview = await page.evaluate(_PREVIEW_DOWNLOAD_JS)
-            if preview or clicks >= DOC_MAX_CLICKS or time.monotonic() - clicked_at < DOC_RECLICK_S:
-                continue
-            pos = await page.evaluate(_DOCUMENT_POS_JS, doc["id"])
-            if pos and pos["text"] == idle:
-                await page.mouse.click(pos["x"], pos["y"])
-                clicks, clicked_at = clicks + 1, time.monotonic()
+        return await downloads.wait(doc["file"], DOC_BEGIN_BASE_S + DOC_BEGIN_PER_MB_S * size_mb, poke)
     finally:
         if preview:
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(500)
 
 
-def _track_downloads(cdp) -> dict:
-    """Mirror Chrome's download events for the current download into a dict."""
-    dl: dict = {}
-
-    def begin(e):
-        dl.setdefault("guid", e["guid"])
-        dl["at"] = time.monotonic()
-
-    def progress(e):
-        if e["guid"] == dl.get("guid"):
-            dl.update(state=e["state"], got=e.get("receivedBytes", 0), at=time.monotonic())
-
-    cdp.on("Browser.downloadWillBegin", begin)
-    cdp.on("Browser.downloadProgress", progress)
-    return dl
+async def _download_from_viewer(page, downloads: _ChromeDownloads, label: str) -> bytes | None:
+    """Save the viewer's current item with its own download button."""
+    downloads.start()
+    await page.evaluate(_VIEWER_DOWNLOAD_JS)
+    path = await downloads.wait(label, DOC_BEGIN_BASE_S)
+    if path is None:
+        return None
+    data = path.read_bytes()
+    path.unlink()
+    return data
 
 
-async def _save_document(page, dl: dict, doc: dict, when: _DateTime | None,
-                         partial: Path, out_dir: Path, chat_name: str) -> dict | None:
+async def _save_document(page, downloads: _ChromeDownloads, doc: dict, when: _DateTime | None,
+                         out_dir: Path, chat_name: str) -> dict | None:
     """Download DOC and move it to OUT_DIR under its final name.
     Returns its manifest entry, or None if it could not be downloaded."""
-    got = await _download_document(page, dl, doc, partial)
+    got = await _download_document(page, downloads, doc)
     if got is None:
         return None
     sender = "Tú" if doc["out"] else (doc["sender"] or chat_name)
@@ -513,51 +576,58 @@ async def download_chat_documents(
     # WA renders only the rows near the viewport: walk up from the bottom and
     # take each document while it is on screen, newest first.
     await page.wait_for_timeout(1500)
-    partial = out_dir / ".partial"
-    partial.mkdir(exist_ok=True)
-    cdp = await page.context.browser.new_browser_cdp_session()
-    await cdp.send("Browser.setDownloadBehavior", {
-        "behavior": "allowAndName", "downloadPath": str(partial.resolve()), "eventsEnabled": True})
-    dl = _track_downloads(cdp)
     new_entries: list[dict] = []
     seen: set[str] = set()
+    scrolled = False
     try:
-        for _ in range(max_scrolls + 1):
-            view = await page.evaluate(_DOCUMENTS_JS)
-            at_top = await session.is_chat_at_top()
-            done = False
-            for doc in reversed(view["docs"]):
-                # No date pill rendered above it yet: take it after the next scroll.
-                if doc["id"] in seen or (doc["pill"] is None and not at_top):
-                    continue
-                seen.add(doc["id"])
-                when = document_when(doc, today)
-                if from_date and when and when.date() < from_date:
-                    done = True
+        async with _ChromeDownloads(page, out_dir / ".partial") as downloads:
+            for _ in range(max_scrolls + 1):
+                view = await page.evaluate(_DOCUMENTS_JS)
+                at_top = await session.is_chat_at_top()
+                done = False
+                for doc in reversed(view["docs"]):
+                    # No date pill rendered above it yet: take it after the next scroll.
+                    if doc["id"] in seen or (doc["pill"] is None and not at_top):
+                        continue
+                    seen.add(doc["id"])
+                    when = document_when(doc, today)
+                    if from_date and when and when.date() < from_date:
+                        done = True
+                        break
+                    if doc["id"] in known_keys:
+                        continue
+                    entry = await _save_document(page, downloads, doc, when, out_dir, chat_name)
+                    if entry:
+                        manifest.append(entry)
+                        new_entries.append(entry)
+                        known_keys.add(entry["key"])
+                    if limit and len(new_entries) >= limit:
+                        done = True
+                        break
+                top_day = _date_from_pill_text(view["firstPill"] or "", today)
+                if done or (from_date and top_day and top_day < from_date) or at_top:
                     break
-                if doc["id"] in known_keys:
-                    continue
-                entry = await _save_document(page, dl, doc, when, partial, out_dir, chat_name)
-                if entry:
-                    manifest.append(entry)
-                    new_entries.append(entry)
-                    known_keys.add(entry["key"])
-                if limit and len(new_entries) >= limit:
-                    done = True
-                    break
-            top_day = _date_from_pill_text(view["firstPill"] or "", today)
-            if done or (from_date and top_day and top_day < from_date) or at_top:
-                break
-            await session.scroll_chat_up()
-            await page.wait_for_timeout(800)
+                await session.scroll_chat_up()
+                scrolled = True
+                await page.wait_for_timeout(800)
     finally:
-        await cdp.send("Browser.setDownloadBehavior", {"behavior": "default"})
-        await cdp.detach()
-        if not any(partial.iterdir()):
-            partial.rmdir()
         manifest.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
         manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
 
     if not seen:
         print("[wavi] media: no hay documentos en el chat", file=sys.stderr)
+    if scrolled:
+        # Leave the chat at the bottom, where the viewer walk (wavi media
+        # --type all) looks for the newest photo: WA unloads rows far from
+        # the viewport (RuGIAR 2026-10-26: "no hay fotos ni videos").
+        await _scroll_to_bottom(session)
     return new_entries
+
+
+async def _scroll_to_bottom(session, max_steps: int = 80) -> None:
+    for _ in range(max_steps):
+        st = await session.get_chat_scroll_state()
+        if not st or st["scrollTop"] + st["clientHeight"] >= st["scrollHeight"] - 20:
+            return
+        await session.scroll_chat_down(1800)
+        await session._page.wait_for_timeout(300)

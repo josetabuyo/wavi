@@ -47,18 +47,27 @@ class FakeViewer:
 
     def __init__(self, items):
         self.items, self.i, self.open = items, 0, False
+        self.handlers, self.path = {}, None
 
     def state(self):
         if not self.open:
             return None
         it = self.items[self.i]
-        return {"header": it["header"], "video": it.get("video"), "image": it.get("image")}
+        return {"header": it["header"], "video": it.get("video"), "image": it.get("image"),
+                "thumb": it.get("thumb")}
 
     async def evaluate(self, js, *args):
         if "querySelectorAll(" in js and "return els.length" in js:
             return 1
         if "scrollIntoView" in js:
             return {"x": 1, "y": 2}
+        if "media-viewer-modal" in js and "aria-label" in js:     # viewer's download button
+            it = self.items[self.i]
+            guid = f"g{self.i}"
+            self.handlers["Browser.downloadWillBegin"]({"guid": guid})
+            (self.path / guid).write_bytes(it["data"])
+            self.handlers["Browser.downloadProgress"]({"guid": guid, "state": "completed"})
+            return True
         if "media-viewer-modal" in js:
             return self.state()
         if "Range" in js:
@@ -82,6 +91,15 @@ def _session(items):
         if key == "ArrowLeft" and viewer.i < len(items) - 1:
             viewer.i += 1
     page.keyboard.press = AsyncMock(side_effect=press)
+    cdp = MagicMock()
+    cdp.on = lambda ev, fn: viewer.handlers.__setitem__(ev, fn)
+
+    async def send(method, params):
+        if params.get("downloadPath"):
+            viewer.path = __import__("pathlib").Path(params["downloadPath"])
+    cdp.send = AsyncMock(side_effect=send)
+    cdp.detach = AsyncMock()
+    page.context.browser.new_browser_cdp_session = AsyncMock(return_value=cdp)
     s = MagicMock()
     s._page = page
     s.fetch_blob = AsyncMock(side_effect=lambda url: items[viewer.i]["data"])
@@ -126,6 +144,21 @@ async def test_type_filter_and_rerun_skips_known(tmp_path):
 async def test_limit(tmp_path):
     entries = await download_chat_media(_session([VIDEO, PHOTO, OLD]), tmp_path, limit=1, today=TODAY)
     assert len(entries) == 1
+
+
+UNFETCHED = {"header": ["Leandro", "Ayer a la(s) 10:55 p. m."], "thumb": 'url("data:image/jpeg;base64,AAA")',
+             "data": b"\x00\x00\x00\x20ftypmp42" + b"u" * 80}
+
+
+@pytest.mark.asyncio
+async def test_video_wa_has_not_fetched_is_saved_with_the_viewer_button(tmp_path):
+    """RuGIAR 2026-10-26: forwarded HD videos show 'No se puede reproducir'
+    — no src. They used to end the walk ('no hay videos')."""
+    entries = await download_chat_media(_session([VIDEO, UNFETCHED, PHOTO]), tmp_path, today=TODAY)
+    assert [e["kind"] for e in entries] == ["video", "video", "image"]
+    assert entries[1]["file"].startswith("2026-10-07_2255_leandro_") and entries[1]["file"].endswith(".mp4")
+    assert (tmp_path / entries[1]["file"]).read_bytes() == UNFETCHED["data"]
+    assert not (tmp_path / ".partial").exists()
 
 
 # ── documents ────────────────────────────────────────────────────────────────
@@ -218,6 +251,12 @@ def _chat_session(docs):
         chat.bottom = max(chat.WINDOW, chat.bottom - 1)
     s.scroll_chat_up = AsyncMock(side_effect=scroll_up)
     s.is_chat_at_top = AsyncMock(side_effect=lambda: chat.bottom - chat.WINDOW <= 0)
+
+    async def scroll_down(px):
+        chat.bottom = min(len(chat.docs), chat.bottom + 1)
+    s.scroll_chat_down = AsyncMock(side_effect=scroll_down)
+    s.get_chat_scroll_state = AsyncMock(side_effect=lambda: {
+        "scrollTop": chat.bottom, "clientHeight": 0, "scrollHeight": len(chat.docs) + 20})
     return s, chat
 
 
@@ -247,6 +286,7 @@ async def test_documents_newest_first_with_original_names(tmp_path):
     assert {e["kind"] for e in entries} == {"document"}
     assert not (tmp_path / ".partial").exists()
     assert chat.behavior == "default"                         # Chrome's downloads restored
+    assert chat.bottom == 4                                   # chat left at the bottom
     assert len(json.loads((tmp_path / "media.json").read_text())) == 4
 
 
