@@ -1094,7 +1094,10 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
     click.echo(f"\n{len(bubbles)} mensaje(s) en el historial:")
     for b in bubbles:
         ts = f" [{b.timestamp}]" if b.timestamp else ""
-        click.echo(f"  #{b.id:04d} {b.sender:5s} {b.msg_type:6s}{ts}  {b.text[:80]}")
+        click.echo(f"  #{b.id:04d} {b.sender:5s} {b.msg_type:6s}{ts}  {_bubble_line_text(b)}")
+    summary = _audio_summary(bubbles)
+    if summary:
+        click.echo(f"\n{summary}")
 
     import glob
     ogg_files = glob.glob(str(assets_dir / "iter_*" / "audio_*.ogg"))
@@ -1103,6 +1106,25 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
         for f in sorted(ogg_files):
             size = Path(f).stat().st_size
             click.echo(f"  {Path(f).relative_to(assets_dir)}: {size} bytes")
+
+
+def _bubble_line_text(b) -> str:
+    """One-line text for `wavi get`: an audio shows its transcript, not its OCR."""
+    if b.msg_type == "audio":
+        if b.transcript is not None:
+            return f'🎤 "{b.transcript[:80]}"'
+        return "🎤 (sin transcripción)"
+    return b.text[:80]
+
+
+def _audio_summary(bubbles) -> str | None:
+    """Count line that names the JSON field, so nobody looks for another one."""
+    audios = [b for b in bubbles if b.msg_type == "audio"]
+    if not audios:
+        return None
+    done = sum(1 for b in audios if b.transcript is not None)
+    return (f"{len(audios)} audio(s), {done} transcripto(s) — texto en el campo "
+            f"`transcript` de history_bubbles.json (no `transcription`, no `text`)")
 
 
 # ── media ─────────────────────────────────────────────────────────────────────

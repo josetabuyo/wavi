@@ -1205,8 +1205,27 @@ async def run_enhanced(
     # Transcribe after browser is closed — avoids blocking Playwright during scroll
     if assets_dir:
         await transcribe_history_audios(Path(assets_dir))
+        _merge_transcripts(bubbles, Path(assets_dir) / "history_bubbles.json")
 
     return {"bubbles": bubbles}
+
+
+def _merge_transcripts(bubbles: list, json_path: Path) -> None:
+    """Copy the `transcript` field from history_bubbles.json onto BUBBLES.
+
+    transcribe_history_audios only rewrites the JSON file; without this the
+    bubbles `wavi get` prints (and its --json-out) would show audios with no
+    transcript even when the file has one — which reads as "not transcribed".
+    """
+    import json
+    try:
+        saved = json.loads(json_path.read_text())
+    except (OSError, ValueError):
+        return
+    by_id = {d.get("id"): d["transcript"] for d in saved if d.get("transcript") is not None}
+    for b in bubbles:
+        if b.transcript is None and b.id in by_id:
+            b.transcript = by_id[b.id]
 
 
 _FULL_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$")

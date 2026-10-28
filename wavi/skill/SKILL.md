@@ -138,6 +138,26 @@ otherwise, or `$WAVI_OUTPUT_DIR`. `wavi get` prints the exact path when it
 finishes. Captures copy chat text verbatim (credentials included) — don't
 copy them into other repos.
 
+### Reading a capture — `history_bubbles.json` fields
+
+One object per message. Use these exact keys — don't guess names:
+
+| Key | Present | Meaning |
+|---|---|---|
+| `id` | always | 1 = newest message overall |
+| `sender` | always | `"me"` or `"other"` |
+| `msg_type` | always | `"text"`, `"audio"`, `"file"`, `"media"` |
+| `timestamp` | always (may be null) | `YYYY-MM-DDTHH:MM` or bare `HH:MM` |
+| `text` | always | OCR of the bubble. For an audio it's just the player (duration), **not** what was said |
+| `transcript` | audios that were transcribed | **What the voice note says.** The key is `transcript` — not `transcription`, not `text` |
+| `audio_path` | audios that were downloaded | path to the `.ogg` |
+
+Absent key ≠ empty: before concluding "the audios weren't transcribed",
+check `transcript` on bubbles with `msg_type == "audio"`. An audio with
+neither `transcript` nor `audio_path` was never downloaded (or isn't really
+an audio). `wavi get` also prints each audio's transcript in its listing and
+a closing line `N audio(s), M transcripto(s) — …` — trust that count.
+
 ## Media — photos, videos and documents (full files)
 
 ```bash
