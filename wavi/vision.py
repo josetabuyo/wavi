@@ -321,10 +321,36 @@ def _is_duration_block(text: str) -> bool:
     return bool(durs) and all(_is_noise_token(t) for t in toks if t not in durs)
 
 
+# A voice note's bubble carries, besides the player, at most a sender name,
+# "Reenviado" or a reaction. More lines than this is a text, a photo of a
+# table, a code screenshot… even if one of its lines looks like a duration.
+_AUDIO_MAX_OTHER_LINES = 3
+
+
+def _is_audio(raw_blocks: list[dict]) -> bool:
+    lines = [b["text"] for b in raw_blocks]
+    other = sum(
+        1 for t in lines
+        if not (_is_duration_block(t) or _is_waveform_garbage(t)
+                or RE_TIME.search(t) or _is_noise_token(t.strip()))
+    )
+    if other > _AUDIO_MAX_OTHER_LINES:
+        return False
+    if any(_is_duration_block(t) for t in lines):
+        return True
+    # A waveform drawn with bars ("•||0|-||") is a player; one without bars
+    # ("2026-10-26 22:51:00" is mostly 0/1/2/-) only counts when nothing
+    # else in the bubble reads as text.
+    for t in lines:
+        if _is_waveform_garbage(t) and (sum(c in "|•" for c in t) >= 2 or other <= 1):
+            return True
+    return False
+
+
 def classify_msg_type(text: str, raw_blocks: list[dict]) -> str:
     if RE_SIZE.search(text) or RE_FILE_EXT.search(text) or RE_SCREEN_REC.search(text):
         return "file"
-    if any(_is_duration_block(b["text"]) or _is_waveform_garbage(b["text"]) for b in raw_blocks):
+    if _is_audio(raw_blocks):
         return "audio"
     if not text.strip():
         return "media"
@@ -443,6 +469,26 @@ def _split_bubbles_by_timestamps(bubble: dict, blocks: list[dict], img_h: int) -
 
 # ── Main pipeline entry point ─────────────────────────────────────────────────
 
+def date_for_y(pill_map: list[tuple[int, str]], y: int) -> str | None:
+    """Date of the bubble at Y: that of the lowest day pill at or above it.
+
+    PILL_MAP is [(y_px, "YYYY-MM-DD"), ...] sorted by y. Above the topmost
+    pill is an EARLIER day than that pill — which one this screen can't tell.
+    None leaves a bare time for the runner to date from its neighbours
+    (_fill_missing_dates); taking the pill's date put yesterday's 19:48 on
+    today (Fabian2025, 2026-10-28).
+    """
+    if not pill_map or y < pill_map[0][0]:
+        return None
+    chosen = pill_map[0][1]
+    for pill_y, pill_date in pill_map:
+        if pill_y <= y:
+            chosen = pill_date
+        else:
+            break
+    return chosen
+
+
 def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: bool = False) -> list[Bubble]:
     """
     Full pipeline: screenshot → detect elements visually → per-element OCR + action.
@@ -495,15 +541,7 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
         _pill_map.sort(key=lambda x: x[0])
 
     def _date_for_y(y: int) -> str | None:
-        if not _pill_map:
-            return None
-        chosen = _pill_map[0][1]
-        for pill_y, pill_date in _pill_map:
-            if pill_y <= y:
-                chosen = pill_date
-            else:
-                break
-        return chosen
+        return date_for_y(_pill_map, y)
 
     _t = time.perf_counter()
     raw_bubbles = detect_bubbles(img, footer_px=70)

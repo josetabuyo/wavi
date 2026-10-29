@@ -70,6 +70,26 @@ class TestClassifyMsgType:
         blocks = _blocks("Lucas Avaca", "0:32", "9:54 a. m.")
         assert classify_msg_type("Lucas Avaca 0:32 9:54 a. m.", blocks) == "audio"
 
+    # Fabian2025 (Minis App Acces, 2026-10-28): what was still "audio" in 0.11.5.
+    def test_table_row_lines_are_text(self):
+        blocks = _blocks("2370507", "33763", "2026-10-26 22:51:00", "ZPruebabfbhdh")
+        assert classify_msg_type(" ".join(b["text"] for b in blocks), blocks) == "text"
+
+    def test_photo_of_text_with_a_lone_time_line_is_not_audio(self):
+        blocks = _blocks("Fabian Miranda", "Wia", "ООБРОИЬЯРОВАЛЬ", "KOOANA",
+                         "NONT4 CMRQn0N", "SOUANHPANeVO", "12:49", "р.", "m.")
+        assert classify_msg_type(" ".join(b["text"] for b in blocks), blocks) != "audio"
+
+    def test_code_screenshot_with_waveform_looking_line_is_not_audio(self):
+        blocks = _blocks("Alejandro Acosta", "PuOlc 10", "13.",
+                         "Kaleseryneales gulles nawtes eslemks el",
+                         "reiio (rMiiharles rportes)", "10:25 p. m.")
+        assert classify_msg_type(" ".join(b["text"] for b in blocks), blocks) != "audio"
+
+    def test_own_audio_waveform_without_bars(self):
+        blocks = _blocks("n00000000000000000", "4:42 p. m. M")
+        assert classify_msg_type("n00000000000000000 4:42 p. m. M", blocks) == "audio"
+
     def test_file_by_extension(self):
         assert classify_msg_type("presupuesto.xlsx 48 kB", _blocks("presupuesto.xlsx", "48 kB")) == "file"
 
@@ -837,3 +857,23 @@ class TestSplitStacked:
         assert _split_stacked(photo, self._mask((10, 40), (80, 110))) == [photo]
         thin = {"x": 0, "y": 10, "w": 100, "h": 42, "type": "me"}
         assert _split_stacked(thin, self._mask((10, 30), (32, 52))) == [thin]
+
+
+# ── date_for_y ────────────────────────────────────────────────────────────────
+
+class TestDateForY:
+    PILLS = [(400, "2026-10-27"), (1130, "2026-10-28")]
+
+    def test_bubble_below_a_pill_takes_its_date(self):
+        from wavi.vision import date_for_y
+        assert date_for_y(self.PILLS, 1200) == "2026-10-28"
+        assert date_for_y(self.PILLS, 800) == "2026-10-27"
+
+    def test_bubble_above_the_topmost_pill_gets_no_date(self):
+        """Yesterday's 19:48 sat above a "Hoy" pill and was dated today."""
+        from wavi.vision import date_for_y
+        assert date_for_y([(1130, "2026-10-28")], 932) is None
+
+    def test_no_pills_no_date(self):
+        from wavi.vision import date_for_y
+        assert date_for_y([], 500) is None

@@ -12,6 +12,7 @@ import sys
 import tempfile
 from datetime import UTC
 from datetime import date as _Date
+from datetime import timedelta as _td
 from pathlib import Path
 
 from wavi.session import WASession
@@ -738,7 +739,9 @@ class WARunner:
                                 kept = []
                                 for b in new_items:
                                     by = b.bbox["y"]
-                                    date_of_bubble = sorted_pills[0][1]
+                                    # Above the topmost pill = an earlier day; the day
+                                    # before is the latest it can be.
+                                    date_of_bubble = sorted_pills[0][1] - _td(days=1)
                                     for pill_y, pill_date in sorted_pills:
                                         if pill_y <= by:
                                             date_of_bubble = pill_date
@@ -1305,7 +1308,6 @@ def _fill_missing_dates(bubbles: list[dict]) -> int:
     Returns how many bubbles were filled.
     """
     from datetime import date as _date
-    from datetime import timedelta as _td
 
     dates: list[str | None] = []
     times: list[str | None] = []

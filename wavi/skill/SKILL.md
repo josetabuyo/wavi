@@ -151,6 +151,7 @@ One object per message. Use these exact keys — don't guess names:
 | `text` | always | OCR of the bubble. For an audio it's just the player (duration), **not** what was said |
 | `transcript` | audios that were transcribed | **What the voice note says.** The key is `transcript` — not `transcription`, not `text` |
 | `audio_path` | audios that were downloaded | path to the `.ogg` |
+| `date_inferred` | when `true` | no day separator governed the bubble on its screen; the day was taken from its neighbours |
 
 Absent key ≠ empty: before concluding "the audios weren't transcribed",
 check `transcript` on bubbles with `msg_type == "audio"`. An audio with
