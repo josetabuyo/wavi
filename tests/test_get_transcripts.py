@@ -106,6 +106,33 @@ def test_get_json_out_carries_transcript_key(monkeypatch, tmp_path):
     assert "transcription" not in data[0]
 
 
+def test_get_lists_only_this_runs_audios(monkeypatch, tmp_path):
+    """--newest keeps older iter_*/audio_*.ogg on disk; they must not be listed
+    as if this run had downloaded them again."""
+    out = tmp_path / "out"
+    old = out / "iter_001" / "audio_10.ogg"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"x" * 5)
+    new = out / "iter_000" / "audio_1.ogg"
+    new.parent.mkdir(parents=True)
+    new.write_bytes(b"x" * 7)
+    b = _bubble(1, transcript="hola")
+    b.audio_path = str(new)
+    res = _get(monkeypatch, tmp_path, [b], "--newest")
+    assert res.exit_code == 0, res.output
+    assert "1 audio(s) descargados" in res.output
+    assert "iter_000/audio_1.ogg: 7 bytes" in res.output
+    assert "audio_10" not in res.output
+
+
+def test_get_with_no_new_messages_lists_no_audios(monkeypatch, tmp_path):
+    (tmp_path / "out" / "iter_001").mkdir(parents=True)
+    (tmp_path / "out" / "iter_001" / "audio_10.ogg").write_bytes(b"x")
+    res = _get(monkeypatch, tmp_path, [], "--newest")
+    assert res.exit_code == 0, res.output
+    assert "descargados" not in res.output
+
+
 # ── the skill documents the field ─────────────────────────────────────────────
 
 def test_skill_names_the_transcript_field():

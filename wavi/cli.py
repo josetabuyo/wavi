@@ -1099,13 +1099,15 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
     if summary:
         click.echo(f"\n{summary}")
 
-    import glob
-    ogg_files = glob.glob(str(assets_dir / "iter_*" / "audio_*.ogg"))
-    if ogg_files:
-        click.echo(f"\n{len(ogg_files)} audio(s) descargados:")
-        for f in sorted(ogg_files):
-            size = Path(f).stat().st_size
-            click.echo(f"  {Path(f).relative_to(assets_dir)}: {size} bytes")
+    # Only this run's audios: --newest/--grow keep older iter_*/audio_*.ogg on
+    # disk, and listing those read as if they had just been downloaded again.
+    downloaded = [b for b in bubbles if b.audio_path and Path(b.audio_path).exists()]
+    if downloaded:
+        click.echo(f"\n{len(downloaded)} audio(s) descargados:")
+        for b in downloaded:
+            f = Path(b.audio_path)
+            name = f.relative_to(assets_dir) if f.is_relative_to(assets_dir) else f
+            click.echo(f"  #{b.id:04d} {name}: {f.stat().st_size} bytes")
 
 
 def _bubble_line_text(b) -> str:

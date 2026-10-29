@@ -43,6 +43,33 @@ class TestClassifyMsgType:
     def test_audio_by_waveform_garbage(self):
         assert classify_msg_type("", _blocks("||00||0|1|0||10||")) == "audio"
 
+    # Real OCR lines from captures where a clock time inside a text made the
+    # bubble an "audio" (DataLake / Minis App Acces, 2026-10-28).
+    def test_time_inside_sentence_is_text(self):
+        blocks = _blocks("los intentos de AMBA eran pruebas mías",
+                         "hoy miro que termine antes de las 12:40", "8:48 a. m. M")
+        assert classify_msg_type(" ".join(b["text"] for b in blocks), blocks) == "text"
+
+    def test_table_row_with_seconds_is_text(self):
+        blocks = _blocks("2370506", "33763", "2026-10-26 22:49:00", "ZPruebabfbhdh")
+        assert classify_msg_type(" ".join(b["text"] for b in blocks), blocks) == "text"
+
+    def test_schedule_list_is_text(self):
+        t = "quedan: 10:00 y 11:00 lun a vie (SAP) y 12:00 todos los dias"
+        assert classify_msg_type(t, _blocks(t)) == "text"
+
+    def test_audio_duration_with_waveform_and_time_on_one_line(self):
+        t = "•||||| 4:40 4:35 p. m."
+        assert classify_msg_type(t, _blocks(t)) == "audio"
+
+    def test_audio_duration_with_cyrillic_ocr_timestamp(self):
+        t = "0:26 1:54 р. m."  # OCR reads "p" as Cyrillic "р"
+        assert classify_msg_type(t, _blocks(t)) == "audio"
+
+    def test_group_audio_sender_name_on_its_own_line(self):
+        blocks = _blocks("Lucas Avaca", "0:32", "9:54 a. m.")
+        assert classify_msg_type("Lucas Avaca 0:32 9:54 a. m.", blocks) == "audio"
+
     def test_file_by_extension(self):
         assert classify_msg_type("presupuesto.xlsx 48 kB", _blocks("presupuesto.xlsx", "48 kB")) == "file"
 

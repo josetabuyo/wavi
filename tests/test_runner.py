@@ -91,6 +91,22 @@ class TestMatchBubbleToButton:
         assert runner._match_bubble_to_button(bubble, [btn], tolerance_px=80, dpr=1.0) == btn
 
 
+    def test_button_outside_bubble_span_is_not_taken(self):
+        """A text mistaken for an audio must not grab the play button of the
+        real audio right below it (it saved that audio under the wrong message)."""
+        runner = _runner()
+        text_bubble = _audio_bubble(crop_y=300, h=60)   # CSS span 348–432 @DPR1 (±12)
+        btn = {"vx": 670, "vy": 470}                     # 38px below: a neighbour's button
+        assert runner._match_bubble_to_button(text_bubble, [btn], tolerance_px=80, dpr=1.0) is None
+
+    def test_used_button_is_skipped(self):
+        """Two bubbles never share one button — that saved one audio twice."""
+        runner = _runner()
+        bubble = _audio_bubble(crop_y=294)
+        btn = {"vx": 670, "vy": 422}
+        assert runner._match_bubble_to_button(bubble, [btn], dpr=1.0, used={(670, 422)}) is None
+
+
 # ── WASession.install_blob_monitor / get_dpr ──────────────────────────────────
 
 class TestInstallBlobMonitor:

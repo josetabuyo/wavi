@@ -132,17 +132,30 @@ class WARunner:
         play_buttons: list[dict],
         tolerance_px: int = 80,
         dpr: float = 1.0,
+        used: set | None = None,
+        margin_px: int = 12,
     ) -> dict | None:
         """
         Match an audio bubble (crop-panel physical pixels) to the nearest DOM play
         button (CSS viewport pixels) using y-coordinate proximity.
 
+        The button must sit inside the bubble's own vertical span (± MARGIN_PX):
+        a text bubble mistaken for an audio would otherwise grab the play button
+        of a real audio next to it and save that audio under the wrong message.
+        Buttons in USED ((vx, vy) pairs) are already taken by another bubble.
+
         Conversion: physical_crop_y → CSS_viewport_y = (physical_crop_y + HEADER_PX) / dpr
         """
         bvy = (bubble.bbox["y"] + bubble.bbox["h"] // 2 + WASession.HEADER_Y) / dpr
+        top = (bubble.bbox["y"] + WASession.HEADER_Y) / dpr - margin_px
+        bottom = (bubble.bbox["y"] + bubble.bbox["h"] + WASession.HEADER_Y) / dpr + margin_px
 
         best, best_dist = None, float("inf")
         for btn in play_buttons:
+            if used and (btn["vx"], btn["vy"]) in used:
+                continue
+            if not top <= btn["vy"] <= bottom:
+                continue
             dist = abs(btn["vy"] - bvy)
             if dist < best_dist:
                 best_dist = dist
@@ -213,12 +226,13 @@ class WARunner:
         )
 
         results = []
+        used_buttons: set = set()
         for bubble in audio_bubbles:
             # Saltar si ya se descargó este audio (evita duplicados en overlaps)
             if downloaded_ids is not None and bubble.dom_id and bubble.dom_id in downloaded_ids:
                 print(f"[wavi]   bubble#{bubble.id} dom_id ya descargado — skip", file=sys.stderr)
                 continue
-            btn = self._match_bubble_to_button(bubble, play_buttons, dpr=dpr)
+            btn = self._match_bubble_to_button(bubble, play_buttons, dpr=dpr, used=used_buttons)
             if btn is None:
                 print(f"[wavi]   bubble#{bubble.id}: no play button matched", file=sys.stderr)
                 results.append({
@@ -227,6 +241,7 @@ class WARunner:
                 })
                 continue
 
+            used_buttons.add((btn["vx"], btn["vy"]))
             print(f"[wavi]   click bubble#{bubble.id} → vp({btn['vx']},{btn['vy']})", file=sys.stderr)
             await self.session._page.mouse.click(btn["vx"], btn["vy"])
 

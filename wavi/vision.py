@@ -297,10 +297,34 @@ def _find_reaction_badge(img: Image.Image, bubble: dict) -> tuple[int, int, int,
     )
 
 
+_DURATION_TOKEN = re.compile(r'\d{1,2}:\d{2}')
+_DURATION_STRIP = '•·|-[]()/.,:;*°!?'
+_WAVEFORM_CHARS = '|•01-[]lLIiHDoO0ШП∞'
+
+
+def _is_noise_token(tok: str) -> bool:
+    if len(tok) <= 2:
+        return True
+    return sum(1 for c in tok if c in _WAVEFORM_CHARS) / len(tok) >= 0.5
+
+
+def _is_duration_block(text: str) -> bool:
+    """An OCR line that is a voice note's duration: "0:26", "• 4:40 4:35 p. m.".
+
+    Only the duration, a timestamp and waveform noise may be on the line. A
+    clock time inside a sentence ("antes de las 12:40", "22:49:00" in a table
+    row) is not a duration — matching it anywhere made texts, code and table
+    screenshots read as audios.
+    """
+    toks = RE_TIME.sub(' ', text).split()
+    durs = [t for t in toks if _DURATION_TOKEN.fullmatch(t.strip(_DURATION_STRIP))]
+    return bool(durs) and all(_is_noise_token(t) for t in toks if t not in durs)
+
+
 def classify_msg_type(text: str, raw_blocks: list[dict]) -> str:
     if RE_SIZE.search(text) or RE_FILE_EXT.search(text) or RE_SCREEN_REC.search(text):
         return "file"
-    if RE_AUDIO_DUR.search(text) or any(_is_waveform_garbage(b["text"]) for b in raw_blocks):
+    if any(_is_duration_block(b["text"]) or _is_waveform_garbage(b["text"]) for b in raw_blocks):
         return "audio"
     if not text.strip():
         return "media"
