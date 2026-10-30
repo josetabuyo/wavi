@@ -211,7 +211,8 @@ In a group, `@Name` at a word start becomes a real WhatsApp mention when
 Name is a participant: wavi types `@` + the first word, picks the matching
 row in WA's popup and keeps typing after the name. `@Vito` expands to
 "Vito Bagni" if only one Vito is there; `@Matias Becerro` picks that one even
-with another Matias present; a bare `@Matias` with two Matias is ambiguous
+with another Matias present, and `@Javier Villalba` finds "Ing. Javier Villalba ⁕"
+(titles and symbols in the saved name don't count); a bare `@Matias` with two Matias is ambiguous
 and stays plain text (popup closed, Enter still sends). Unknown names and
 emails (`jose@gmail.com`) are typed literally. `--no-mentions` turns it off.
 The verification tolerates the expansion (the box shows the full name).
@@ -241,7 +242,8 @@ MATCH must identify exactly one of **your own** messages on screen
 (accent/case-insensitive; wavi scrolls up a few screens if it isn't visible, and opens
 long messages WhatsApp cuts with "… Leer más", so a fragment past the cut works too). It fails without touching anything when nothing
 matches, when several match (they're listed — use a longer fragment), or when
-the message is older than WhatsApp's 15-minute edit window. Exit code 2 means
+the message is older than WhatsApp's 15-minute edit window. The editor is
+retyped as plain text: an `@Name` in the new text is not turned into a mention. Exit code 2 means
 the edit was saved but the new text couldn't be confirmed in the chat.
 
 ## Reply to (quote) a message

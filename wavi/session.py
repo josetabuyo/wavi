@@ -458,33 +458,47 @@ def _pick_mention(rows: list[dict], rest: str) -> tuple[dict, int] | None:
     """Which popup row does the text right after "@" name, and how much of
     REST that name covers.
 
+    Names compare as words (letters/digits only), so a contact saved with a
+    title or a symbol ("Ing. Javier Villalba ⁕") still matches "@Javier
+    Villalba" (RuGIAR 2026-10-30: it tagged the other Javier instead).
     Tries the longest run of words first (up to _MENTION_MAX_WORDS; trailing
-    punctuation on the last word is not part of the name): an exact match
-    wins, else a prefix that matches exactly one row ("@Vito" → "Vito
+    punctuation on the last word is not part of the name): a row whose
+    whole name is those words wins, else one row whose name holds them as
+    consecutive words, the last one possibly cut short ("@Vito" → "Vito
     Bagni"). Two rows for the same words ("@Matias" with Matias Becerro and
     Matias Cagnina both present) is ambiguous → None → stays plain text.
     Returns (row, end) with END the offset in REST just past the name.
     """
+    def name_words(s: str) -> list[str]:
+        return re.findall(r"\w+", _norm_name(s))
+
+    def holds(name: list[str], cand: list[str]) -> bool:
+        k = len(cand)
+        return any(name[i:i + k - 1] == cand[:-1] and name[i + k - 1].startswith(cand[-1])
+                   for i in range(len(name) - k + 1))
+
     words = list(_MENTION_WORD_RE.finditer(rest))[:_MENTION_MAX_WORDS]
-    # Words must be separated by plain spaces only (no tabs/newlines slipped in).
-    names = [(r, _norm_name(r.get("name") or "")) for r in rows if r.get("name")]
+    names = [(r, name_words(r.get("name") or "")) for r in rows if r.get("name")]
+    names = [(r, n) for r, n in names if n]
     if not words or not names:
         return None
-    cands: list[tuple[str, int]] = []
+    cands: list[tuple[list[str], int]] = []
     for k in range(len(words), 0, -1):
         last = words[k - 1]
         core = last.group().rstrip(_MENTION_TRAIL_PUNCT)
         if not core:
             continue
-        cand = _norm_name(" ".join([w.group() for w in words[:k - 1]] + [core]))
-        if cand:
+        cand = name_words(" ".join([w.group() for w in words[:k - 1]] + [core]))
+        # Every typed word must be a whole word of the name: "@Juan-Pablo"
+        # splits in two, a word with no letters at all can't name anyone.
+        if cand and len(cand) >= k:
             cands.append((cand, last.start() + len(core)))
-    for cand, end in cands:                       # exact, longest first
+    for cand, end in cands:                       # whole name, longest first
         hits = [r for r, n in names if n == cand]
         if len(hits) == 1:
             return hits[0], end
-    for cand, end in cands:                       # unique prefix, longest first
-        hits = [r for r, n in names if n.startswith(cand)]
+    for cand, end in cands:                       # words inside one name, longest first
+        hits = [r for r, n in names if holds(n, cand)]
         if len(hits) == 1:
             return hits[0], end
     return None
@@ -1978,7 +1992,10 @@ class WASession:
                 await self._page.keyboard.press(_select_all)
                 await self._page.keyboard.press("Delete")
                 await self._page.wait_for_timeout(200)
-                expected = await self._type_compose(intended)
+                # No mention popup here: _type_mention drives the compose
+                # box, and pulled the focus out of this editor (RuGIAR
+                # 2026-10-30: 'el editor muestra ""'). "@Name" stays text.
+                expected = await self._type_compose(intended, mentions=False)
                 shown = await self._page.evaluate(_EDIT_DIALOG_TEXT_JS)
                 if shown is not None and _same_letters(shown, expected):
                     break

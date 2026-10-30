@@ -1201,6 +1201,14 @@ class TestEditMessage:
             await env.edit_message("inexistente", "x", now=self.NOW)
 
     @pytest.mark.asyncio
+    async def test_editor_text_is_typed_without_the_mention_popup(self, env):
+        """The mention flow drives the compose box and pulled the focus out
+        of the editor (RuGIAR 2026-10-30): an edit types "@Name" as text."""
+        env._type_mention = AsyncMock(side_effect=AssertionError("mention flow in the editor"))
+        r = await env.edit_message("atías, ya vi", "@Matías ya vi el video", now=self.NOW)
+        assert r["verified"] and env._type_mention.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_found_after_scrolling(self, env):
         env._vision_messages = AsyncMock(side_effect=[self.ROWS[1:], self.ROWS])
         r = await env.edit_message("atías, ya", "Matías, ya", fragment=True, now=self.NOW)
@@ -1560,6 +1568,23 @@ class TestPickMention:
     def test_unknown_name_stays_text(self):
         assert _pick_mention(_ROWS, "Nadie fin") is None
         assert _pick_mention([], "Vito") is None
+
+    def test_title_and_symbol_around_the_name(self):
+        """'Ing. Javier Villalba ⁕' is '@Javier Villalba', never the other
+        Javier (RuGIAR 2026-10-30: it tagged Javier Lurgo)."""
+        rows = [{"name": "Ing. Javier Villalba ⁕", "x": 300, "y": 700},
+                {"name": "Javier Lurgo", "x": 300, "y": 760}]
+        row, end = _pick_mention(rows, "Javier Villalba probé el PR #27")
+        assert row["name"].startswith("Ing.") and end == len("Javier Villalba")
+        assert _pick_mention(rows, "Javier probé el PR") is None
+        row, _ = _pick_mention(rows, "Villalba, mirá")
+        assert row["name"].startswith("Ing.")
+
+    def test_words_are_whole_words_not_substrings(self):
+        rows = [{"name": "Napoleón Leo", "x": 1, "y": 1}, {"name": "Leandro", "x": 1, "y": 2}]
+        row, _ = _pick_mention(rows, "Leo hola")
+        assert row["name"] == "Napoleón Leo"
+        assert _pick_mention(rows, "Le hola") is None
 
     def test_rows_js_has_no_class_or_role_selectors(self):
         # Rows are found by geometry around the compose box, never by WA's
