@@ -820,6 +820,34 @@ class TestMessageBubbleVision:
         # click point lands on the body, in page coordinates
         assert ox + 300 < rows[2]["click_x"] < ox + 680 and oy + 370 < rows[2]["click_y"] < oy + 390
 
+    def test_read_message_bubbles_marks_read_more(self, tmp_path, monkeypatch):
+        """A long message cut with "… Leer más" says where the link is, so
+        the rest can be shown (Minis 2026-10-30: edit missed the cut words)."""
+        import wavi.vision as vision
+        shot = tmp_path / "chat.png"
+        Image.new("RGB", (1280, 1920), (239, 234, 226)).save(shot)
+
+        def blk(text, x, y, w, h, bw, bh):
+            return {"text": text, "x": x / bw, "y": y / bh, "w": w / bw, "h": h / bh}
+        bubbles = [
+            vision.Bubble(id=2, screen_id=2, sender="me", msg_type="text", timestamp="2026-10-30T16:55",
+                          text="", bbox={"x": 200, "y": 100, "w": 400, "h": 100},
+                          raw_blocks=[blk("Buen día! Ya está en main", 10, 10, 300, 15, 400, 100),
+                                      blk("Falta HTTPS: ¿podés conseguir u... Leer más", 10, 70, 280, 15, 400, 100),
+                                      blk("4:55 p. m. /", 320, 75, 60, 12, 400, 100)]),
+            vision.Bubble(id=1, screen_id=1, sender="me", msg_type="text", timestamp="2026-10-30T16:56",
+                          text="", bbox={"x": 200, "y": 300, "w": 400, "h": 40},
+                          raw_blocks=[blk("leer más tarde 4:56 p. m. /", 10, 10, 200, 15, 400, 40)]),
+        ]
+        monkeypatch.setattr(vision, "analyze", lambda *a, **k: bubbles)
+        cut, whole = vision.read_message_bubbles(shot, tmp_path)
+        assert cut["text"] == "Buen día! Ya está en main Falta HTTPS: ¿podés conseguir u"
+        ox, oy = vision.SIDEBAR_PX, vision.HEADER_PX
+        # on the end of the cut line, not on the time
+        assert ox + 200 + 200 < cut["more_x"] < ox + 200 + 290
+        assert oy + 100 + 70 <= cut["more_y"] <= oy + 100 + 85
+        assert whole["text"] == "leer más tarde" and "more_x" not in whole
+
 
 def test_ocr_helper_is_found():
     """The swift OCR helper must resolve both in a checkout and in the wheel

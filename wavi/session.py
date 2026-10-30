@@ -1774,6 +1774,7 @@ class WASession:
     # docs/plan-mejoras.md §4.8).
 
     MESSAGE_SCREENS = 4   # screens to scroll up through looking for a message
+    READ_MORE_CLICKS = 3  # "Leer más" links to open per screen
 
     async def _vision_messages(self) -> list[dict]:
         """Messages visible right now, via a screenshot (oldest first)."""
@@ -1797,17 +1798,36 @@ class WASession:
     ) -> dict:
         """Locate one message by vision, scrolling up through at most
         MESSAGE_SCREENS screens. Raises like _locate_message."""
-        last_err: MessageNotFound | None = None
+        seen: set[str] = set()      # messages of the pool, over every screen
         for screen in range(self.MESSAGE_SCREENS):
             if screen:
                 await self.scroll_chat_up(1400)
                 await self._page.wait_for_timeout(1200)
             rows = await self._vision_messages()
-            try:
-                return _locate_message(rows, match, sender=sender, index=index, own_only=own_only)
-            except MessageNotFound as e:
-                last_err = e
-        raise MessageNotFound(f"{last_err} (revisé {self.MESSAGE_SCREENS} pantallas hacia arriba)")
+            for _expand in range(self.READ_MORE_CLICKS + 1):
+                try:
+                    return _locate_message(rows, match, sender=sender, index=index,
+                                           own_only=own_only)
+                except MessageNotFound:
+                    pass
+                # Long messages show only their start ("… Leer más"): MATCH
+                # may be in the hidden rest. Open one and look again.
+                cut = next((r for r in reversed(rows) if "more_x" in r
+                            and (r.get("own") or not own_only)), None)
+                if cut is None or _expand == self.READ_MORE_CLICKS:
+                    break
+                await self._page.mouse.click(cut["more_x"], cut["more_y"])
+                await self._page.wait_for_timeout(800)
+                rows = await self._vision_messages()
+            seen.update(_normalize_name(r.get("text") or "")
+                        for r in rows if r.get("own") or not own_only)
+        kind = "mensaje propio" if own_only else "mensaje"
+        of = f" de '{sender}'" if sender else ""
+        raise MessageNotFound(
+            f"No encontré un {kind}{of} que contenga '{match}' (revisé "
+            f"{self.MESSAGE_SCREENS} pantallas hacia arriba: {len(seen)} "
+            f"{kind.replace('mensaje', 'mensajes').replace('propio', 'propios')} vistos)."
+        )
 
     async def _open_message_menu_item(self, target: dict, labels: tuple[str, ...]) -> bool:
         """Open TARGET's context menu and click the entry named one of

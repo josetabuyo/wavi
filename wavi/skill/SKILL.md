@@ -238,7 +238,8 @@ wavi edit [session] "Contact Name" "a las 5" "Nos vemos a las 6 en la oficina" #
 ```
 
 MATCH must identify exactly one of **your own** messages on screen
-(accent/case-insensitive; wavi scrolls up a few screens if it isn't visible). It fails without touching anything when nothing
+(accent/case-insensitive; wavi scrolls up a few screens if it isn't visible, and opens
+long messages WhatsApp cuts with "… Leer más", so a fragment past the cut works too). It fails without touching anything when nothing
 matches, when several match (they're listed — use a longer fragment), or when
 the message is older than WhatsApp's 15-minute edit window. Exit code 2 means
 the edit was saved but the new text couldn't be confirmed in the chat.

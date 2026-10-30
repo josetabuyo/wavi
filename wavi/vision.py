@@ -924,10 +924,30 @@ def _strip_meta(text: str) -> str:
     return _RE_BUBBLE_META.sub("", text).strip()
 
 
+# A long message shows only its start, cut with "… Leer más" — the rest is
+# not on screen until that link is clicked (Minis 2026-10-30: 'wavi edit'
+# could not find words past the cut).
+_RE_READ_MORE = re.compile(r"\s*(?:…|\.{2,3})?\s*(?:leer m[aá]s|read more)\s*$", re.I)
+
+
+def _read_more_point(text: str, px: tuple[int, int, int, int]) -> tuple[int, int] | None:
+    """Centre of the 'Leer más' link at the end of the OCR line TEXT whose
+    box is PX, or None when the line doesn't end with it."""
+    m = _RE_READ_MORE.search(text)
+    if not m or not text.strip():
+        return None
+    label = m.group(0).strip(" .…")
+    x0, y0, x1, y1 = px
+    char_w = (x1 - x0) / max(1, len(text))
+    return int(x1 - char_w * len(label) / 2), (y0 + y1) // 2
+
+
 def read_message_bubbles(screenshot_path: Path, work_dir: Path | None = None) -> list[dict]:
     """Messages visible in a full WA screenshot, oldest first.
 
-    Each: {key, own, sender, text, quoted, timestamp, click_x, click_y}.
+    Each: {key, own, sender, text, quoted, timestamp, click_x, click_y}, plus
+    more_x/more_y on a long message cut with "Leer más" (where to click to
+    show the rest; TEXT is then only the visible start).
     SENDER is the coloured name label (inherited along a run of bubbles from
     the same person, as WA only labels the first); own messages get "Tú".
     TEXT is the body without the quote, name label or time/ticks. CLICK_X/Y
@@ -966,16 +986,26 @@ def read_message_bubbles(screenshot_path: Path, work_dir: Path | None = None) ->
         anchor = body[-1][1] if body else (0, 0, rw, rh)
         # A quote opens with its own name label line; keep only what it quotes.
         quoted_text = " ".join(t for t, _ in (quoted[1:] if len(quoted) > 1 else quoted))
-        out.append({
+        text = _strip_meta(" ".join(t for t, _ in body))
+        row = {
             "key": f"v{b.screen_id}",
             "own": b.sender == "me",
             "sender": sender,
-            "text": _strip_meta(" ".join(t for t, _ in body)),
+            "text": _RE_READ_MORE.sub("", text),
             "quoted": quoted_text or None,
             "timestamp": b.timestamp,
             "click_x": sidebar_x + box[0] + (anchor[0] + anchor[2]) // 2,
             "click_y": HEADER_PX + box[1] + (anchor[1] + anchor[3]) // 2,
-        })
+        }
+        if _RE_READ_MORE.search(text):
+            # The link is on the last line of text (the time may sit apart).
+            for t, px in reversed(body):
+                point = _read_more_point(_strip_meta(t), px)
+                if point:
+                    row["more_x"] = sidebar_x + box[0] + point[0]
+                    row["more_y"] = HEADER_PX + box[1] + point[1]
+                    break
+        out.append(row)
     return out
 
 

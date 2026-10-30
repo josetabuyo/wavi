@@ -1182,6 +1182,25 @@ class TestEditMessage:
         env._page.mouse.click.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_cut_message_is_opened_before_scrolling(self, env):
+        """The words may sit past "… Leer más" (Minis 2026-10-30): open the
+        cut message and look again, without scrolling away from it."""
+        cut = dict(self.ROWS[0], text="atías, ya", more_x=1100, more_y=1520)
+        env._vision_messages = AsyncMock(side_effect=[[cut, *self.ROWS[1:]], self.ROWS])
+        r = await env.edit_message("ya vi el video", "ya vimos el video", fragment=True, now=self.NOW)
+        assert env._page.mouse.click.await_args_list[0].args == (1100, 1520)
+        assert env.scroll_chat_up.await_count == 0
+        assert r["verified"]
+
+    @pytest.mark.asyncio
+    async def test_not_found_counts_every_screen(self, env):
+        """The error counts own messages over all screens, not just the last
+        one (it said '0 propios' with the target right on screen 1)."""
+        env._vision_messages = AsyncMock(side_effect=[self.ROWS[2:], self.ROWS[1:2], [], []])
+        with pytest.raises(RuntimeError, match="2 mensajes propios vistos"):
+            await env.edit_message("inexistente", "x", now=self.NOW)
+
+    @pytest.mark.asyncio
     async def test_found_after_scrolling(self, env):
         env._vision_messages = AsyncMock(side_effect=[self.ROWS[1:], self.ROWS])
         r = await env.edit_message("atías, ya", "Matías, ya", fragment=True, now=self.NOW)
