@@ -2959,7 +2959,7 @@ wheels = [
 
 [[package]]
 name = "wavi-lib"
-version = "0.11.7"
+version = "0.11.8"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
