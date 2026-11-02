@@ -816,6 +816,32 @@ class TestDownloadAudioForBubbles:
         # Debe estar vacío porque el audio fue skipeado
         assert len(result) == 0
 
+    @pytest.mark.asyncio
+    async def test_audio_left_playing_is_paused_and_replayed(self, tmp_path):
+        """A voice note stuck playing shows a pause button: wavi clicks it twice
+        (pause, play) so play() fires again and the blob is captured (Monkey, 2026-11-02)."""
+        runner = _runner()
+        runner.session.reset_blobs = AsyncMock()
+        runner.session.get_dpr = AsyncMock(return_value=1.0)
+        runner.find_play_buttons = AsyncMock(
+            return_value=[{"vx": 400, "vy": 130, "playing": True}])
+        runner.session.drain_blobs = AsyncMock(return_value=[{"url": "blob:x"}])
+        runner.session.fetch_blob = AsyncMock(return_value=b"OggS")
+        page_mock = MagicMock()
+        page_mock.wait_for_timeout = AsyncMock()
+        page_mock.mouse.click = AsyncMock()
+        runner.session._page = page_mock
+
+        audio = Bubble(
+            id=2, screen_id=2, sender="me", msg_type="audio",
+            timestamp=None, text="0:01 9:45 a. m.",
+            bbox={"x": 0, "y": 40, "w": 330, "h": 66},
+        )
+        result = await runner._download_audio_for_bubbles([audio], assets_dir=tmp_path)
+
+        assert page_mock.mouse.click.await_count == 2
+        assert result[0]["data"] == b"OggS"
+
 
 # ── TestCaptureFullHistoryNewest ──────────────────────────────────────────
 

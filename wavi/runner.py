@@ -24,16 +24,20 @@ from wavi.vision import extract_day_pills as _extract_day_pills
 
 _FIND_PLAY_BTNS_JS = """
 () => {
-    const labels = ['Reproducir mensaje de voz', 'Play voice message'];
+    // A voice note left playing (a previous run clicked it; the daemon page
+    // keeps playing, muted) shows "Pausar" instead of "Reproducir" — it is
+    // still that audio's button, flagged `playing` so the caller pauses and
+    // plays it again to get its blob (Monkey, 2026-11-02).
+    const play  = ['reproducir mensaje de voz', 'play voice message'];
+    const pause = ['pausar mensaje de voz', 'pause voice message'];
     return [...document.querySelectorAll('button[aria-label]')]
-        .filter(b => {
-            const l = b.getAttribute('aria-label') || '';
-            return labels.some(lbl => l.toLowerCase().includes(lbl.toLowerCase()));
-        })
-        .map(b => {
+        .map(b => ({ b, l: (b.getAttribute('aria-label') || '').toLowerCase() }))
+        .filter(({ l }) => play.concat(pause).some(lbl => l.includes(lbl)))
+        .map(({ b, l }) => {
             const r = b.getBoundingClientRect();
             return { vx: Math.round(r.x + r.width / 2),
-                     vy: Math.round(r.y + r.height / 2) };
+                     vy: Math.round(r.y + r.height / 2),
+                     playing: pause.some(lbl => l.includes(lbl)) };
         })
         .filter(r => r.vx > 0 && r.vy > 0);
 }
@@ -243,6 +247,13 @@ class WARunner:
                 continue
 
             used_buttons.add((btn["vx"], btn["vy"]))
+            if btn.get("playing"):
+                # Already playing: its blob was fetched long ago. Pause it,
+                # then the play below calls play() again and the monitor
+                # captures the URL.
+                print(f"[wavi]   bubble#{bubble.id} ya estaba reproduciéndose — pausa y play", file=sys.stderr)
+                await self.session._page.mouse.click(btn["vx"], btn["vy"])
+                await self.session._page.wait_for_timeout(400)
             print(f"[wavi]   click bubble#{bubble.id} → vp({btn['vx']},{btn['vy']})", file=sys.stderr)
             await self.session._page.mouse.click(btn["vx"], btn["vy"])
 
