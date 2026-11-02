@@ -54,6 +54,7 @@ import click
 from dotenv import load_dotenv
 
 from wavi.events import log_event
+from wavi.paths import contact_dir
 from wavi.session import CDP_PORT, PID_FILE, PORT_FILE, WINDOW_H, WINDOW_W
 
 load_dotenv()
@@ -1041,7 +1042,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
     from wavi.runner import run_enhanced
 
     profile_dir = _profile(session)
-    assets_dir = Path(assets) if assets else DEFAULT_OUTPUT_DIR / profile_dir.name / contact.lower().replace(" ", "_")
+    assets_dir = Path(assets) if assets else contact_dir(DEFAULT_OUTPUT_DIR / profile_dir.name, contact)
 
     from_date_obj: _Date | None = None
     if from_date:
@@ -1168,7 +1169,7 @@ def media(session: str, contact: str, kind: str, from_date: str | None, limit: i
 
     profile_dir = _profile(session)
     out_dir = (Path(assets) if assets
-               else DEFAULT_OUTPUT_DIR / profile_dir.name / contact.lower().replace(" ", "_") / "media")
+               else contact_dir(DEFAULT_OUTPUT_DIR / profile_dir.name, contact) / "media")
     from_date_obj = None
     if from_date:
         try:

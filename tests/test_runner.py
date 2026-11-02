@@ -1402,3 +1402,19 @@ class TestFillMissingDates:
         bubbles = [{"timestamp": "09:00"}, {"timestamp": "10:00"}]
         assert _fill_missing_dates(bubbles) == 0
         assert bubbles[0]["timestamp"] == "09:00"
+
+
+# ── contact folder ────────────────────────────────────────────────────────────
+
+class TestContactDir:
+    def test_accent_and_case_do_not_split_history(self, tmp_path):
+        from wavi.paths import contact_dir
+        assert contact_dir(tmp_path, "Data Lake - Técnico") == contact_dir(tmp_path, "DATA LAKE - Tecnico")
+        assert contact_dir(tmp_path, "DATA LAKE - Tecnico").name == "data_lake_-_tecnico"
+
+    def test_reuses_legacy_accented_folder(self, tmp_path):
+        from wavi.paths import contact_dir
+        (tmp_path / "josé_peña").mkdir()
+        assert contact_dir(tmp_path, "José Peña").name == "josé_peña"
+        (tmp_path / "jose_pena").mkdir()
+        assert contact_dir(tmp_path, "José Peña").name == "jose_pena"

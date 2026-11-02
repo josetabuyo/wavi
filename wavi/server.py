@@ -25,6 +25,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from wavi.paths import contact_dir
+
 
 def _output_dir() -> Path:
     from wavi.cli import DEFAULT_OUTPUT_DIR
@@ -135,7 +137,7 @@ def create_app(sessions_dir: Path | None = None):
         assets_dir = (
             Path(req.assets_dir)
             if req.assets_dir
-            else _output_dir() / profile.name / req.contact.lower().replace(" ", "_")
+            else contact_dir(_output_dir() / profile.name, req.contact)
         )
 
         from_date = None
