@@ -54,6 +54,14 @@ class TestClassifyMsgType:
         blocks = _blocks("2370506", "33763", "2026-10-26 22:49:00", "ZPruebabfbhdh")
         assert classify_msg_type(" ".join(b["text"] for b in blocks), blocks) == "text"
 
+    # A video reads "HD 0:47 8:59 a. m." under OCR, like a voice note; only
+    # the picture above the duration tells them apart (DataLake, 2026-11-02).
+    def test_duration_over_picture_is_media(self):
+        blocks = _blocks("Matias Becerro", "но", "0:47", "8:59 a. m.")
+        t = " ".join(b["text"] for b in blocks)
+        assert classify_msg_type(t, blocks, picture_px=176) == "media"
+        assert classify_msg_type(t, blocks) == "audio"
+
     def test_schedule_list_is_text(self):
         t = "quedan: 10:00 y 11:00 lun a vie (SAP) y 12:00 todos los dias"
         assert classify_msg_type(t, _blocks(t)) == "text"
@@ -905,3 +913,29 @@ class TestDateForY:
     def test_no_pills_no_date(self):
         from wavi.vision import date_for_y
         assert date_for_y([], 500) is None
+
+
+# ── picture_run_px ────────────────────────────────────────────────────────────
+
+class TestPictureRun:
+    def _bubble(self, h, bg=(255, 255, 255)):
+        return Image.new("RGB", (440, h), bg)
+
+    def test_video_thumbnail_is_a_picture(self):
+        from wavi.vision import picture_run_px
+        img = self._bubble(210)
+        img.paste((102, 102, 102), (8, 30, 330, 205))   # thumbnail dominates the crop
+        assert picture_run_px(img) >= 150
+
+    def test_voice_note_avatar_is_not(self):
+        from wavi.vision import picture_run_px
+        img = self._bubble(67, bg=(217, 253, 211))
+        img.paste((90, 60, 40), (10, 12, 50, 52))        # 40 px avatar
+        img.paste((80, 80, 80), (70, 30, 400, 34))       # waveform line
+        assert picture_run_px(img) < 10
+
+    def test_dark_mode_video(self):
+        from wavi.vision import picture_run_px
+        img = self._bubble(200, bg=(32, 44, 51))
+        img.paste((200, 190, 170), (6, 20, 380, 190))
+        assert picture_run_px(img) >= 150

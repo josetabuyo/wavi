@@ -347,11 +347,44 @@ def _is_audio(raw_blocks: list[dict]) -> bool:
     return False
 
 
-def classify_msg_type(text: str, raw_blocks: list[dict]) -> str:
+# A picture (photo, video thumbnail, link preview image) is a band of rows
+# that are mostly NOT the bubble's own background. A voice note never has one
+# taller than its avatar (~40 px; a quoted voice note stays under ~40 too);
+# a video's thumbnail is 130+ px. Videos read "HD 0:47" / "но 0:47" under
+# OCR, so without this they classified as audio and wavi went looking for a
+# voice-note play button that does not exist (DataLake, 2026-11-02).
+_PICTURE_MIN_RUN_PX = 80
+
+
+def picture_run_px(crop: Image.Image) -> int:
+    """Height of the tallest band of rows that look like a picture, in px."""
+    import numpy as np
+    a = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    if a.size == 0:
+        return 0
+    # The bubble's own background = the commonest colour of its padding (top
+    # rows + left columns) — not of the whole crop, which a big thumbnail
+    # dominates. Works in dark mode too.
+    flat = np.concatenate([a[:4].reshape(-1, 3), a[:, :4].reshape(-1, 3)])
+    q = (flat // 8).astype(np.int32)
+    keys = q[:, 0] * 1024 + q[:, 1] * 32 + q[:, 2]
+    mode = np.bincount(keys).argmax()
+    bg = np.array([mode // 1024, (mode // 32) % 32, mode % 32]) * 8 + 4
+    other = np.abs(a - bg).sum(axis=2) > 45
+    rows = other.mean(axis=1) > 0.6
+    best = cur = 0
+    for r in rows:
+        cur = cur + 1 if r else 0
+        best = max(best, cur)
+    return best
+
+
+def classify_msg_type(text: str, raw_blocks: list[dict], picture_px: int = 0) -> str:
     if RE_SIZE.search(text) or RE_FILE_EXT.search(text) or RE_SCREEN_REC.search(text):
         return "file"
     if _is_audio(raw_blocks):
-        return "audio"
+        # A duration over a picture is a video, not a voice note.
+        return "media" if picture_px >= _PICTURE_MIN_RUN_PX else "audio"
     if not text.strip():
         return "media"
     return "text"
@@ -599,7 +632,7 @@ def analyze(screenshot_path: Path, assets_dir: Path | None = None, save_debug: b
             id             = local_id,
             screen_id      = local_id,
             sender         = bubble["type"],
-            msg_type       = classify_msg_type(text, raw_blocks),
+            msg_type       = classify_msg_type(text, raw_blocks, picture_run_px(crop)),
             timestamp      = _build_timestamp(_date_for_y(y0), _extract_timestamp(raw_blocks)),
             text           = text,
             bbox           = {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0},
