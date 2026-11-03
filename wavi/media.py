@@ -167,6 +167,24 @@ _DOCUMENT_POS_JS = """
 # Press the media viewer's own download button — the viewer WA opens for a
 # PDF instead of downloading it, or one showing a video WA hasn't fetched.
 # Returns whether the viewer was there.
+# WA asks before an .exe/.apk/.bat… : "Es posible que este archivo sea
+# dañino — Cancelar / Abrir archivo". Without an answer the download never
+# begins (DataLake, FortiClientVPN.exe, 2026-11-03). wavi only writes the file
+# to disk, it never runs it, so confirming is what the caller asked for.
+_HARMFUL_CONFIRM_JS = """
+() => {
+    const labels = ['abrir archivo', 'open file', 'descargar', 'download'];
+    for (const d of document.querySelectorAll('[role=dialog], [data-animate-modal-popup]')) {
+        const t = (d.innerText || '').toLowerCase();
+        if (!/da(ñ|n)ino|harmful|peligro|dangerous/.test(t)) continue;
+        const b = [...d.querySelectorAll('button, [role=button]')]
+            .find(x => labels.includes((x.innerText || '').trim().toLowerCase()));
+        if (b) { b.click(); return true; }
+    }
+    return false;
+}
+"""
+
 _VIEWER_DOWNLOAD_JS = """
 () => {
     const m = document.querySelector('[data-testid="media-viewer-modal"]');
@@ -490,6 +508,11 @@ async def _download_document(page, downloads: _ChromeDownloads, doc: dict) -> Pa
 
     async def poke():
         nonlocal clicks, clicked_at, preview
+        if await page.evaluate(_HARMFUL_CONFIRM_JS):
+            print(f"[wavi] media: WA avisó que {doc['file']} puede ser dañino — confirmado (solo se guarda)",
+                  file=sys.stderr)
+            clicked_at = time.monotonic()
+            return
         if not preview:
             preview = await page.evaluate(_VIEWER_DOWNLOAD_JS)
         if preview or clicks >= DOC_MAX_CLICKS or time.monotonic() - clicked_at < DOC_RECLICK_S:

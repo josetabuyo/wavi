@@ -210,6 +210,12 @@ class FakeChat:
         if "scrollIntoView" in js:
             self.target = next(d for d in self.docs if d["id"] == args[0])
             return {"x": 1, "y": 2, "text": self.target["file"]}
+        if "harmful" in js:
+            if self.__dict__.get("harmful") is True:
+                self.harmful = False
+                self.emit(self.target)
+                return True
+            return False
         if "media-viewer-modal" in js:
             if self.preview_open:
                 self.emit(self.preview_open)
@@ -220,6 +226,9 @@ class FakeChat:
     async def click(self, x, y):
         self.clicks = getattr(self, "clicks", 0) + 1
         if self.target.pop("unprepared", False):
+            return
+        if self.target.pop("harmful", False):
+            self.harmful = True                 # WA asks "puede ser dañino" first
             return
         if self.target.get("preview"):
             self.preview_open = self.target
@@ -309,6 +318,16 @@ async def test_document_saved_on_the_second_click_once_prepared(tmp_path, monkey
     entries = await download_chat_documents(s, tmp_path, today=TODAY)
     assert [e["key"] for e in entries] == ["MSG9"]
     assert chat.clicks == 2
+
+
+@pytest.mark.asyncio
+async def test_harmful_file_warning_is_confirmed(tmp_path):
+    """An .exe makes WA ask 'Es posible que este archivo sea dañino'; wavi
+    confirms (it only saves the file) and the download goes through (DataLake, 2026-11-03)."""
+    s, chat = _chat_session([{**ZIP, "harmful": True}])
+    entries = await download_chat_documents(s, tmp_path, today=TODAY)
+    assert [e["key"] for e in entries] == ["MSG9"]
+    assert chat.clicks == 1
 
 
 @pytest.mark.asyncio

@@ -1092,11 +1092,26 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
         click.echo(json.dumps([b.as_dict() for b in bubbles], indent=2, ensure_ascii=False))
         return
 
+    if not bubbles:
+        # Silence read as a failure (DataLake, "Vito Bagni", 2026-11-03): say why.
+        try:
+            known = len(json.loads((assets_dir / "history_bubbles.json").read_text()))
+        except (OSError, ValueError):
+            known = 0
+        if (newest or grow) and known:
+            click.echo(f"\nSin mensajes {'nuevos' if newest else 'más viejos'} — el historial sigue con "
+                       f"{known} mensaje(s) en {assets_dir / 'history_bubbles.json'}")
+        else:
+            click.echo(f"\n0 mensajes: el chat con '{contact}' está vacío (solo el aviso de cifrado). "
+                       f"Si hablan en un grupo en común, pedí ese grupo. Captura: {assets_dir / 'iter_000'}")
+        return
     click.echo(f"\n{len(bubbles)} mensaje(s) en el historial:")
     for b in bubbles:
         ts = f" [{b.timestamp}]" if b.timestamp else ""
         click.echo(f"  #{b.id:04d} {b.sender:5s} {b.msg_type:6s}{ts}  {_bubble_line_text(b)}")
-    summary = _audio_summary(bubbles)
+    # The count covers the whole saved history: with --newest `bubbles` is only
+    # this run's, and audios an older run never downloaded must still show.
+    summary = _audio_summary(_history_or(bubbles, assets_dir))
     if summary:
         click.echo(f"\n{summary}")
 
@@ -1120,14 +1135,37 @@ def _bubble_line_text(b) -> str:
     return b.text[:80]
 
 
+def _history_or(bubbles, assets_dir: Path):
+    """Bubbles of the saved history_bubbles.json (with transcripts filled in),
+    or BUBBLES when it can't be read."""
+    from types import SimpleNamespace
+    try:
+        saved = json.loads((assets_dir / "history_bubbles.json").read_text())
+    except (OSError, ValueError):
+        return bubbles
+    keys = ("id", "msg_type", "timestamp", "transcript", "audio_path")
+    return [SimpleNamespace(**{k: d.get(k) for k in keys}) for d in saved] or bubbles
+
+
 def _audio_summary(bubbles) -> str | None:
     """Count line that names the JSON field, so nobody looks for another one."""
     audios = [b for b in bubbles if b.msg_type == "audio"]
     if not audios:
         return None
     done = sum(1 for b in audios if b.transcript is not None)
-    return (f"{len(audios)} audio(s), {done} transcripto(s) — texto en el campo "
+    line = (f"{len(audios)} audio(s), {done} transcripto(s) — texto en el campo "
             f"`transcript` de history_bubbles.json (no `transcription`, no `text`)")
+    # An audio with no file and no text was never heard: say so loudly, or it
+    # reads as handled (a video taken for a voice note sat "read" a whole day —
+    # DataLake, 2026-11-03).
+    missing = [b for b in audios if b.transcript is None and not b.audio_path]
+    if missing:
+        ids = ", ".join(f"#{b.id}" + (f" {b.timestamp}" if b.timestamp else "") for b in missing[:12])
+        more = f" y {len(missing) - 12} más" if len(missing) > 12 else ""
+        line += (f"\n⚠️  {len(missing)} audio(s) SIN DESCARGAR ni transcribir: {ids}{more}.\n"
+                 f"   Pueden ser videos o textos que una versión vieja de wavi tomó por audio: "
+                 f"recapturá el chat sin --newest (o con --assets a un dir nuevo) y revisá videos con `wavi media`.")
+    return line
 
 
 # ── media ─────────────────────────────────────────────────────────────────────
