@@ -129,11 +129,21 @@ class WARunner:
             if not points:
                 break
             print(f"[wavi] abriendo {len(points)} «Leer más»", file=sys.stderr)
+            before = await self.session.get_chat_scroll_state()
             for x, y in points:
                 await self.session._page.mouse.click(x, y)
                 await self.session._page.wait_for_timeout(500)
             await self.session._page.mouse.move(5, 5)
             await self.session._page.wait_for_timeout(600)
+            # The opened message grows downwards and pushes everything after
+            # it off the bottom — at the newest screen that hid the last
+            # messages (DataLake 2026-11-04). Scroll by the growth so what
+            # was below stays put and the message grows upwards instead,
+            # where the next scroll step reads it.
+            after = await self.session.get_chat_scroll_state()
+            if before and after and after["scrollHeight"] > before["scrollHeight"]:
+                await self.session.scroll_chat_down(after["scrollHeight"] - before["scrollHeight"])
+                await self.session._page.wait_for_timeout(600)
             shot_path.write_bytes(await self.session.screenshot())
             bubbles = analyze(shot_path, assets_dir=assets_dir, save_debug=save_debug)
         return bubbles

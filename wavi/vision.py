@@ -949,7 +949,7 @@ def _is_colored_text(region: Image.Image, box: tuple[int, int, int, int]) -> boo
 
 
 _RE_BUBBLE_META = re.compile(
-    r"(?:\b(?:editado|edited)\b\s*)?\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s*m\.?)?[\s/V✓]*$", re.I)
+    r"(?:\b(?:editado|edited)\b\s*)?\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s*m\.?)?[\s/VM✓]*$", re.I)
 
 
 def _strip_meta(text: str) -> str:

@@ -966,3 +966,12 @@ class TestReadMorePoints:
         from wavi.vision import read_more_points
         assert read_more_points(tmp_path / "missing.png", [self._bubble("hola"),
                                 self._bubble("Leer más", msg_type="audio")]) == []
+
+    def test_link_followed_by_time_and_ticks_read_as_M(self, tmp_path):
+        """OCR reads the blue double tick of an own message as 'M/'."""
+        from PIL import Image
+
+        from wavi.vision import read_more_points
+        shot = tmp_path / "s.png"
+        Image.new("RGB", (1280, 900), "white").save(shot)
+        assert read_more_points(shot, [self._bubble("ojo: ... en ... Leer más 8:58 a. m. M/")])
