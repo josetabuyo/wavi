@@ -939,3 +939,30 @@ class TestPictureRun:
         img = self._bubble(200, bg=(32, 44, 51))
         img.paste((200, 190, 170), (6, 20, 380, 190))
         assert picture_run_px(img) >= 150
+
+
+class TestReadMorePoints:
+    """DataLake 2026-11-04: 'wavi get' kept only the visible start of a long
+    message, cut with '… Leer más'. read_more_points says where to click."""
+
+    def _bubble(self, text, msg_type="text"):
+        from wavi.vision import Bubble
+        return Bubble(id=1, sender="other", msg_type=msg_type, timestamp=None, text=text,
+                      bbox={"x": 100, "y": 200, "w": 400, "h": 100},
+                      raw_blocks=[{"text": "8 - no entiendo es... Leer más",
+                                   "x": 0.05, "y": 0.6, "w": 0.9, "h": 0.2}])
+
+    def test_cut_message_gives_a_point_on_the_link(self, tmp_path):
+        from PIL import Image
+
+        from wavi.vision import HEADER_PX, SIDEBAR_PX, read_more_points
+        shot = tmp_path / "s.png"
+        Image.new("RGB", (1280, 900), "white").save(shot)
+        [(x, y)] = read_more_points(shot, [self._bubble("1 - Seguramente... 8 - no entiendo es... Leer más")])
+        assert SIDEBAR_PX + 100 + 0.6 * 400 < x < SIDEBAR_PX + 100 + 0.95 * 400   # right end of the line
+        assert HEADER_PX + 200 + 60 <= y <= HEADER_PX + 200 + 80
+
+    def test_whole_message_or_no_text_needs_no_click(self, tmp_path):
+        from wavi.vision import read_more_points
+        assert read_more_points(tmp_path / "missing.png", [self._bubble("hola"),
+                                self._bubble("Leer más", msg_type="audio")]) == []

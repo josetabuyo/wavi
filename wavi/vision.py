@@ -975,6 +975,33 @@ def _read_more_point(text: str, px: tuple[int, int, int, int]) -> tuple[int, int
     return int(x1 - char_w * len(label) / 2), (y0 + y1) // 2
 
 
+def read_more_points(screenshot_path: Path, bubbles: list[Bubble]) -> list[tuple[int, int]]:
+    """Page coordinates of the «Leer más» link of every bubble in BUBBLES
+    (from analyze() on SCREENSHOT_PATH) whose text is cut with it.
+
+    'wavi get' read only the visible start of a long message (DataLake
+    2026-11-04: a client's 8-point answer ended in "… Leer más")."""
+    cut = [b for b in bubbles
+           if b.msg_type == "text" and _RE_READ_MORE.search(_strip_meta(b.text or ""))]
+    if not cut:
+        return []
+    with Image.open(screenshot_path) as im:
+        w, h = im.size
+    sidebar_x = int(w * (SIDEBAR_PX / 1280))
+    cw, ch = w - sidebar_x, h - HEADER_PX
+    points = []
+    for b in cut:
+        bb = b.bbox
+        x0, y0 = max(0, bb["x"]), max(0, bb["y"])
+        rw, rh = min(cw, bb["x"] + bb["w"]) - x0, min(ch, bb["y"] + bb["h"]) - y0
+        for blk in sorted(b.raw_blocks, key=lambda k: -k["y"]):
+            point = _read_more_point(_strip_meta(blk["text"].strip()), _block_px(blk, rw, rh))
+            if point:
+                points.append((sidebar_x + x0 + point[0], HEADER_PX + y0 + point[1]))
+                break
+    return points
+
+
 def read_message_bubbles(screenshot_path: Path, work_dir: Path | None = None) -> list[dict]:
     """Messages visible in a full WA screenshot, oldest first.
 

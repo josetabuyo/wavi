@@ -17,7 +17,7 @@ from pathlib import Path
 
 from wavi.session import WASession
 from wavi.transcription import transcribe as _transcribe_audio
-from wavi.vision import Bubble, _date_from_pill_text, analyze
+from wavi.vision import Bubble, _date_from_pill_text, analyze, read_more_points
 from wavi.vision import extract_day_pills as _extract_day_pills
 
 # ── JS helpers ────────────────────────────────────────────────────────────────
@@ -120,7 +120,25 @@ class WARunner:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 shot_path = Path(f.name)
         shot_path.write_bytes(data)
-        return analyze(shot_path, assets_dir=assets_dir, save_debug=save_debug)
+        bubbles = analyze(shot_path, assets_dir=assets_dir, save_debug=save_debug)
+        # Long messages show only their start, cut with "… Leer más", and WA
+        # doesn't expand them by itself: open every one on screen and look
+        # again, so the history keeps the whole text (DataLake 2026-11-04).
+        for _ in range(self.READ_MORE_ROUNDS):
+            points = read_more_points(shot_path, bubbles)
+            if not points:
+                break
+            print(f"[wavi] abriendo {len(points)} «Leer más»", file=sys.stderr)
+            for x, y in points:
+                await self.session._page.mouse.click(x, y)
+                await self.session._page.wait_for_timeout(500)
+            await self.session._page.mouse.move(5, 5)
+            await self.session._page.wait_for_timeout(600)
+            shot_path.write_bytes(await self.session.screenshot())
+            bubbles = analyze(shot_path, assets_dir=assets_dir, save_debug=save_debug)
+        return bubbles
+
+    READ_MORE_ROUNDS = 3   # expand-and-recapture passes per screenshot
 
     # ── DOM play-button lookup ────────────────────────────────────────────────
 
