@@ -209,6 +209,18 @@ _SCROLL_UP_JS = """
 }
 """
 
+_SIDE_DRAWER_OPEN_JS = """
+() => {
+    for (const s of ['[data-testid="chat-info-drawer"]', '[data-testid="drawer-right"]']) {
+        for (const el of document.querySelectorAll(s)) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 50 && r.height > 50) return true;
+        }
+    }
+    return false;
+}
+"""
+
 _SCROLL_DOWN_JS = """
 (pixels) => {
     const selectors = [
@@ -1638,6 +1650,7 @@ class WASession:
         # WA's own virtualizer to render the latest messages. Fall back to DOM scrollTop.
         # After a prior full-sync-enhanced the virtualizer may restore the old (top) position,
         # so we verify scrollTop actually reached the bottom and retry up to 5 times.
+        await self.close_side_drawer()
         clicked = await self._page.evaluate(_CLICK_SCROLL_BOTTOM_BTN_JS)
         await self._page.wait_for_timeout(600)
         if not clicked:
@@ -1734,6 +1747,24 @@ class WASession:
     async def scroll_chat_down(self, css_pixels: int = 300) -> None:
         """Scroll chat down by css_pixels via direct DOM scrollTop manipulation."""
         await self._page.evaluate(_SCROLL_DOWN_JS, css_pixels)
+
+    async def close_side_drawer(self) -> bool:
+        """Close a contact/group info panel left open over the chat (WA
+        keeps it open across chats and, in a narrow window, it hides the
+        messages: 'wavi get' read 0 of them — DataLake 2026-11-05).
+        Escape closes the panel; it is only pressed when one is open,
+        as in a bare chat Escape closes the chat itself."""
+        try:
+            is_open = await self._page.evaluate(_SIDE_DRAWER_OPEN_JS)
+        except Exception:
+            return False
+        if is_open is not True:
+            return False
+        import sys
+        print("[wavi] cerrando el panel de info que tapaba el chat", file=sys.stderr)
+        await self._page.keyboard.press("Escape")
+        await self._page.wait_for_timeout(800)
+        return True
 
     async def get_chat_scroll_state(self) -> dict | None:
         """Return {scrollTop, scrollHeight, clientHeight} of the chat container, or None."""

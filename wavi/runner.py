@@ -128,13 +128,17 @@ class WARunner:
             points = read_more_points(shot_path, bubbles)
             if not points:
                 break
-            print(f"[wavi] abriendo {len(points)} «Leer más»", file=sys.stderr)
+            # One per pass, then a fresh screenshot: opening a message moves
+            # everything after it, and a second click from the same
+            # screenshot landed on a sender's name and opened their profile
+            # over the chat (DataLake 2026-11-05: get read 0 messages).
+            x, y = max(points, key=lambda p: p[1])
+            print(f"[wavi] abriendo «Leer más» ({len(points)} en pantalla)", file=sys.stderr)
             before = await self.session.get_chat_scroll_state()
-            for x, y in points:
-                await self.session._page.mouse.click(x, y)
-                await self.session._page.wait_for_timeout(500)
+            await self.session._page.mouse.click(x, y)
             await self.session._page.mouse.move(5, 5)
-            await self.session._page.wait_for_timeout(600)
+            await self.session._page.wait_for_timeout(800)
+            await self.session.close_side_drawer()
             # The opened message grows downwards and pushes everything after
             # it off the bottom — at the newest screen that hid the last
             # messages (DataLake 2026-11-04). Scroll by the growth so what
@@ -146,9 +150,11 @@ class WARunner:
                 await self.session._page.wait_for_timeout(600)
             shot_path.write_bytes(await self.session.screenshot())
             bubbles = analyze(shot_path, assets_dir=assets_dir, save_debug=save_debug)
+        self.bubbles_seen += len(bubbles)
         return bubbles
 
-    READ_MORE_ROUNDS = 3   # expand-and-recapture passes per screenshot
+    bubbles_seen = 0       # bubbles read on any screen, before date/known filters
+    READ_MORE_ROUNDS = 6   # «Leer más» opened per screenshot, one per pass
 
     # ── DOM play-button lookup ────────────────────────────────────────────────
 
@@ -476,6 +482,7 @@ class WARunner:
 
         all_bubbles: list[Bubble] = []
         seen_keys: set = set()
+        self.bubbles_seen = 0
 
         # navigate_to_contact already scrolled to bottom and settled the DOM.
         # Do NOT scroll again here — a second programmatic jump destabilizes
@@ -853,6 +860,21 @@ class WARunner:
         filled = _fill_missing_dates(final_bubbles)
         if filled:
             print(f"[wavi] dates: inferred day for {filled} bubble(s) whose screen had no day pill", file=sys.stderr)
+
+        # Nothing read on any screen while WA does show messages: something
+        # covers the chat. Saying "0 messages" with exit 0 read as an empty
+        # chat (DataLake 2026-11-05: a profile panel hid a busy group).
+        if not all_bubbles and not existing_bubbles and self.bubbles_seen == 0:
+            try:
+                on_page = await self.session.get_visible_message_ids()
+            except Exception:
+                on_page = []
+            if on_page:
+                shot = Path(assets_dir) / "iter_000" / "screenshot.png" if assets_dir else None
+                raise RuntimeError(
+                    f"No leí ningún mensaje, pero el chat tiene {len(on_page)} en pantalla: "
+                    f"algo tapa la conversación (panel, menú o diálogo). "
+                    f"Mirá la captura: {shot}")
 
         # Save aggregated result to assets_dir
         if assets_dir:

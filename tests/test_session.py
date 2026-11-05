@@ -331,6 +331,23 @@ class TestResolveContact:
 
 
 class TestNavigateToContact:
+    @pytest.mark.asyncio
+    async def test_closes_an_info_panel_left_over_the_chat(self, session):
+        """DataLake 2026-11-05: Vito's profile panel stayed open over the
+        group chat and get read 0 messages. Escape closes it — only when
+        one is open, as in a bare chat Escape closes the chat."""
+        session._page.evaluate = AsyncMock(side_effect=[True, False, None, None])
+        session._page.keyboard.press = AsyncMock()
+        await session.navigate_to_contact("Gregorio")
+        session._page.keyboard.press.assert_awaited_once_with("Escape")
+
+    @pytest.mark.asyncio
+    async def test_no_escape_without_a_panel(self, session):
+        session._page.evaluate = AsyncMock(side_effect=[False, False, None, None])
+        session._page.keyboard.press = AsyncMock()
+        await session.navigate_to_contact("Gregorio")
+        session._page.keyboard.press.assert_not_awaited()
+
     @pytest.fixture
     def session(self):
         s = _make_session()
@@ -357,7 +374,7 @@ class TestNavigateToContact:
         """Si no hay botón de ir al fondo (evaluate devuelve False), el fallback
         hace evaluate con 999_999 para llevar scrollTop al máximo."""
         # btn not found → dom scroll → get_chat_scroll_state returns None → retry loop breaks
-        session._page.evaluate = AsyncMock(side_effect=[False, None, None])
+        session._page.evaluate = AsyncMock(side_effect=[False, False, None, None])  # no info panel open
         await session.navigate_to_contact("Gregorio")
         calls = session._page.evaluate.call_args_list
         scroll_args = [c for c in calls if c.args and len(c.args) > 1 and c.args[1] == 999_999]
@@ -420,6 +437,7 @@ class TestNavigateToContact:
         # 5. _SCROLL_DOWN_JS 999_999 retry 1 → None
         # 6. get_chat_scroll_state retry 2 → at bottom (slack=0)
         page.evaluate = AsyncMock(side_effect=[
+            False,                                                          # no info panel open
             False,                                                          # btn initial
             None,                                                           # dom scroll initial
             {"scrollTop": 0, "scrollHeight": 2000, "clientHeight": 1000},  # retry check: not at bottom
@@ -447,6 +465,7 @@ class TestNavigateToContact:
         _stub_resolved(s)
 
         page.evaluate = AsyncMock(side_effect=[
+            False,                                                           # no info panel open
             False,                                                           # btn initial
             None,                                                            # dom scroll initial
             {"scrollTop": 950, "scrollHeight": 1000, "clientHeight": 1000}, # slack=50 ≤ 50 → break
