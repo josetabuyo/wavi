@@ -1136,7 +1136,7 @@ def _vision_page(session, *, menu=True):
     return [
         __import__("unittest.mock", fromlist=["patch"]).patch.object(vision, "vision_available", lambda: True),
         __import__("unittest.mock", fromlist=["patch"]).patch.object(
-            vision, "find_menu_item", lambda shot, labels: (900, 800) if menu else None),
+            vision, "find_menu_item", lambda shot, labels, near=None: (900, 800) if menu else None),
     ]
 
 
@@ -1283,7 +1283,7 @@ class TestEditMessage:
     @pytest.mark.asyncio
     async def test_no_edit_entry_in_menu(self, env):
         with __import__("unittest.mock", fromlist=["patch"]).patch(
-                "wavi.vision.find_menu_item", lambda shot, labels: None):
+                "wavi.vision.find_menu_item", lambda shot, labels, near=None: None):
             with pytest.raises(RuntimeError, match="no ofrece 'Editar'"):
                 await env.edit_message("atías, ya", "x", now=self.NOW)
         assert env._page.keyboard.press.call_args_list[-1].args[0] == "Escape"
@@ -1299,7 +1299,7 @@ class TestEditMessage:
         env._vision_messages = AsyncMock(side_effect=[self.ROWS, moved])
         offers = iter([None, (900, 800)])
         with __import__("unittest.mock", fromlist=["patch"]).patch(
-                "wavi.vision.find_menu_item", lambda shot, labels: next(offers)):
+                "wavi.vision.find_menu_item", lambda shot, labels, near=None: next(offers)):
             r = await env.edit_message("atías, ya", "Matías, ya", fragment=True, now=self.NOW)
         assert r["verified"]
         assert env._vision_messages.await_count == 2
@@ -1307,7 +1307,7 @@ class TestEditMessage:
     @pytest.mark.asyncio
     async def test_missing_entry_within_window_does_not_blame_the_clock(self, env):
         with __import__("unittest.mock", fromlist=["patch"]).patch(
-                "wavi.vision.find_menu_item", lambda shot, labels: None):
+                "wavi.vision.find_menu_item", lambda shot, labels, near=None: None):
             with pytest.raises(RuntimeError) as e:
                 await env.edit_message("atías, ya", "x", now=self.NOW)
         assert "15 min" not in str(e.value) and "16:38" in str(e.value)

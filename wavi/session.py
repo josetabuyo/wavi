@@ -1905,7 +1905,7 @@ class WASession:
             await self._page.wait_for_timeout(800)
             shot = await self.screenshot_to_file(
                 Path(_tempfile.mkdtemp(prefix="wavi_menu_")) / "menu.png")
-            pos = await _asyncio.to_thread(vision.find_menu_item, shot, labels)
+            pos = await _asyncio.to_thread(vision.find_menu_item, shot, labels, (x, y))
             if not pos:
                 await self._page.keyboard.press("Escape")
                 await self._page.wait_for_timeout(600)   # menu fades out

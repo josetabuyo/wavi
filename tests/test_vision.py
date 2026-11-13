@@ -773,6 +773,21 @@ class TestMessageBubbleVision:
         assert (x, y) == (int(0.88 * 1280), int(0.785 * 1920))
         assert vision.find_menu_item(shot, ("Editar", "Edit")) is None
 
+    def test_menu_missed_by_full_ocr_is_read_from_a_crop_near_the_click(self, tmp_path, monkeypatch):
+        """DataLake 2026-11-13: over a long message the full-screen OCR read
+        only 'Eliminar' of a 10-entry menu; a crop around the click reads it."""
+        import wavi.vision as vision
+        shot = tmp_path / "menu.png"
+        Image.new("RGB", (1280, 1920)).save(shot)
+        def ocr(p):
+            if p == shot:
+                return [{"text": "Eliminar", "x": 0.87, "y": 0.92, "w": 0.05, "h": 0.01}]
+            return [{"text": "@ Editar", "x": 0.5, "y": 0.5, "w": 0.1, "h": 0.02}]
+        monkeypatch.setattr(vision, "_run_ocr", ocr)
+        x, y = vision.find_menu_item(shot, ("Editar", "Edit"), near=(1100, 1600))
+        crop = (650, 850, 1280, 1920)                       # around the click, clipped
+        assert (x, y) == (crop[0] + int(0.55 * 630), crop[1] + int(0.51 * 1070))
+
     def test_menu_label_tolerates_the_entry_icon(self):
         """WA draws an icon per entry; OCR reads "@ Editar", "4 Fijar"
         (DataLake 2026-10-20). Chat text like "ok editar" is not an entry."""

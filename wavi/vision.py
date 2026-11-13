@@ -1080,15 +1080,35 @@ def _is_menu_label(text: str, want: set[str]) -> bool:
     return label.strip() in want and len(icon) <= 2 and not any(c.isalpha() for c in icon)
 
 
-def find_menu_item(screenshot_path: Path, labels: tuple[str, ...]) -> tuple[int, int] | None:
+def find_menu_item(screenshot_path: Path, labels: tuple[str, ...],
+                   near: tuple[int, int] | None = None) -> tuple[int, int] | None:
     """Page coordinates of a context-menu entry whose OCR text is one of
-    LABELS (case-insensitive, icon glyph tolerated), or None."""
+    LABELS (case-insensitive, icon glyph tolerated), or None.
+
+    Over a screen full of text, OCR of the whole screenshot can skip most
+    of a menu (DataLake 2026-11-13: of a 10-entry menu over a long message
+    it read only 'Eliminar', so 'Editar' was "not offered"). When the whole
+    screenshot misses it, the region around NEAR (where the menu was
+    opened) and then each half of the screen are read on their own."""
+    want = {lbl.lower() for lbl in labels}
     with Image.open(screenshot_path) as im:
         w, h = im.size
-    want = {lbl.lower() for lbl in labels}
-    for blk in _run_ocr(screenshot_path):
-        if _is_menu_label(blk["text"], want):
-            return int((blk["x"] + blk["w"] / 2) * w), int((blk["y"] + blk["h"] / 2) * h)
+        boxes = [None]
+        if near:
+            x, y = near
+            boxes.append((max(0, x - 450), max(0, y - 750), min(w, x + 450), min(h, y + 750)))
+        boxes += [(w // 2, 0, w, h), (0, 0, w // 2, h)]
+        for box in boxes:
+            if box is None:
+                path, (x0, y0, bw, bh) = screenshot_path, (0, 0, w, h)
+            else:
+                path = screenshot_path.parent / f"{screenshot_path.stem}_menu_crop.png"
+                im.crop(box).save(path)
+                x0, y0, bw, bh = box[0], box[1], box[2] - box[0], box[3] - box[1]
+            for blk in _run_ocr(path):
+                if _is_menu_label(blk["text"], want):
+                    return (x0 + int((blk["x"] + blk["w"] / 2) * bw),
+                            y0 + int((blk["y"] + blk["h"] / 2) * bh))
     return None
 
 
