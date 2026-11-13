@@ -1748,6 +1748,23 @@ class WASession:
         """Scroll chat down by css_pixels via direct DOM scrollTop manipulation."""
         await self._page.evaluate(_SCROLL_DOWN_JS, css_pixels)
 
+    async def open_read_more(self, x: int, y: int) -> None:
+        """Click the «Leer más» link at X, Y and keep what was below it in
+        place. The opened message grows downwards: the newest one ended up
+        under the compose bar — 'wavi get' missed what followed it
+        (DataLake 2026-11-04) and 'wavi edit' right-clicked its last line
+        under the bar, got no 'Editar' and gave up (DataLake 2026-11-13).
+        Scrolling by the growth makes it grow upwards instead."""
+        before = await self.get_chat_scroll_state()
+        await self._page.mouse.click(x, y)
+        await self._page.mouse.move(5, 5)
+        await self._page.wait_for_timeout(800)
+        await self.close_side_drawer()
+        after = await self.get_chat_scroll_state()
+        if before and after and after["scrollHeight"] > before["scrollHeight"]:
+            await self.scroll_chat_down(after["scrollHeight"] - before["scrollHeight"])
+            await self._page.wait_for_timeout(600)
+
     async def close_side_drawer(self) -> bool:
         """Close a contact/group info panel left open over the chat (WA
         keeps it open across chats and, in a narrow window, it hides the
@@ -1861,8 +1878,7 @@ class WASession:
                             and (r.get("own") or not own_only)), None)
                 if cut is None or _expand == self.READ_MORE_CLICKS:
                     break
-                await self._page.mouse.click(cut["more_x"], cut["more_y"])
-                await self._page.wait_for_timeout(800)
+                await self.open_read_more(cut["more_x"], cut["more_y"])
                 rows = await self._vision_messages()
             seen.update(_normalize_name(r.get("text") or "")
                         for r in rows if r.get("own") or not own_only)
