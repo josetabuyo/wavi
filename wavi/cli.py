@@ -1028,7 +1028,9 @@ def status(session: str):
 @click.option("--grow", is_flag=True, help="Append older messages to existing history, block by block. Use with --max-iter to page through a long chat history in chunks.")
 @click.option("--pick", type=int, default=None,
               help="Pick option N (1-based) when CONTACT is ambiguous, without needing a TTY — see the numbered list a prior ambiguous call printed.")
-def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None, newest: bool, grow: bool, pick: int | None):
+@click.option("--fill-audios", is_flag=True,
+              help="Bajar y transcribir solo los audios del historial que quedaron sin bajar, sin recapturar el chat ni tocar el resto.")
+def get(session: str, contact: str, assets: str | None, headless: bool, json_out: bool, max_iter: int, from_date: str | None, newest: bool, grow: bool, pick: int | None, fill_audios: bool):
     """Capture the full message history from CONTACT's chat.
 
     Scrolls up from the most recent message, capturing all visible bubbles per
@@ -1056,7 +1058,14 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
         click.echo("Error: --grow y --newest son incompatibles (direcciones opuestas).", err=True)
         sys.exit(1)
 
-    if assets_dir.exists() and not newest and not grow:
+    if fill_audios and (newest or grow):
+        click.echo("Error: --fill-audios va solo (no con --newest ni --grow).", err=True)
+        sys.exit(1)
+    if fill_audios and not (assets_dir / "history_bubbles.json").exists():
+        click.echo(f"Error: no hay historial en {assets_dir} — corré primero 'wavi get'.", err=True)
+        sys.exit(1)
+
+    if assets_dir.exists() and not newest and not grow and not fill_audios:
         shutil.rmtree(assets_dir)
 
     async def _go():
@@ -1070,6 +1079,7 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             newest=newest,
             grow=grow,
             pick=pick,
+            fill_audios=fill_audios,
         )
 
     from wavi.queue import is_locked, session_lock
@@ -1084,6 +1094,10 @@ def get(session: str, contact: str, assets: str | None, headless: bool, json_out
             except RuntimeError as e:
                 click.echo(str(e), err=True)
                 sys.exit(1)
+
+    if fill_audios:
+        _report_fill(result["fill"], assets_dir, json_out)
+        return
 
     bubbles = result["bubbles"]
     click.echo(f"[wavi] historial guardado en: {assets_dir.resolve()}", err=True)
@@ -1133,6 +1147,26 @@ def _bubble_line_text(b) -> str:
             return f'🎤 "{b.transcript[:80]}"'
         return "🎤 (sin transcripción)"
     return b.text[:80]
+
+
+def _report_fill(r: dict, assets_dir: Path, json_out: bool) -> None:
+    def ids(lst):
+        return [f"#{b.get('id')} {b.get('timestamp') or ''}".strip() for b in lst]
+    if json_out:
+        click.echo(json.dumps({k: (ids(v) if isinstance(v, list) else v) for k, v in r.items()},
+                              ensure_ascii=False, indent=2))
+        return
+    click.echo(f"{r['downloaded']} de {r['missing']} audio(s) que faltaban, bajados; "
+               f"{r['transcribed']} transcripto(s). Historial: {assets_dir / 'history_bubbles.json'}")
+    if r["not_audio"]:
+        click.echo(f"{len(r['not_audio'])} no eran audios (texto que un wavi viejo leyó como audio): "
+                   + ", ".join(ids(r["not_audio"])[:20]) + (" …" if len(r["not_audio"]) > 20 else ""))
+    if r["failed"]:
+        click.echo(f"{len(r['failed'])} no se pudieron bajar (reintentá --fill-audios): "
+                   + ", ".join(ids(r["failed"])[:20]))
+    if r["not_seen"]:
+        click.echo(f"{len(r['not_seen'])} no aparecieron al recorrer el chat (¿borrados?): "
+                   + ", ".join(ids(r["not_seen"])[:20]))
 
 
 def _history_or(bubbles, assets_dir: Path):

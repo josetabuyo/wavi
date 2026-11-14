@@ -28,18 +28,66 @@ _FIND_PLAY_BTNS_JS = """
     // keeps playing, muted) shows "Pausar" instead of "Reproducir" — it is
     // still that audio's button, flagged `playing` so the caller pauses and
     // plays it again to get its blob (Monkey, 2026-11-02).
+    // An old voice note not kept on this device shows "Descargar" instead:
+    // flagged `download`, the caller fetches it first (Monkey, 2026-11-14:
+    // 499 of Javier Lurgo's 750 audios had no play button).
     const play  = ['reproducir mensaje de voz', 'play voice message'];
     const pause = ['pausar mensaje de voz', 'pause voice message'];
+    const fetch = ['descargar mensaje de voz', 'download voice message'];
     return [...document.querySelectorAll('button[aria-label]')]
         .map(b => ({ b, l: (b.getAttribute('aria-label') || '').toLowerCase() }))
-        .filter(({ l }) => play.concat(pause).some(lbl => l.includes(lbl)))
+        .filter(({ l }) => play.concat(pause, fetch).some(lbl => l.includes(lbl)))
         .map(({ b, l }) => {
             const r = b.getBoundingClientRect();
             return { vx: Math.round(r.x + r.width / 2),
                      vy: Math.round(r.y + r.height / 2),
-                     playing: pause.some(lbl => l.includes(lbl)) };
+                     playing: pause.some(lbl => l.includes(lbl)),
+                     download: fetch.some(lbl => l.includes(lbl)) };
         })
         .filter(r => r.vx > 0 && r.vy > 0);
+}
+"""
+
+# Scroll the message whose data-id ends in the given id to the middle.
+_SHOW_VOICE_BTN_JS = """
+(id) => {
+    const el = [...document.querySelectorAll('[data-id]')]
+        .find(e => (e.getAttribute('data-id') || '').endsWith(id));
+    if (!el) return { found: false };
+    el.scrollIntoView({ block: 'center' });
+    return { found: true };
+}
+"""
+
+_VOICE_BTN_IN_MSG_JS = """
+(id) => {
+    const el = [...document.querySelectorAll('[data-id]')]
+        .find(e => (e.getAttribute('data-id') || '').endsWith(id));
+    if (!el) return null;
+    const labels = { play: ['reproducir mensaje de voz', 'play voice message'],
+                     pause: ['pausar mensaje de voz', 'pause voice message'],
+                     fetch: ['descargar mensaje de voz', 'download voice message'] };
+    for (const b of el.querySelectorAll('button[aria-label]')) {
+        const l = b.getAttribute('aria-label').toLowerCase();
+        const is = k => labels[k].some(x => l.includes(x));
+        if (!is('play') && !is('pause') && !is('fetch')) continue;
+        const r = b.getBoundingClientRect();
+        return { vx: Math.round(r.x + r.width / 2), vy: Math.round(r.y + r.height / 2),
+                 playing: is('pause'), download: is('fetch') };
+    }
+    return null;
+}
+"""
+
+_MISSING_ON_PAGE_JS = """
+(ids) => {
+    const want = new Set(ids);
+    const out = [];
+    for (const e of document.querySelectorAll('[data-id]')) {
+        const id = (e.getAttribute('data-id') || '').split('_').pop();
+        if (want.has(id)) out.push(id);
+    }
+    return out;
 }
 """
 
@@ -268,6 +316,13 @@ class WARunner:
                 continue
 
             used_buttons.add((btn["vx"], btn["vy"]))
+            if btn.get("download"):
+                btn = await self._fetch_voice_note(btn)
+                if btn is None:
+                    print(f"[wavi]   bubble#{bubble.id}: no se pudo descargar el audio de WA", file=sys.stderr)
+                    results.append({"bubble": bubble, "blob_url": None, "data": None,
+                                    "path": None, "error": "download_failed"})
+                    continue
             if btn.get("playing"):
                 # Already playing: its blob was fetched long ago. Pause it,
                 # then the play below calls play() again and the monitor
@@ -324,6 +379,108 @@ class WARunner:
             })
 
         return results
+
+    async def _fetch_voice_note(self, btn: dict, timeout_ms: int = 30_000) -> dict | None:
+        """Click a voice note's "Descargar" button and wait until WA swaps it
+        for "Reproducir" (same place). Returns the play button, or None."""
+        await self.session._page.mouse.click(btn["vx"], btn["vy"])
+        waited = 0
+        while waited < timeout_ms:
+            await self.session._page.wait_for_timeout(500)
+            waited += 500
+            for b in await self.find_play_buttons():
+                if (not b.get("download") and abs(b["vy"] - btn["vy"]) <= 30
+                        and abs(b["vx"] - btn["vx"]) <= 60):
+                    return b
+        return None
+
+    async def _capture_voice_note(self, btn: dict, blob_timeout_ms: int = 30_000) -> bytes | None:
+        """Play the voice note whose button is BTN and return its bytes."""
+        if btn.get("download"):
+            btn = await self._fetch_voice_note(btn)
+            if btn is None:
+                return None
+        await self.session.reset_blobs()
+        if btn.get("playing"):
+            await self.session._page.mouse.click(btn["vx"], btn["vy"])
+            await self.session._page.wait_for_timeout(400)
+        await self.session._page.mouse.click(btn["vx"], btn["vy"])
+        waited = 0
+        while waited < blob_timeout_ms:
+            await self.session._page.wait_for_timeout(500)
+            waited += 500
+            blobs = await self.session.drain_blobs()
+            if blobs:
+                data = await self.session.fetch_blob(blobs[-1]["url"])
+                # stop it: a voice note left playing shows "Pausar" next time
+                for b in await self.find_play_buttons():
+                    if b.get("playing") and abs(b["vy"] - btn["vy"]) <= 30:
+                        await self.session._page.mouse.click(b["vx"], b["vy"])
+                        break
+                return data
+        return None
+
+    async def fill_missing_audios(self, assets_dir: Path, max_steps: int = 3000) -> dict:
+        """Download the audios a history lists but never got (no transcript,
+        no audio_path), without recapturing the chat.
+
+        Walks the open chat from the newest message up; each listed message
+        that appears is scrolled into view and its voice note played to grab
+        the file. History entries keep their place; only audio_path is set.
+        A listed "audio" whose message has no voice-note button was a text
+        misread as audio by an older wavi: it is reported, not touched.
+        """
+        import json as _json
+        json_path = Path(assets_dir) / "history_bubbles.json"
+        history = _json.loads(json_path.read_text())
+        missing = {b["dom_id"].split("_")[-1]: b for b in history
+                   if b.get("msg_type") == "audio" and not b.get("transcript")
+                   and not b.get("audio_path") and b.get("dom_id")}
+        out_dir = Path(assets_dir) / "audio_fill"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[wavi] fill-audios: {len(missing)} audio(s) sin bajar", file=sys.stderr)
+        await self.session.install_blob_monitor()
+        got, not_audio, failed = [], [], []
+        pending = dict(missing)
+        stalls = 0
+        for _step in range(max_steps):
+            if not pending:
+                break
+            on_page = await self.session._page.evaluate(_MISSING_ON_PAGE_JS, list(pending))
+            # newest first: the walk goes up, so what is below is done
+            for mid in reversed(on_page):
+                b = pending.pop(mid)
+                await self.session._page.evaluate(_SHOW_VOICE_BTN_JS, mid)
+                await self.session._page.wait_for_timeout(1200)
+                btns = await self.session._page.evaluate(_VOICE_BTN_IN_MSG_JS, mid)
+                if not btns:
+                    not_audio.append(b)
+                    continue
+                data = await self._capture_voice_note(btns)
+                if not data:
+                    failed.append(b)
+                    print(f"[wavi]   #{b.get('id')} ({b.get('timestamp')}): no se pudo bajar", file=sys.stderr)
+                    continue
+                path = out_dir / f"{mid}.ogg"
+                path.write_bytes(data)
+                b["audio_path"] = str(path)
+                got.append(b)
+                print(f"[wavi]   #{b.get('id')} ({b.get('timestamp')}): {len(data)} bytes "
+                      f"[{len(got)}/{len(missing)}]", file=sys.stderr)
+                if len(got) % 20 == 0:
+                    json_path.write_text(_json.dumps(history, indent=2, ensure_ascii=False))
+            state = await self.session.get_chat_scroll_state()
+            if state and state["scrollTop"] < 20:
+                stalls += 1
+                if stalls >= 5:       # top of the chat, nothing more loads
+                    break
+            else:
+                stalls = 0
+            await self.session.scroll_chat_up(1200)
+            await self.session._page.wait_for_timeout(900)
+        json_path.write_text(_json.dumps(history, indent=2, ensure_ascii=False))
+        return {"missing": len(missing), "downloaded": len(got), "not_audio": not_audio,
+                "failed": failed, "not_seen": list(pending.values())}
 
     def _assign_dom_ids(
         self,
@@ -1236,6 +1393,7 @@ async def run_enhanced(
     grow: bool = False,
     chrome_path: Path | None = None,
     pick: int | None = None,
+    fill_audios: bool = False,
 ) -> dict:
     """
     Extrapolation of run_once: same connect → open chat flow, then scrolls up
@@ -1262,6 +1420,13 @@ async def run_enhanced(
         raise RuntimeError("Connection timed out.")
 
     await runner.open_chat(contact, pick=pick)
+    if fill_audios:
+        try:
+            report = await runner.fill_missing_audios(Path(assets_dir))
+        finally:
+            await runner.close()
+        report["transcribed"] = await transcribe_history_audios(Path(assets_dir))
+        return {"bubbles": [], "fill": report}
     bubbles = await runner.capture_full_history(
         assets_dir=assets_dir, max_iterations=max_iterations, from_date=from_date,
         newest=newest, grow=grow,

@@ -843,6 +843,70 @@ class TestDownloadAudioForBubbles:
         assert result[0]["data"] == b"OggS"
 
 
+    @pytest.mark.asyncio
+    async def test_old_audio_is_fetched_from_wa_before_playing(self, tmp_path):
+        """An old voice note shows "Descargar mensaje de voz" until fetched:
+        wavi clicks it, waits for the play button in its place, then plays
+        (Monkey 2026-11-14: 499 of 750 audios had 'no play button matched')."""
+        runner = _runner()
+        runner.session.reset_blobs = AsyncMock()
+        runner.session.get_dpr = AsyncMock(return_value=1.0)
+        runner.find_play_buttons = AsyncMock(side_effect=[
+            [{"vx": 400, "vy": 130, "download": True}],     # initial lookup
+            [{"vx": 400, "vy": 130, "download": True}],     # still fetching
+            [{"vx": 402, "vy": 131}],                        # now playable
+        ])
+        runner.session.drain_blobs = AsyncMock(return_value=[{"url": "blob:x"}])
+        runner.session.fetch_blob = AsyncMock(return_value=b"OggS")
+        page_mock = MagicMock()
+        page_mock.wait_for_timeout = AsyncMock()
+        page_mock.mouse.click = AsyncMock()
+        runner.session._page = page_mock
+        audio = Bubble(id=2, screen_id=2, sender="other", msg_type="audio",
+                       timestamp=None, text="0:12 9:45 a. m.",
+                       bbox={"x": 0, "y": 40, "w": 330, "h": 66})
+        result = await runner._download_audio_for_bubbles([audio], assets_dir=tmp_path)
+        clicks = [c.args for c in page_mock.mouse.click.await_args_list]
+        assert clicks == [(400, 130), (402, 131)]          # fetch, then play
+        assert result[0]["data"] == b"OggS"
+
+
+class TestFillMissingAudios:
+    @pytest.mark.asyncio
+    async def test_fills_only_the_missing_and_flags_texts(self, tmp_path):
+        import json
+        hist = [
+            {"id": 1, "msg_type": "audio", "dom_id": "true_x_AAA", "transcript": "ya"},
+            {"id": 2, "msg_type": "audio", "dom_id": "true_x_BBB"},
+            {"id": 3, "msg_type": "audio", "dom_id": "false_x_CCC"},
+            {"id": 4, "msg_type": "text", "dom_id": "false_x_DDD", "text": "hola"},
+        ]
+        (tmp_path / "history_bubbles.json").write_text(json.dumps(hist))
+        runner = _runner()
+        runner.session.install_blob_monitor = AsyncMock()
+        runner.session.get_chat_scroll_state = AsyncMock(return_value={"scrollTop": 0})
+        runner.session.scroll_chat_up = AsyncMock()
+        page = MagicMock()
+        page.wait_for_timeout = AsyncMock()
+
+        async def evaluate(js, arg=None):
+            if "want.has" in js:
+                return [i for i in ("BBB", "CCC") if i in arg]
+            if "button[aria-label]" in js:
+                return {"vx": 1, "vy": 2} if arg == "BBB" else None
+            return {"found": True}
+        page.evaluate = evaluate
+        runner.session._page = page
+        runner._capture_voice_note = AsyncMock(return_value=b"OggS")
+
+        r = await runner.fill_missing_audios(tmp_path)
+
+        saved = {b["id"]: b for b in json.loads((tmp_path / "history_bubbles.json").read_text())}
+        assert saved[2]["audio_path"].endswith("audio_fill/BBB.ogg")
+        assert "audio_path" not in saved[1] and "audio_path" not in saved[3]
+        assert r["downloaded"] == 1 and [b["id"] for b in r["not_audio"]] == [3]
+
+
 # ── TestCaptureFullHistoryNewest ──────────────────────────────────────────
 
 class TestCaptureFullHistoryNewest:
