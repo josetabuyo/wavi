@@ -278,6 +278,28 @@ _FIND_COMPOSE_INPUT_JS = """
 # focus into the open chat's compose box after the click (real case
 # 2026-10-09 ~14:40: "DATA LAKE - Técnico" left as a draft in Gerencia, on a
 # Chrome that had just started and was still settling).
+# The chat-list filter pills above the sidebar ("Todos", "No leídos",
+# "Favoritos", "Grupos") are role="tab" buttons; the first is "all". A
+# filter left on (someone used WA by hand) narrows the SEARCH too: with
+# "Favoritos" on, every chat outside favourites came back empty
+# (2026-11-02). Returns where to click "Todos" when another filter is
+# selected, else null. DOM bridge until the sidebar moves to vision.
+_CHAT_FILTER_TO_RESET_JS = """
+() => {
+    const tabs = [...document.querySelectorAll('#side [role="tab"]')];
+    if (!tabs.length) return null;
+    const selected = tabs.find((t) => t.getAttribute('aria-selected') === 'true');
+    const all = tabs.find((t) => t.id === 'label_item_0') || tabs[0];
+    if (!selected || selected === all) return null;
+    const r = all.getBoundingClientRect();
+    return {
+        x: Math.round(r.x + r.width / 2),
+        y: Math.round(r.y + r.height / 2),
+        was: (selected.innerText || '').trim().split('\\n')[0],
+    };
+}
+"""
+
 _FOCUS_IN_SEARCH_JS = """
 () => {
     const a = document.activeElement;
@@ -1040,6 +1062,15 @@ _SEARCH_RESULTS_JS = """
 () => {
     const cells = document.querySelectorAll('""" + _RESULT_ROW_SEL + """');
     const out = [];
+    const side = document.querySelector('#pane-side') || document.querySelector('#side') || document;
+    const headers = [];
+    side.querySelectorAll('div, span, h2, h3').forEach((el) => {
+        if (el.children.length > 1) return;
+        const t = (el.innerText || '').trim();
+        if (!/^(chats|contactos|contacts|mensajes|messages|grupos en común|groups in common)$/i.test(t)) return;
+        if (el.closest('""" + _RESULT_ROW_SEL + """')) return;
+        headers.push({ text: t.toLowerCase(), y: el.getBoundingClientRect().y });
+    });
     cells.forEach((cell) => {
         const titleEl = cell.querySelector('[data-testid="cell-frame-title"] span[title]')
                      || cell.querySelector('span[title]')
@@ -1062,9 +1093,18 @@ _SEARCH_RESULTS_JS = """
         const last_activity = tsEl ? (tsEl.textContent || '').trim() : '';
 
         const rect = cell.getBoundingClientRect();
+        // Section header above the row ("Chats", "Contactos", "Mensajes"...):
+        // a phone-number search must not pick a chat whose MESSAGE merely
+        // contains the number.
+        let section = '';
+        let best = -Infinity;
+        headers.forEach((h) => {
+            if (h.y <= rect.y && h.y > best) { best = h.y; section = h.text; }
+        });
         out.push({
             name,
             subtitle,
+            section,
             last_activity,
             x: Math.round(rect.x + rect.width / 2),
             y: Math.round(rect.y + rect.height / 2),
@@ -1109,6 +1149,48 @@ def _name_matches(query: str, candidate_name: str) -> bool:
     """
     q, c = _normalize_name(query), _normalize_name(candidate_name)
     return q in c or c in q
+
+
+_PHONE_QUERY_RE = re.compile(r"^\+?[\d\s\-().]+$")
+_SHARED_GROUP_RE = re.compile(
+    r"tambi[eé]n est[aá]n? en este grupo|(is|are) also in this group", re.IGNORECASE
+)
+_NOT_A_CHAT_SECTIONS = {"mensajes", "messages", "grupos en común", "groups in common"}
+
+
+def _phone_digits(query: str) -> str | None:
+    """The digits of QUERY when it is a phone number ("+54 9 11 5561-2767"),
+    else None."""
+    if not _PHONE_QUERY_RE.match(query.strip()):
+        return None
+    digits = re.sub(r"\D", "", query)
+    return digits if len(digits) >= 7 else None
+
+
+def _result_matches(query: str, row: dict) -> bool:
+    """Whether search result ROW is what QUERY refers to.
+
+    By name: the row's own name must contain the query (see _name_matches).
+    By phone: WA finds the contact by its number but shows its NAME — your
+    own number comes back as "José Tabuyo (Tú)", with no digits in it
+    (2026-11-01, `wavi send default "+54 9 11 5561 2767"` failed with
+    "ninguno tiene ese nombre"). So a phone query accepts the row as long
+    as it is a chat or a contact: never a hit in the "Mensajes" section (a
+    chat whose message merely contains the number) nor a shared group.
+    """
+    if _name_matches(query, row.get("name") or ""):
+        return True
+    digits = _phone_digits(query)
+    if digits is None:
+        return False
+    if (row.get("section") or "").lower() in _NOT_A_CHAT_SECTIONS:
+        return False
+    subtitle = row.get("subtitle") or ""
+    if _SHARED_GROUP_RE.search(subtitle):
+        return False
+    # A row that shows a number (an unsaved contact) must show THIS one.
+    shown = re.sub(r"\D", "", subtitle) if _PHONE_QUERY_RE.match(subtitle.strip() or "x") else ""
+    return not shown or shown.endswith(digits[-8:]) or digits.endswith(shown[-8:])
 
 
 def _is_process_alive(pid: int) -> bool:
@@ -1392,6 +1474,7 @@ class WASession:
         numbers alike. Returns [] if nothing showed up within the timeout
         (e.g. a freshly-linked session still syncing its chat list — see
         navigate_to_contact's refresh-and-retry)."""
+        await self._reset_chat_filter()
         # Click en el cuadro de búsqueda por coordenadas (ADR-001: sin locator)
         await self._page.mouse.click(self.SEARCH_X, self.SEARCH_Y)
         await self._page.wait_for_timeout(300)
@@ -1435,6 +1518,19 @@ class WASession:
             return []
         await self._page.wait_for_timeout(400)
         return await self._page.evaluate(_SEARCH_RESULTS_JS)
+
+    async def _reset_chat_filter(self) -> None:
+        """Put the chat-list filter back on "Todos" if another one
+        ("Favoritos", "No leídos", "Grupos"...) was left selected: it would
+        hide the chat being searched for."""
+        tab = await self._page.evaluate(_CHAT_FILTER_TO_RESET_JS)
+        if not tab:
+            return
+        import sys as _sys
+        print(f"[wavi] filtro '{tab.get('was')}' activo en la lista de chats — vuelvo a 'Todos'",
+              file=_sys.stderr)
+        await self._page.mouse.click(tab["x"], tab["y"])
+        await self._page.wait_for_timeout(500)
 
     async def _check_query_not_in_compose(self, query: str, before: str) -> None:
         """If focus was stolen mid-typing, (part of) QUERY sits in the open
@@ -1563,7 +1659,7 @@ class WASession:
         # a member) — e.g. searching "Rodolfo Prado" surfacing "Blanca y sus
         # pollitos". Keep only rows whose own name actually matches the
         # query; never present those as if they were "Rodolfo Prado".
-        matching = [c for c in candidates if _name_matches(contact, c["name"])]
+        matching = [c for c in candidates if _result_matches(contact, c)]
         if not matching:
             shot_path = await self._debug_screenshot("no_contact_found")
             raise RuntimeError(

@@ -66,7 +66,8 @@ class TestSearchContacts:
 
     RESULTS = [{"name": "Gregorio", "subtitle": "", "x": 1, "y": 2}]
 
-    def _route(self, session, *, focus=True, compose=("", ""), results=None, compose_empty=True):
+    def _route(self, session, *, focus=True, compose=("", ""), results=None, compose_empty=True,
+               chat_filter=None):
         """FOCUS: bool or iterator of bools for the search-focus check;
         COMPOSE: compose-box text before / after typing."""
         focus_it = focus if hasattr(focus, "__next__") else None
@@ -74,6 +75,8 @@ class TestSearchContacts:
         last = {"compose": compose[0]}
 
         def evaluate(js, *a):
+            if '[role="tab"]' in js:
+                return chat_filter
             if "closest('#side')" in js:
                 return next(focus_it) if focus_it else focus
             if "return el ? (el.innerText" in js:
@@ -165,6 +168,21 @@ class TestSearchContacts:
         session._page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
         result = await session.search_contacts("Nadie")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_a_filter_left_on_is_reset_to_all_before_searching(self, session):
+        # 2026-11-02: "Favoritos" left on made every search come back empty.
+        self._route(session, chat_filter={"x": 117, "y": 132, "was": "Favoritos"})
+        await session.search_contacts("Gregorio")
+        clicks = [c.args for c in session._page.mouse.click.call_args_list]
+        assert clicks[0] == (117, 132)
+        assert clicks[1] == (WASession.SEARCH_X, WASession.SEARCH_Y)
+
+    @pytest.mark.asyncio
+    async def test_no_filter_click_when_all_is_already_on(self, session):
+        await session.search_contacts("Gregorio")
+        clicks = [c.args for c in session._page.mouse.click.call_args_list]
+        assert clicks == [(WASession.SEARCH_X, WASession.SEARCH_Y)]
 
     @pytest.mark.asyncio
     async def test_returns_candidates_from_page_evaluate(self, session):
@@ -282,6 +300,52 @@ class TestResolveContact:
         ])
         with pytest.raises(RuntimeError, match="ninguno tiene ese nombre"):
             await session._resolve_contact("Rodolfo Prado")
+
+    @pytest.mark.asyncio
+    async def test_own_number_finds_the_self_chat_shown_by_name(self, session):
+        # 2026-11-01: `wavi send default "+54 9 11 5561 2767"` failed with
+        # "ninguno tiene ese nombre" though WA listed "José Tabuyo (Tú)".
+        me = {"name": "José Tabuyo", "subtitle": "https://www.instagram.com/reel/x",
+              "section": "chats", "last_activity": "8/11/2026", "x": 321, "y": 241}
+        session.search_contacts = AsyncMock(return_value=[me])
+        assert await session._resolve_contact("+54 9 11 5561 2767") == me
+
+    @pytest.mark.asyncio
+    async def test_phone_search_skips_messages_and_shared_groups(self, session):
+        contact = {"name": "Vito", "subtitle": "hola", "section": "contactos", "x": 1, "y": 1}
+        rows = [
+            {"name": "Gerencia", "subtitle": "pasame al 11 5561 2767", "section": "mensajes",
+             "x": 1, "y": 9},
+            {"name": "Futbol", "subtitle": "Vito también está en este grupo.", "section": "",
+             "x": 1, "y": 5},
+            contact,
+        ]
+        session.search_contacts = AsyncMock(return_value=rows)
+        assert await session._resolve_contact("11 5561-2767") == contact
+
+    @pytest.mark.asyncio
+    async def test_phone_search_rejects_a_contact_showing_another_number(self, session, tmp_path):
+        session.profile_dir = tmp_path
+        session.search_contacts = AsyncMock(return_value=[
+            {"name": "nito", "subtitle": "+54 9 11 4684-0494", "section": "contactos", "x": 1, "y": 1},
+        ])
+        with pytest.raises(RuntimeError, match="ninguno tiene ese nombre"):
+            await session._resolve_contact("+54 9 11 5561 2767")
+
+    @pytest.mark.asyncio
+    async def test_phone_search_accepts_an_unsaved_contact_with_that_number(self, session):
+        row = {"name": "~Rodo", "subtitle": "+54 9 11 5561-2767", "section": "contactos", "x": 1, "y": 1}
+        session.search_contacts = AsyncMock(return_value=[row])
+        assert await session._resolve_contact("11 5561 2767") == row
+
+    @pytest.mark.asyncio
+    async def test_short_digit_query_is_still_matched_by_name(self, session, tmp_path):
+        session.profile_dir = tmp_path
+        session.search_contacts = AsyncMock(return_value=[
+            {"name": "Gerencia", "subtitle": "", "section": "chats", "x": 1, "y": 1},
+        ])
+        with pytest.raises(RuntimeError, match="ninguno tiene ese nombre"):
+            await session._resolve_contact("2026")
 
     @pytest.mark.asyncio
     async def test_accent_and_case_insensitive_match(self, session):
