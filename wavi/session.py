@@ -1193,6 +1193,49 @@ def _result_matches(query: str, row: dict) -> bool:
     return not shown or shown.endswith(digits[-8:]) or digits.endswith(shown[-8:])
 
 
+def _close_foreign_tabs(port: int) -> list[str]:
+    """Close every tab of the session's Chrome that isn't WhatsApp; return
+    their URLs.
+
+    wavi's Chrome is the same Google Chrome.app the user browses with, so
+    macOS hands it links other apps open (`open URL`, a link tapped in
+    another app, Claude Code's artifact previews): they land in this hidden
+    browser, never seen, and pile up until CDP stops answering (2026-11-17:
+    claude.ai, a LAN page and x.com tabs; connect timed out). Done over
+    plain HTTP, before connect_over_cdp, because that is the call they hang.
+    Any failure leaves things as they were.
+    """
+    import json
+    import sys
+    import urllib.request
+
+    base = f"http://localhost:{port}/json"
+    try:
+        with urllib.request.urlopen(f"{base}/list", timeout=5) as r:
+            targets = json.load(r)
+    except Exception:
+        return []
+    pages = [t for t in targets if t.get("type") == "page"]
+    foreign = [
+        t for t in pages
+        if not (t.get("url") or "").startswith(("https://web.whatsapp.com", "about:blank"))
+    ]
+    if len(foreign) == len(pages):
+        return []   # never leave Chrome without a single tab
+    closed = []
+    for t in foreign:
+        try:
+            req = urllib.request.Request(f"{base}/close/{t['id']}", method="PUT")
+            urllib.request.urlopen(req, timeout=5).close()
+            closed.append(t.get("url") or "")
+        except Exception:
+            continue
+    for url in closed:
+        print(f"[wavi] cerré una pestaña ajena en el Chrome de wavi (la abrió otra app): {url}",
+              file=sys.stderr)
+    return closed
+
+
 def _is_process_alive(pid: int) -> bool:
     try:
         import os
@@ -1285,6 +1328,7 @@ class WASession:
         pid = self._load_pid()
         if pid and _is_process_alive(pid):
             import sys
+            _close_foreign_tabs(self._port)
             for timeout in CDP_CONNECT_TIMEOUTS_MS:
                 try:
                     self._browser = await self._pw.chromium.connect_over_cdp(

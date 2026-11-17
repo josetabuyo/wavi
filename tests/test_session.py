@@ -1827,3 +1827,49 @@ class TestHeaderTitle:
         s._page = _make_page()
         s._page.evaluate = AsyncMock(return_value="MB\nMatias Becerro\nen línea")
         assert not await s.open_search_result(10, 20, expected_name="Lucas Campos (1109)")
+
+
+class TestCloseForeignTabs:
+    """macOS hands wavi's hidden Chrome links other apps open; they pile up
+    and hang CDP (2026-11-17). Only WhatsApp tabs survive a connect."""
+
+    def _fake(self, monkeypatch, pages):
+        import io
+        import json
+        import urllib.request
+        closed = []
+
+        def urlopen(req, timeout=None):
+            url = req if isinstance(req, str) else req.full_url
+            if url.endswith("/json/list"):
+                return io.BytesIO(json.dumps(pages).encode())
+            closed.append(url.rsplit("/", 1)[1])
+            return io.BytesIO(b"Target is closing")
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        return closed
+
+    def test_closes_tabs_other_apps_opened(self, monkeypatch):
+        from wavi.session import _close_foreign_tabs
+        closed = self._fake(monkeypatch, [
+            {"id": "wa", "type": "page", "url": "https://web.whatsapp.com/"},
+            {"id": "x", "type": "page", "url": "https://x.com/a/status/1"},
+            {"id": "sw", "type": "service_worker", "url": "https://web.whatsapp.com/sw.js"},
+        ])
+        assert _close_foreign_tabs(9222) == ["https://x.com/a/status/1"]
+        assert closed == ["x"]
+
+    def test_never_closes_the_last_tab(self, monkeypatch):
+        from wavi.session import _close_foreign_tabs
+        closed = self._fake(monkeypatch, [{"id": "x", "type": "page", "url": "https://x.com/"}])
+        assert _close_foreign_tabs(9222) == []
+        assert closed == []
+
+    def test_chrome_not_answering_changes_nothing(self, monkeypatch):
+        import urllib.request
+
+        from wavi.session import _close_foreign_tabs
+
+        def boom(*a, **k):
+            raise OSError("refused")
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        assert _close_foreign_tabs(9222) == []
