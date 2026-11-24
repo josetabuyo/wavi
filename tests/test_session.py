@@ -1873,3 +1873,119 @@ class TestCloseForeignTabs:
             raise OSError("refused")
         monkeypatch.setattr(urllib.request, "urlopen", boom)
         assert _close_foreign_tabs(9222) == []
+
+
+class TestOpenChatByPhone:
+    """A number that is neither a saved contact nor an existing chat gets no
+    search result at all (RENAPER, 2026-11-24): navigate_to_contact then
+    opens it via /send?phone=, going through about:blank first (never
+    Page.reload) and never pre-typing a message."""
+
+    @pytest.fixture
+    def session(self, tmp_path):
+        s = _make_session()
+        s.profile_dir = tmp_path
+        s._page = _make_page()
+        s._page.goto = AsyncMock()
+        s._page.reload = AsyncMock()
+        return s
+
+    @pytest.mark.asyncio
+    async def test_unknown_phone_falls_back_to_send_url(self, session):
+        from wavi.session import ContactNotFound
+        session._resolve_contact = AsyncMock(side_effect=ContactNotFound("nada"))
+        session._page.evaluate = AsyncMock(side_effect=lambda js, *a: "chat" if "send?phone" not in js and "'chat'" in js else False)
+
+        await session.navigate_to_contact("+54 9 11 5126-1789")
+
+        urls = [c.args[0] for c in session._page.goto.await_args_list]
+        assert urls == ["about:blank", f"{WA_URL}send?phone=5491151261789"]
+        assert "text=" not in urls[1]
+        session._page.reload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_name_still_raises(self, session):
+        from wavi.session import ContactNotFound
+        session._resolve_contact = AsyncMock(side_effect=ContactNotFound("nada"))
+        with pytest.raises(ContactNotFound):
+            await session.navigate_to_contact("Nadie")
+        session._page.goto.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_number_raises(self, session):
+        session._page.evaluate = AsyncMock(side_effect=lambda js, *a: "invalid" if "'invalid'" in js else False)
+        with pytest.raises(RuntimeError, match="no es válido"):
+            await session.open_chat_by_phone("+54 9 11 0000-0000")
+
+
+class TestAddContact:
+    """wavi add-contact: the country comes from the number's prefix, and
+    nothing is saved unless WA itself says the number is on WhatsApp."""
+
+    @pytest.fixture
+    def session(self, tmp_path):
+        s = _make_session()
+        s.profile_dir = tmp_path
+        s._page = _make_page()
+        return s
+
+    @pytest.mark.asyncio
+    async def test_current_country_matches_strips_code(self, session):
+        session._page.evaluate = AsyncMock(return_value={"code": "54", "x": 1, "y": 2})
+        assert await session._select_contact_country("5491151261789") == "91151261789"
+        session._page.mouse.click.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_other_country_found_by_shortest_exact_code(self, session):
+        current = {"code": "54", "x": 1, "y": 2}
+        listings = iter([
+            [{"code": "590", "name": "Guadalupe", "x": 5, "y": 5}],  # "5": no exact match
+            [{"code": "598", "name": "Uruguay", "x": 7, "y": 9}],    # "59": none either
+            [{"code": "598", "name": "Uruguay", "x": 7, "y": 9}],    # "598": Uruguay
+        ])
+
+        def evaluate(js, *a):
+            if "role=option" in js:
+                return next(listings)
+            return current
+
+        session._page.evaluate = AsyncMock(side_effect=evaluate)
+        assert await session._select_contact_country("59899123456") == "99123456"
+        session._page.mouse.click.assert_any_await(7, 9)
+
+    @pytest.mark.asyncio
+    async def test_not_on_whatsapp_never_saves(self, session):
+        session.navigate_to_new_chat = AsyncMock()
+        session.ensure_chat_list = AsyncMock()
+        session._fill_contact_field = AsyncMock()
+        session._select_contact_country = AsyncMock(return_value="1234")
+        clicks = []
+
+        def evaluate(js, *a):
+            if a and a[0] == "Guardar contacto":
+                clicks.append("save")
+                return {"x": 1, "y": 1}
+            if a and a[0] in ("Nuevo contacto",):
+                return {"x": 1, "y": 1}
+            if "Sincronizar|Sync" in js:
+                return "not_on_wa"
+            if a and a[0] == "Atrás":
+                return None
+            return {"x": 1, "y": 1, "focused": True, "text": "", "checked": False}
+
+        session._page.evaluate = AsyncMock(side_effect=evaluate)
+        with pytest.raises(RuntimeError, match="no está en WhatsApp"):
+            await session.add_contact("+54 9 11 0000-0000", "X")
+        assert clicks == []
+
+
+def test_contact_phone_state_regex_ignores_telefono_substring():
+    """'teléfono está en WhatsApp' must read as OK, not as 'no está'."""
+    import re
+
+    from wavi.session import _CONTACT_PHONE_STATE_JS
+    js_re = re.search(r"/(\\bno está en WhatsApp\|is not on WhatsApp)/i", _CONTACT_PHONE_STATE_JS)
+    assert js_re, "regex changed — update this test"
+    pat = re.compile(js_re.group(1), re.I)
+    assert not pat.search("Este número de teléfono está en WhatsApp.")
+    assert pat.search("Este número de teléfono no está en WhatsApp.")

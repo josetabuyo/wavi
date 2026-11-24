@@ -1436,6 +1436,10 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None, p
     any document, also images — with MESSAGE (optional) as the caption of
     the first one. wavi waits until WhatsApp has finished uploading them.
 
+    CONTACT can be a phone number that is NOT in your contacts and has no
+    chat yet: when WA's search finds nothing for it, wavi opens the chat
+    via web.whatsapp.com/send?phone=<number> (a safe page reload).
+
     In a group, "@Name" (at a word start) becomes a real mention when Name is
     one of the participants — "@Vito" picks "Vito Bagni", "@Matias Becerro"
     picks that one even if another Matias is there; an ambiguous or unknown
@@ -1484,6 +1488,110 @@ def send(session: str, contact: str, message: str, screenshot_out: str | None, p
         click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
 
     with session_lock(profile, "send", contact=contact):
+        with _lazy_session(profile):
+            try:
+                asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
+
+
+# ── open ──────────────────────────────────────────────────────────────────────
+
+@main.command("open")
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.option("--pick", type=int, default=None,
+              help="Pick option N (1-based) when CONTACT is ambiguous.")
+@click.option("--screenshot-out", default=None, help="Save a screenshot of the opened chat.")
+def open_chat(session: str, contact: str, pick: int | None, screenshot_out: str | None):
+    """Open the chat with CONTACT and leave it on screen — sends nothing.
+
+    CONTACT may be a name or a phone number; a number that is not in your
+    contacts (no chat yet) is opened via web.whatsapp.com/send?phone=.
+
+    \b
+    Example:
+      wavi open default "+54 9 11 5126-1789"
+    """
+    profile = _profile(session)
+
+    async def _go():
+        from wavi.session import WASession
+        s = WASession(profile)
+        try:
+            status = await s.connect()
+            if status != "restored":
+                raise RuntimeError(f"Sesión no autenticada (estado={status}). Ejecutá 'wavi connect' primero.")
+            await s.navigate_to_contact(contact, pick=pick)
+            title = await s.open_chat_title()
+            click.echo(f"Chat abierto: {title or contact}")
+            if screenshot_out:
+                shot = await s.screenshot_to_file(Path(screenshot_out))
+                click.echo(f"Screenshot guardado: {shot}")
+        finally:
+            await s.close()
+
+    from wavi.queue import is_locked, session_lock
+    if is_locked(profile):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
+
+    with session_lock(profile, "open", contact=contact):
+        with _lazy_session(profile):
+            try:
+                asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
+
+
+# ── add-contact ───────────────────────────────────────────────────────────────
+
+@main.command("add-contact")
+@click.argument("session", default="default")
+@click.argument("phone")
+@click.argument("name")
+@click.option("--last-name", default="", help="Apellido (WA lo guarda aparte del nombre).")
+@click.option("--sync", "sync_to_phone", is_flag=True,
+              help="Also add it to the phone's address book ('Sincronizar contacto con el teléfono').")
+@click.option("--open", "open_after", is_flag=True, help="Open the new contact's chat afterwards.")
+def add_contact(session: str, phone: str, name: str, last_name: str, sync_to_phone: bool,
+                open_after: bool):
+    """Save PHONE as a new contact called NAME — sends nothing.
+
+    PHONE goes with its country code (+54 9 11 5126-1789); wavi picks the
+    country in WA's form from it. Nothing is saved unless WhatsApp itself
+    confirms the number is on WhatsApp. Without --sync the contact lives in
+    WhatsApp only; --sync also adds it to the phone's address book.
+
+    \b
+    Examples:
+      wavi add-contact default "+54 9 11 5126-1789" RENAPER
+      wavi add-contact default "+598 99 123 456" Ana --last-name Pérez --sync
+    """
+    profile = _profile(session)
+
+    async def _go():
+        from wavi.session import WASession
+        s = WASession(profile)
+        try:
+            status = await s.connect()
+            if status != "restored":
+                raise RuntimeError(f"Sesión no autenticada (estado={status}). Ejecutá 'wavi connect' primero.")
+            meta = await s.add_contact(phone, name, last_name, sync_to_phone=sync_to_phone)
+            where = "WhatsApp + teléfono" if meta["synced"] else "WhatsApp"
+            click.echo(f"Contacto guardado: {meta['name']} ({meta['phone']}) en {where}")
+            if open_after:
+                await s.navigate_to_contact(meta["phone"])
+                click.echo(f"Chat abierto: {await s.open_chat_title() or meta['name']}")
+        finally:
+            await s.close()
+
+    from wavi.queue import is_locked, session_lock
+    if is_locked(profile):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...")
+
+    with session_lock(profile, "add-contact", contact=phone):
         with _lazy_session(profile):
             try:
                 asyncio.run(_go())

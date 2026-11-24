@@ -1167,6 +1167,88 @@ def _phone_digits(query: str) -> str | None:
     return digits if len(digits) >= 7 else None
 
 
+# What /send?phone=<n> ended in: "chat" (conversation open), "invalid" (WA's
+# "the phone number shared via url is invalid" popup), "qr" (auth lost) or
+# null (still loading).
+_SEND_PHONE_OUTCOME_JS = """() => {
+    if (document.querySelector('[data-testid="conversation-panel-messages"]')
+        || document.querySelector('#main footer [contenteditable="true"]')) return 'chat';
+    const dlg = document.querySelector('[role="dialog"], [data-animate-modal-popup="true"]');
+    if (dlg && /no es válido|not valid|invalid|inválido/i.test(dlg.innerText || '')) return 'invalid';
+    if (document.querySelector('[data-testid="qrcode"], div[data-ref] canvas')) return 'qr';
+    return null;
+}"""
+
+
+# ── "Nuevo contacto" form (New chat panel → Nuevo contacto) ────────────────
+# Temporary DOM bridge (see the vision-first policy): every lookup returns
+# coordinates and wavi clicks/types like a person, never through a locator.
+# Mapped live 2026-11-24 (WA Web, es-AR): contenteditable fields with
+# aria-label Nombre / Apellido, a country button "AR +54" whose listbox
+# filters by the code's digits (typing "598" leaves "Uruguay +598"), an
+# <input aria-label="Número de teléfono"> for the national number, a
+# role=switch "Sincronizar contacto con el teléfono", and a "Guardar
+# contacto" button that only shows up once the number is valid.
+_BTN_BY_TEXT_JS = """(label) => {
+    const want = label.toLowerCase();
+    const el = [...document.querySelectorAll('#app [role=button], #app button, #app div[tabindex]')]
+        .find(e => ((e.innerText || e.getAttribute('aria-label') || '').trim().toLowerCase() === want));
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+}"""
+
+_CONTACT_FORM_FIELD_JS = """(label) => {
+    const el = [...document.querySelectorAll('#app [aria-label]')]
+        .find(e => e.getAttribute('aria-label') === label
+                   && (e.isContentEditable || e.tagName === 'INPUT'));
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {x: r.x + r.width / 2, y: r.y + r.height / 2,
+            focused: document.activeElement === el || el.contains(document.activeElement),
+            text: (el.tagName === 'INPUT' ? el.value : el.innerText || '').trim(),
+            checked: el.tagName === 'INPUT' ? !!el.checked : null};
+}"""
+
+# Selected country button ("AR +54") → {code, x, y}.
+_CONTACT_FORM_COUNTRY_JS = """() => {
+    const el = [...document.querySelectorAll('#app [role=button]')]
+        .find(e => /^[A-Z]{2}\\s*\\+\\d{1,4}$/.test((e.innerText || '').trim()));
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {code: (el.innerText.match(/\\+(\\d+)/) || [])[1] || null,
+            x: r.x + r.width / 2, y: r.y + r.height / 2};
+}"""
+
+# Options of the open country listbox → [{code, name, x, y}].
+_COUNTRY_OPTIONS_JS = """() => [...document.querySelectorAll('#app [role=option]')].map(e => {
+    const t = (e.innerText || '').trim();
+    const r = e.getBoundingClientRect();
+    return {code: (t.match(/\\+(\\d+)\\s*$/) || [])[1] || null, name: t.split('\\n')[0],
+            x: r.x + r.width / 2, y: r.y + r.height / 2};
+})"""
+
+# What WA says under the phone field: "ok" (está en WhatsApp), "not_on_wa",
+# "invalid", or null while it is still checking.
+_CONTACT_PHONE_STATE_JS = """() => {
+    // Only the form's own text — a chat on screen could say "está en WhatsApp".
+    let box = document.querySelector('#app input[aria-label="Número de teléfono"]');
+    while (box && !/Sincronizar|Sync/i.test(box.innerText || '')) box = box.parentElement;
+    const t = box?.innerText || '';
+    // \\b: "Este número de teléfono está en WhatsApp" contains "no está"
+    // inside "teléfono" — that misread RENAPER's valid number as not on WA.
+    if (/\\bno está en WhatsApp|is not on WhatsApp/i.test(t)) return 'not_on_wa';
+    if (/está en WhatsApp|is on WhatsApp/i.test(t)) return 'ok';
+    if (/número de teléfono válido|valid phone number/i.test(t)) return 'invalid';
+    return null;
+}"""
+
+
+class ContactNotFound(RuntimeError):
+    """WA's search found no chat/contact for the query."""
+
+
 def _result_matches(query: str, row: dict) -> bool:
     """Whether search result ROW is what QUERY refers to.
 
@@ -1692,7 +1774,7 @@ class WASession:
 
         if not candidates:
             shot_path = await self._debug_screenshot("no_contact_found")
-            raise RuntimeError(
+            raise ContactNotFound(
                 f"No se encontró ningún chat/contacto que coincida con "
                 f"'{contact}', ni siquiera después de actualizar la lista "
                 f"de contactos. Ver captura: {shot_path}"
@@ -1706,7 +1788,7 @@ class WASession:
         matching = [c for c in candidates if _result_matches(contact, c)]
         if not matching:
             shot_path = await self._debug_screenshot("no_contact_found")
-            raise RuntimeError(
+            raise ContactNotFound(
                 f"WA devolvió resultados para '{contact}' pero ninguno tiene "
                 f"ese nombre (probablemente grupos compartidos sin relación). "
                 f"Ver captura: {shot_path}"
@@ -1759,8 +1841,58 @@ class WASession:
         print(f"[wavi] Contacto confirmado: {chosen['name']}{detail}", file=_sys.stderr)
         return chosen
 
+    async def open_chat_by_phone(self, phone: str, *, timeout_ms: int = 60_000) -> None:
+        """Open the chat with PHONE even when it is not a saved contact and
+        has no chat yet — WA's search finds nothing for such a number (real
+        case 2026-11-24, RENAPER's official line +54 9 11 5126-1789).
+
+        Loads web.whatsapp.com/send?phone=<digits> (no `text` param: nothing
+        is ever pre-typed). That is a full page load, so it goes through the
+        same safe path as `wavi reload`: about:blank first to let WA flush
+        IndexedDB, never Page.reload. Raises RuntimeError if WA says the
+        number has no WhatsApp or no chat opens.
+        """
+        import sys as _sys
+        digits = _phone_digits(phone)
+        if digits is None:
+            raise RuntimeError(f"'{phone}' no es un número de teléfono")
+        print(f"[wavi] '{phone}' no está en contactos ni chats — abro el chat por número "
+              f"(web.whatsapp.com/send?phone={digits})", file=_sys.stderr)
+        await self._page.goto("about:blank", timeout=8_000)
+        await self._page.wait_for_timeout(3_000)
+        await self._page.goto(f"{WA_URL}send?phone={digits}",
+                              wait_until="domcontentloaded", timeout=30_000)
+        found = None
+        for _ in range(timeout_ms // 500):
+            try:
+                found = await self._page.evaluate(_SEND_PHONE_OUTCOME_JS)
+            except Exception:
+                found = None  # context swapped mid-load — keep polling
+            if found:
+                break
+            await self._page.wait_for_timeout(500)
+        if found == "chat":
+            await self._page.wait_for_timeout(1_500)
+            return
+        shot_path = await self._debug_screenshot("open_by_phone_failed")
+        if found == "invalid":
+            raise RuntimeError(
+                f"WhatsApp dice que {phone} no es válido / no tiene WhatsApp. "
+                f"Ver captura: {shot_path}"
+            )
+        if found == "qr":
+            raise RuntimeError(f"Al recargar WA pidió QR — sesión no autenticada. Ver captura: {shot_path}")
+        raise RuntimeError(f"No se abrió el chat con {phone}. Ver captura: {shot_path}")
+
     async def navigate_to_contact(self, contact: str, pick: int | None = None) -> None:
-        chosen = await self._resolve_contact(contact, pick=pick)
+        try:
+            chosen = await self._resolve_contact(contact, pick=pick)
+        except ContactNotFound:
+            if _phone_digits(contact) is None:
+                raise
+            await self.open_chat_by_phone(contact)
+            await self._settle_open_chat()
+            return
 
         opened = await self.open_search_result(
             chosen["x"], chosen["y"], expected_name=chosen["name"]
@@ -1784,7 +1916,9 @@ class WASession:
                 f"No se pudo abrir el chat con '{contact}'. "
                 f"Ver captura de debug: {shot_path}"
             )
+        await self._settle_open_chat()
 
+    async def _settle_open_chat(self) -> None:
         # WA prepends older messages above the anchor after loading, which shifts the
         # scroll position up. Try the WA "scroll to bottom" button first — it triggers
         # WA's own virtualizer to render the latest messages. Fall back to DOM scrollTop.
@@ -2678,6 +2812,150 @@ class WASession:
         # Wait for the contact list items to render
         await self._page.wait_for_selector('[role="listitem"]', timeout=8_000)
         await self._page.wait_for_timeout(500)
+
+    async def add_contact(self, phone: str, first_name: str, last_name: str = "", *,
+                          sync_to_phone: bool = False) -> dict:
+        """Save PHONE as a new contact named FIRST_NAME [LAST_NAME] through
+        WA Web's own form (New chat → Nuevo contacto).
+
+        The country is chosen from PHONE's international prefix (country
+        codes are prefix-free, so the first 1-3 digit prefix that matches a
+        country exactly is it); the rest goes in the phone field. Nothing is
+        saved unless WA itself says the number is on WhatsApp. SYNC_TO_PHONE
+        turns on "Sincronizar contacto con el teléfono" (off by default:
+        the contact then lives in WhatsApp only). Raises RuntimeError — after
+        backing out of the form — when anything doesn't check out.
+        """
+        import sys as _sys
+        digits = _phone_digits(phone)
+        if digits is None:
+            raise RuntimeError(f"'{phone}' no es un número de teléfono")
+        if not first_name.strip():
+            raise RuntimeError("Falta el nombre del contacto")
+
+        await self.navigate_to_new_chat()
+        btn = await self._page.evaluate(_BTN_BY_TEXT_JS, "Nuevo contacto")
+        if not btn:
+            await self.close_new_chat()
+            raise RuntimeError("No encontré 'Nuevo contacto' en el panel de nuevo chat")
+        await self._page.mouse.click(btn["x"], btn["y"])
+        if not await self._wait_for(f"() => ({_CONTACT_FORM_FIELD_JS})('Nombre')", 8_000):
+            raise RuntimeError("No se abrió el formulario 'Nuevo contacto'")
+        await self._page.wait_for_timeout(1_200)  # let the slide-in animation finish
+
+        try:
+            await self._fill_contact_field("Nombre", first_name.strip())
+            if last_name.strip():
+                await self._fill_contact_field("Apellido", last_name.strip())
+            national = await self._select_contact_country(digits)
+            await self._fill_contact_field("Número de teléfono", national, clear=True, paste=True)
+
+            # WA re-checks the number as it changes, so a verdict on a
+            # half-typed number can still be on screen (live 2026-11-24: "no
+            # está en WhatsApp" flashed for RENAPER's valid number). Only a
+            # verdict that holds for 4 polls in a row counts.
+            state, same = None, 0
+            for _ in range(40):
+                await self._page.wait_for_timeout(500)
+                now = await self._page.evaluate(_CONTACT_PHONE_STATE_JS)
+                same = same + 1 if (now and now == state) else 0
+                state = now
+                if same >= 3:
+                    break
+            if state != "ok":
+                why = {"not_on_wa": "ese número no está en WhatsApp",
+                       "invalid": "WA dice que el número no es válido para el país"}.get(
+                           state, "WA no confirmó el número")
+                raise RuntimeError(f"No se guardó el contacto: {why} (+{digits}).")
+
+            if sync_to_phone:
+                sw = await self._page.evaluate(_CONTACT_FORM_FIELD_JS,
+                                               "Sincronizar contacto con el teléfono")
+                if sw and not sw["checked"]:
+                    await self._page.mouse.click(sw["x"], sw["y"])
+                    await self._page.wait_for_timeout(500)
+
+            save = await self._page.evaluate(_BTN_BY_TEXT_JS, "Guardar contacto")
+            if not save:
+                raise RuntimeError("No apareció el botón 'Guardar contacto'")
+            await self._page.mouse.click(save["x"], save["y"])
+            gone = await self._wait_for(
+                f"() => !({_CONTACT_FORM_FIELD_JS})('Nombre')", 15_000)
+            if not gone:
+                raise RuntimeError("Hice click en 'Guardar contacto' pero el formulario sigue abierto")
+        except Exception:
+            shot = await self._debug_screenshot("add_contact_failed")
+            print(f"[wavi] add_contact: captura {shot}", file=_sys.stderr)
+            await self._leave_contact_form()
+            raise
+
+        await self._page.wait_for_timeout(1_000)
+        await self.ensure_chat_list()
+        name = f"{first_name.strip()} {last_name.strip()}".strip()
+        return {"name": name, "phone": f"+{digits}", "synced": sync_to_phone}
+
+    async def _fill_contact_field(self, label: str, text: str, *, clear: bool = False,
+                                  paste: bool = False) -> None:
+        # The form slides in: coordinates read too early miss the field, so
+        # re-read and retry until the click actually focuses it.
+        for _ in range(4):
+            field = await self._page.evaluate(_CONTACT_FORM_FIELD_JS, label)
+            if not field:
+                raise RuntimeError(f"No encontré el campo '{label}' del formulario")
+            await self._page.mouse.click(field["x"], field["y"])
+            await self._page.wait_for_timeout(400)
+            field = await self._page.evaluate(_CONTACT_FORM_FIELD_JS, label)
+            if field and field["focused"]:
+                break
+            await self._page.wait_for_timeout(600)
+        else:
+            raise RuntimeError(f"El campo '{label}' no tomó el foco — no se escribió nada")
+        if clear or field["text"]:
+            import sys as _sys
+            await self._page.keyboard.press("Meta+a" if _sys.platform == "darwin" else "Control+a")
+            await self._page.keyboard.press("Delete")
+        if paste:
+            await self._page.keyboard.insert_text(text)  # one input event, one validation
+        else:
+            await self._page.keyboard.type(text, delay=40)
+        await self._page.wait_for_timeout(300)
+
+    async def _select_contact_country(self, digits: str) -> str:
+        """Pick the country whose code prefixes DIGITS; return the national
+        part to type in the phone field."""
+        current = await self._page.evaluate(_CONTACT_FORM_COUNTRY_JS)
+        if not current:
+            raise RuntimeError("No encontré el selector de país del formulario")
+        if current["code"] and digits.startswith(current["code"]) and len(digits) > len(current["code"]):
+            return digits[len(current["code"]):]
+        for n in (1, 2, 3):
+            prefix = digits[:n]
+            await self._page.mouse.click(current["x"], current["y"])
+            await self._page.wait_for_timeout(1_000)
+            await self._page.keyboard.type(prefix, delay=60)
+            await self._page.wait_for_timeout(800)
+            options = await self._page.evaluate(_COUNTRY_OPTIONS_JS)
+            hit = next((o for o in options if o["code"] == prefix), None)
+            if hit:
+                await self._page.mouse.click(hit["x"], hit["y"])
+                await self._page.wait_for_timeout(800)
+                return digits[n:]
+            await self._page.keyboard.press("Escape")
+            await self._page.wait_for_timeout(600)
+        raise RuntimeError(f"No reconozco el código de país de +{digits}")
+
+    async def _leave_contact_form(self) -> None:
+        """Back out of a half-filled "Nuevo contacto" form without saving."""
+        try:
+            for _ in range(3):
+                back = await self._page.evaluate(_BTN_BY_TEXT_JS, "Atrás")
+                if not back:
+                    break
+                await self._page.mouse.click(back["x"], back["y"])
+                await self._page.wait_for_timeout(700)
+            await self.ensure_chat_list()
+        except Exception:
+            pass
 
     async def extract_contacts(self) -> list[dict]:
         """Extract all visible contacts from the new-chat panel.

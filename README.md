@@ -13,6 +13,8 @@ CLI tool for WhatsApp Web automation. Extracts message history using a vision pi
 | `wavi send <contact> <message>` | Send a message; in a group `@Name` becomes a real mention of a participant (`--no-mentions` to type `@` literally). `--attach FILE` (repeatable) sends files — PDF, PPT, any document or image — with the message as caption | DOM + keyboard (attachments: paste) |
 | `wavi edit <contact> <match> <new>` | Edit one of your own sent messages (WA's 15-min window); `--fragment` replaces only `<match>` | vision (OCR) + keyboard |
 | `wavi reply <contact> <match> <text>` | Reply quoting one message (yours or anyone's); `--from` narrows by sender, `--index N` picks among matches | vision (OCR) + keyboard |
+| `wavi open <contact>` | Open a chat and leave it on screen, sending nothing. A phone number that isn't a contact and has no chat yet opens via `web.whatsapp.com/send?phone=` (same safe about:blank reload as `wavi reload`) — `send`/`get`/etc. do the same fallback | DOM + safe reload |
+| `wavi add-contact <phone> <name>` | Save a new contact through WA's own *Nuevo contacto* form; country picked from the `+code`; only saved when WA confirms the number is on WhatsApp. `--last-name`, `--sync` (also to the phone's address book), `--open` | DOM (temporary bridge) |
 | `wavi draft show\|clear <contact>` | Show or empty a chat's compose-box draft (it blocks `send`); `wavi send --discard-draft` does both and sends | DOM + keyboard |
 | `wavi media <contact>` | Download a chat's videos, photos and documents (full files) + `media.json` | Media viewer / chat (DOM) |
 | `wavi check-updates [session]` | Detect new inbound messages in sidebar | DOM |

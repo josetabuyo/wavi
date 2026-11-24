@@ -217,6 +217,22 @@ and stays plain text (popup closed, Enter still sends). Unknown names and
 emails (`jose@gmail.com`) are typed literally. `--no-mentions` turns it off.
 The verification tolerates the expansion (the box shows the full name).
 
+## Numbers not in your contacts — open or save them
+
+```bash
+wavi open [session] "+54 9 11 5126-1789"                 # open the chat, send nothing
+wavi send [session] "+54 9 11 5126-1789" "hola"          # works even with no chat/contact yet
+wavi add-contact [session] "+54 9 11 5126-1789" RENAPER  # save it as a contact (WhatsApp only)
+wavi add-contact [session] "+598 99 123 456" Ana --last-name Pérez --sync --open
+```
+
+When WA's search finds nothing for a phone number, wavi opens the chat via
+`web.whatsapp.com/send?phone=<digits>` — a full page load done the safe way
+(about:blank first, never Page.reload), never with pre-typed text.
+`add-contact` fills WA's *Nuevo contacto* form (country from the `+code`) and
+refuses to save unless WA says the number is on WhatsApp. `--sync` also puts
+it in the phone's address book; without it the contact lives in WhatsApp only.
+
 ## A draft blocks the send
 
 `wavi send` refuses when the chat's compose box already holds text (it would
