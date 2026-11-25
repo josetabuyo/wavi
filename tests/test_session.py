@@ -1989,3 +1989,78 @@ def test_contact_phone_state_regex_ignores_telefono_substring():
     pat = re.compile(js_re.group(1), re.I)
     assert not pat.search("Este número de teléfono está en WhatsApp.")
     assert pat.search("Este número de teléfono no está en WhatsApp.")
+
+
+class TestReact:
+    """wavi react: never toggles off a reaction by repeating it, and only
+    removes what is provably mine."""
+
+    def test_emoji_helpers(self):
+        from wavi.session import _dom_message_text, _is_reaction_word, _same_emoji
+        assert _same_emoji("❤️", "❤")
+        assert not _same_emoji("👍", "🙏")
+        assert _is_reaction_word("fuego") and not _is_reaction_word("🔥")
+        assert _dom_message_text("Test de Wavi ✓\n10:43 a. m.\n🔥") == "Test de Wavi ✓"
+
+    @pytest.fixture
+    def session(self, tmp_path):
+        s = _make_session()
+        s.profile_dir = tmp_path
+        s._page = _make_page()
+        s._pick_reaction_target = AsyncMock(return_value={"text": "", "click_x": 5, "click_y": 6})
+        s._close_menu = AsyncMock()
+        return s
+
+    def _bar(self, pressed=None):
+        return {"quick": [{"emoji": e, "pressed": e == pressed, "x": i, "y": 0}
+                          for i, e in enumerate(["👍", "❤️", "😂", "😮", "😢", "🙏"])],
+                "more": {"x": 9, "y": 9}}
+
+    def _route(self, session, shown):
+        def evaluate(js, *a):
+            if "elementFromPoint" in js:
+                return {"id": "m1", "text": "hola\n10:00"}
+            if "reaction-bubble" in js:
+                return shown
+            return None
+        session._page.evaluate = AsyncMock(side_effect=evaluate)
+
+    @pytest.mark.asyncio
+    async def test_same_quick_reaction_is_not_clicked_again(self, session):
+        self._route(session, "Reacción 👍")
+        session._open_reaction_bar = AsyncMock(return_value=self._bar(pressed="👍"))
+        r = await session.react_message("👍")
+        assert r["action"] == "unchanged"
+        session._page.mouse.click.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_quick_already_on_message_is_left_alone(self, session):
+        self._route(session, "Reacción 🎉")
+        session._open_reaction_bar = AsyncMock(return_value=self._bar())
+        session._page.evaluate.side_effect = None
+        calls = {"n": 0}
+
+        def evaluate(js, *a):
+            if "elementFromPoint" in js and "data-emoji" not in js:
+                return {"id": "m1", "text": "hola"}
+            if "reaction-bubble" in js:
+                return "Reacción 🎉"
+            if "Busca una reacción" in js:
+                return {"x": 1, "y": 1}
+            if "data-emoji" in js:
+                calls["n"] += 1
+                return {"x": 3, "y": 3, "emoji": "🎉"}
+            return None
+        session._page.evaluate = AsyncMock(side_effect=evaluate)
+        session._wait_for = AsyncMock(return_value={"x": 1, "y": 1})
+        r = await session.react_message("🎉")
+        assert r["action"] == "unchanged" and "note" in r
+        assert (3, 3) not in [c.args for c in session._page.mouse.click.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_remove_refuses_when_mine_is_not_provable(self, session):
+        self._route(session, "Reacción 🎉")
+        session._open_reaction_bar = AsyncMock(return_value=self._bar())
+        with pytest.raises(RuntimeError, match="solo sabe quitar"):
+            await session.react_message("", remove=True)
+        session._page.mouse.click.assert_not_called()

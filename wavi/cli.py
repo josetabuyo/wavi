@@ -1409,6 +1409,96 @@ def reply(session: str, contact: str, match: str, message: str, sender: str | No
         sys.exit(2)
 
 
+# ── react ─────────────────────────────────────────────────────────────────────
+
+@main.command("react")
+@click.argument("session", default="default")
+@click.argument("contact")
+@click.argument("emoji", required=False, default=None)
+@click.option("--last", "last", is_flag=True,
+              help="Reaccionar al último mensaje del chat (es lo que pasa si no das --match).")
+@click.option("--match", default=None, help="Fragmento del mensaje a reaccionar (como en wavi reply).")
+@click.option("--from", "sender", default=None,
+              help="Solo mensajes de este remitente (con --last: su último mensaje).")
+@click.option("--index", type=int, default=None,
+              help="Si --match coincide con varios mensajes, elegir el N (1-based, del más viejo al más nuevo).")
+@click.option("--remove", is_flag=True, help="Quitar mi reacción del mensaje en vez de poner una.")
+@click.option("--pick", type=int, default=None,
+              help="Si el contacto es ambiguo, elegir la coincidencia N (1-based).")
+@click.option("--json-out", is_flag=True, help="Imprimir el resultado como JSON.")
+def react(session: str, contact: str, emoji: str | None, last: bool, match: str | None,
+          sender: str | None, index: int | None, remove: bool, pick: int | None, json_out: bool):
+    """Reaccionar con EMOJI a un mensaje del chat — propio o de otro.
+
+    El mensaje: el último del chat (--last, o sin --match), el último de
+    alguien (--last --from Nombre), o el que contiene un texto (--match,
+    con --from / --index como en wavi reply).
+
+    EMOJI: 👍 ❤️ 😂 😮 😢 🙏 son un click; cualquier otro emoji se busca en
+    el selector completo; una palabra ("fuego") usa el buscador de WA y toma
+    el primer resultado. Si ya habías reaccionado con ese emoji no se toca
+    nada (otro click lo quitaría). --remove quita tu reacción.
+
+    \b
+    Ejemplos:
+      wavi react default "DATA LAKE - Técnico" --last "👍"
+      wavi react default "Familia" "❤️" --match "llegamos bien" --from Mamá
+      wavi react default "Juan" fuego --last
+      wavi react default "Juan" --last --remove
+    """
+    from wavi.queue import is_locked, session_lock
+    from wavi.session import WASession
+
+    if match and last:
+        raise click.UsageError("Usá --last o --match, no los dos.")
+    if index is not None and not match:
+        raise click.UsageError("--index elige entre las coincidencias de --match.")
+    if not emoji and not remove:
+        raise click.UsageError("Falta el EMOJI (o --remove para quitar tu reacción).")
+
+    profile_dir = _profile(session)
+
+    async def _go():
+        s = WASession(profile_dir)
+        try:
+            status = await s.connect()
+            if status != "restored":
+                raise RuntimeError(f"Sesión no autenticada (estado={status}). Ejecutá 'wavi connect' primero.")
+            await s.navigate_to_contact(contact, pick=pick)
+            return await s.react_message(emoji or "", match=match, sender=sender, index=index,
+                                         remove=remove)
+        finally:
+            await s.close()
+
+    if is_locked(profile_dir):
+        click.echo(f"Sesión '{session}' ocupada — esperando en cola...", err=True)
+    with session_lock(profile_dir, "react", contact=contact):
+        with _lazy_session(profile_dir):
+            try:
+                result = asyncio.run(_go())
+            except RuntimeError as e:
+                click.echo(str(e), err=True)
+                sys.exit(1)
+
+    if json_out:
+        click.echo(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        who = result["message_sender"] or "?"
+        what = repr(result["message_text"][:80])
+        if result["action"] == "removed":
+            click.echo(f"Reacción quitada del mensaje de {who}: {what}")
+        elif result.get("note"):
+            click.echo(f"Sin cambios — {result['note']}: {what}")
+        elif result["action"] == "unchanged":
+            state = f"ya tenía tu {result['emoji']}" if result["emoji"] else "no tenía reacción tuya"
+            click.echo(f"Sin cambios — el mensaje de {who} {state}: {what}")
+        else:
+            click.echo(f"Reaccionaste {result['emoji']} al mensaje de {who}: {what}")
+    if not result["verified"]:
+        click.echo("⚠️  No pude confirmar la reacción en el chat — revisalo.", err=True)
+        sys.exit(2)
+
+
 # ── send ──────────────────────────────────────────────────────────────────────
 
 @main.command("send")

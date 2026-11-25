@@ -233,6 +233,22 @@ When WA's search finds nothing for a phone number, wavi opens the chat via
 refuses to save unless WA says the number is on WhatsApp. `--sync` also puts
 it in the phone's address book; without it the contact lives in WhatsApp only.
 
+## React to a message (👍 instead of a reply)
+
+```bash
+wavi react [session] "DATA LAKE - Técnico" --last "👍"          # last message of the chat
+wavi react [session] "Familia" "❤️" --last --from Mamá          # Mamá's last message
+wavi react [session] "Juan" "🙏" --match "te mandé el archivo"  # by text (+ --from / --index)
+wavi react [session] "Juan" fuego --last                        # a word: WA's reaction search
+wavi react [session] "Juan" --last --remove                     # take my reaction off
+```
+
+👍 ❤️ 😂 😮 😢 🙏 are one click; any other emoji is looked up in the full
+picker. If that emoji is already on the message wavi touches nothing (if it's
+yours, a second click would REMOVE it) and says so. `--remove` only removes a
+reaction that is provably yours — one of the six quick ones. Exit 2 = done but
+not confirmed on screen.
+
 ## A draft blocks the send
 
 `wavi send` refuses when the chat's compose box already holds text (it would

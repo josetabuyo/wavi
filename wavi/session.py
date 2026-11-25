@@ -647,6 +647,31 @@ def _locate_message(
     return hits[0]
 
 
+def _strip_vs(s: str) -> str:
+    """Drop emoji variation selectors: WA labels ❤️ while a user may type ❤."""
+    return (s or "").replace("\ufe0f", "").strip()
+
+
+def _same_emoji(a: str, b: str) -> bool:
+    return _strip_vs(a) == _strip_vs(b)
+
+
+def _dom_message_text(text: str | None) -> str:
+    """A message row's innerText without the trailing time / reaction
+    lines ("10:43 a. m.", "🔥")."""
+    lines = [ln.strip() for ln in (text or "").split("\n") if ln.strip()]
+    keep = [ln for ln in lines
+            if not re.fullmatch(r"\d{1,2}:\d{2}(\s*[ap]\.?\s*m\.?)?", ln, re.I)
+            and any(ch.isalnum() for ch in ln)]
+    return " ".join(keep)[:200]
+
+
+def _is_reaction_word(s: str) -> bool:
+    """Whether a reaction argument is a word to search ("fuego") rather than
+    an emoji (anything with a letter in it)."""
+    return any(ch.isalpha() for ch in s)
+
+
 def _roughly_contains(hay: str | None, needle: str | None, min_ratio: float = 0.8) -> bool:
     """NEEDLE appears in HAY allowing for OCR slips (letters only, accents
     and case ignored): exact containment, or a same-length window of HAY
@@ -735,6 +760,78 @@ _CLICK_SEND_EDIT_JS = """
     return true;
 }
 """
+
+# ── Reactions ─────────────────────────────────────────────────────────────
+# Mapped live 2026-11-25 (WA Web, es-AR). Right-clicking a message opens its
+# menu with a quick-reaction bar on top: six <button>s each holding an
+# <img alt="👍">, the one already chosen by me with aria-pressed="true"
+# (clicking it again REMOVES the reaction), and a "+" button
+# aria-label="Reaccionar al mensaje" that opens the full picker — an
+# <input aria-label="Busca una reacción"> (searches by word: "fuego", not
+# by pasting 🔥) over a scrolling grid of span[data-emoji]. A reacted
+# message shows a [data-testid="reaction-bubble"] labelled "Reacción 👍. …".
+# Temporary DOM bridge (vision-first policy): emoji can't be OCR'd.
+_REACTION_BAR_JS = """() => {
+    const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const pt = e => { const r = e.getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; };
+    const quick = [...document.querySelectorAll('[role=menu] button img[alt], [role=dialog] button img[alt]')]
+        .filter(vis).map(i => ({emoji: i.alt, pressed: i.closest('button').getAttribute('aria-pressed') === 'true',
+                                ...pt(i.closest('button'))}));
+    const more = [...document.querySelectorAll('button[aria-label="Reaccionar al mensaje"], button[aria-label="React to message"]')].find(vis);
+    if (!quick.length && !more) return null;
+    return {quick, more: more ? pt(more) : null};
+}"""
+
+# The message row under a point: {id, text} (text = its visible innerText).
+_MSG_AT_POINT_JS = """([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    const row = el && el.closest('#main [data-id]');
+    if (!row) return null;
+    return {id: row.getAttribute('data-id'), text: (row.innerText || '').slice(0, 2000)};
+}"""
+
+# Reactions shown under message ID: the reaction-bubble's label, or null.
+_MSG_REACTIONS_JS = """(id) => {
+    const row = document.querySelector('#main [data-id="' + id + '"]');
+    const b = row && row.querySelector('[data-testid="reaction-bubble"]');
+    return b ? (b.getAttribute('aria-label') || b.innerText || '') : null;
+}"""
+
+_PICKER_SEARCH_JS = """() => {
+    const i = document.querySelector('input[aria-label="Busca una reacción"], input[aria-label="Search reaction"]');
+    if (!i) return null;
+    const r = i.getBoundingClientRect();
+    return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+}"""
+
+# Find EMOJI (or, with FIRST, the first result) in the open picker grid; if
+# it isn't rendered, scroll the grid one step: {x, y} | {scrolled, end}.
+_PICKER_FIND_JS = """([emoji, first]) => {
+    const norm = s => (s || '').replace(/\\uFE0F/g, '');
+    const cells = [...document.querySelectorAll('span[data-emoji]')].filter(e => {
+        const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+    const hit = first ? cells[0] : cells.find(e => norm(e.getAttribute('data-emoji')) === norm(emoji));
+    if (hit) {
+        // Rendered is not visible: the grid clips rows above/below its view
+        // (live 2026-11-25: 🎉 found at y=1772, under the picker — the
+        // click landed elsewhere). Bring it into view and make sure the
+        // point really hits it.
+        hit.scrollIntoView({block: 'center'});
+        const r = hit.getBoundingClientRect();
+        const x = r.x + r.width / 2, y = r.y + r.height / 2;
+        const at = document.elementFromPoint(x, y);
+        if (!(at && (at === hit || hit.contains(at) || at.contains(hit)))) return null;
+        return {x, y, emoji: hit.getAttribute('data-emoji')};
+    }
+    if (first || !cells.length) return null;
+    let box = cells[0].parentElement;
+    while (box && box.scrollHeight <= box.clientHeight + 4) box = box.parentElement;
+    if (!box) return null;
+    const before = box.scrollTop;
+    box.scrollTop = before + box.clientHeight * 0.8;
+    return {scrolled: true, end: box.scrollTop === before};
+}"""
+
 
 EDIT_WINDOW_MIN = 15
 
@@ -2391,6 +2488,220 @@ class WASession:
             "sent": text,
             "verified": verified,
         }
+
+    PICKER_SCROLLS = 60
+
+    async def react_message(
+        self, emoji: str, *, match: str | None = None, sender: str | None = None,
+        index: int | None = None, remove: bool = False,
+    ) -> dict:
+        """React with EMOJI to one message of the open chat (own or not).
+
+        MATCH/SENDER/INDEX pick it like reply_message; without MATCH it is
+        the LAST message on screen (from SENDER, if given). EMOJI is the
+        emoji itself (👍) — one of WA's six quick ones is a click, any other
+        is looked up in the full picker — or a word to search there
+        ("fuego" → its first result). Already reacted with it → nothing is
+        clicked (a second click would remove it). REMOVE takes my reaction
+        off instead. Verified by reopening the menu: my emoji must show
+        pressed (or none, with REMOVE).
+        """
+        target = await self._pick_reaction_target(match, sender=sender, index=index)
+        x, y = await self._target_point(target)
+        row = await self._page.evaluate(_MSG_AT_POINT_JS, [x, y])
+        if not row:
+            raise RuntimeError("No encontré el mensaje elegido en pantalla — no se reaccionó")
+        # Guard against the chat moving between screenshot and click — only
+        # on real text (OCR of a voice note or photo is noise, not a check).
+        want = (target.get("text") or "").strip()
+        if sum(ch.isalpha() for ch in want) >= 6 and not _roughly_contains(row["text"], want[:80], 0.6):
+            raise RuntimeError(
+                f"El mensaje bajo el cursor no es el elegido ({row['text'][:60]!r}) — "
+                "el chat se movió; no se reaccionó")
+
+        shown_before = await self._page.evaluate(_MSG_REACTIONS_JS, row["id"])
+        bar = await self._open_reaction_bar(x, y)
+        # My reaction, when it is one of the six quick ones, shows pressed in
+        # the bar. Any other emoji of mine only shows in the message's
+        # reaction label, mixed with everyone else's.
+        mine = next((q for q in bar["quick"] if q["pressed"]), None)
+        word = _is_reaction_word(emoji)
+        try:
+            if remove:
+                if mine is None:
+                    await self._close_menu()
+                    if shown_before:
+                        raise RuntimeError(
+                            f"El mensaje tiene reacciones ({shown_before}) pero ninguna tuya entre "
+                            "👍 ❤️ 😂 😮 😢 🙏 — wavi solo sabe quitar esas; no se tocó nada.")
+                    return self._reaction_result(target, row, None, "unchanged", shown_before)
+                await self._page.mouse.click(mine["x"], mine["y"])
+                chosen, action = mine["emoji"], "removed"
+            elif not word and mine and _same_emoji(mine["emoji"], emoji):
+                await self._close_menu()
+                return self._reaction_result(target, row, mine["emoji"], "unchanged", shown_before)
+            else:
+                quick = None if word else next(
+                    (q for q in bar["quick"] if _same_emoji(q["emoji"], emoji)), None)
+                if quick:
+                    await self._page.mouse.click(quick["x"], quick["y"])
+                    chosen = quick["emoji"]
+                else:
+                    chosen = await self._pick_from_reaction_picker(bar, emoji, word, shown_before)
+                    if chosen is None:   # already on the message — maybe mine: don't toggle it off
+                        found = emoji if not word else "ese emoji"
+                        await self._close_menu()
+                        res = self._reaction_result(target, row, None, "unchanged", shown_before)
+                        res["note"] = (f"el mensaje ya tiene {found} ({shown_before}); no lo toqué "
+                                       "porque si es tuyo otro click lo quitaría")
+                        return res
+                action = "reacted"
+        except Exception:
+            await self._close_menu()
+            raise
+        await self._page.wait_for_timeout(1_500)
+
+        # Verify: reopen the same message's menu and read what's pressed,
+        # plus the message's own reaction label.
+        shown = await self._page.evaluate(_MSG_REACTIONS_JS, row["id"])
+        try:
+            check = await self._open_reaction_bar(x, y)
+        except RuntimeError:
+            # The click already happened: report it unconfirmed, never as
+            # "no se reaccionó" (live 2026-11-25: 🔥 was on, wavi said no).
+            result = self._reaction_result(target, row, chosen, action, shown)
+            result["verified"] = False
+            return result
+        now = next((q["emoji"] for q in check["quick"] if q["pressed"]), None)
+        await self._close_menu()
+        if action == "removed":
+            verified = now is None
+        elif any(_same_emoji(q["emoji"], chosen) for q in check["quick"]):
+            verified = now is not None and _same_emoji(now, chosen)
+        else:
+            verified = now is None and _strip_vs(chosen) in _strip_vs(shown or "")
+        result = self._reaction_result(target, row, chosen, action, shown)
+        result["verified"] = verified
+        return result
+
+    @staticmethod
+    def _reaction_result(target: dict, row: dict, emoji: str | None, action: str,
+                         shown: str | None) -> dict:
+        return {
+            "message_id": row["id"],
+            "message_sender": _row_sender(target) or None,
+            "message_text": _dom_message_text(row["text"]) or (target.get("text") or "")[:200],
+            "emoji": emoji,
+            "action": action,
+            "reactions_shown": shown,
+            "verified": action == "unchanged",
+        }
+
+    async def _pick_reaction_target(self, match: str | None, **kw) -> dict:
+        if match:
+            return await self._pick_message(match, **kw)
+        from wavi import vision
+        sender = kw.get("sender")
+        if vision.vision_available():
+            import asyncio as _asyncio
+            import tempfile as _tempfile
+            work = Path(_tempfile.mkdtemp(prefix="wavi_msgs_"))
+            shot = await self.screenshot_to_file(work / "chat.png")
+            rows = await _asyncio.to_thread(vision.read_message_bubbles, shot, work)
+            rows = [{**r, "id": r["key"]} for r in rows]
+        else:
+            rows = await self._page.evaluate(_CHAT_MESSAGES_JS) or []
+        if sender:
+            sq = _normalize_name(sender)
+            rows = [r for r in rows if sq in _normalize_name(_row_sender(r))]
+        if not rows:
+            of = f" de '{sender}'" if sender else ""
+            raise MessageNotFound(f"No hay mensajes{of} a la vista en el chat")
+        return rows[-1]
+
+    async def _target_point(self, target: dict) -> tuple[int, int]:
+        if "click_x" in target:
+            return target["click_x"], target["click_y"]
+        pos = await self._page.evaluate(_MSG_BUBBLE_POS_JS, target["id"])
+        if not pos:
+            raise RuntimeError("El mensaje dejó de estar en pantalla")
+        await self._page.wait_for_timeout(500)
+        return pos["x"], pos["y"]
+
+    async def _open_reaction_bar(self, x: int, y: int) -> dict:
+        # A right-click now and then opens nothing (live 2026-11-25): try
+        # again a few pixels off before giving up.
+        for dx in (0, 12, -12):
+            await self._page.mouse.move(x + dx, y)
+            await self._page.wait_for_timeout(400)
+            await self._page.mouse.click(x + dx, y, button="right")
+            for _ in range(8):
+                await self._page.wait_for_timeout(250)
+                bar = await self._page.evaluate(_REACTION_BAR_JS)
+                if bar and bar["quick"]:
+                    return bar
+            await self._close_menu()
+        shot = await self._debug_screenshot("reaction_bar_missing")
+        raise RuntimeError("WhatsApp no mostró la barra de reacciones para ese mensaje — "
+                           f"no se reaccionó. Ver captura: {shot}")
+
+    async def _close_menu(self) -> None:
+        """Close an open message menu / reaction picker with ONE Escape (a
+        second one would close the chat)."""
+        for _ in range(2):
+            if not (await self._page.evaluate(_REACTION_BAR_JS)
+                    or await self._page.evaluate(_PICKER_SEARCH_JS)):
+                return
+            await self._page.keyboard.press("Escape")
+            await self._page.wait_for_timeout(500)
+
+    async def _pick_from_reaction_picker(self, bar: dict, emoji: str, word: bool,
+                                         shown_before: str | None) -> str | None:
+        """Pick EMOJI (or WORD's first search result) in the full picker and
+        return the emoji clicked — or None, clicking nothing, when that
+        emoji is already on the message (SHOWN_BEFORE)."""
+        if not bar.get("more"):
+            raise RuntimeError("No encontré el '+' para más reacciones")
+        await self._page.mouse.click(bar["more"]["x"], bar["more"]["y"])
+        search = await self._wait_for(_PICKER_SEARCH_JS, 5_000, step_ms=250)
+        if not search:
+            raise RuntimeError("No se abrió el selector de reacciones")
+        await self._page.wait_for_timeout(500)
+        if word:
+            await self._page.mouse.click(search["x"], search["y"])
+            await self._page.keyboard.type(emoji, delay=50)
+            await self._page.wait_for_timeout(1_000)
+            hit = await self._page.evaluate(_PICKER_FIND_JS, [emoji, True])
+            if not hit:
+                raise RuntimeError(f"El buscador de reacciones no encontró nada para '{emoji}' — no se reaccionó")
+        else:
+            hit = None
+            for _ in range(self.PICKER_SCROLLS):
+                found = await self._page.evaluate(_PICKER_FIND_JS, [emoji, False])
+                if found and "x" in found:
+                    hit = found
+                    break
+                if not found or found.get("end"):
+                    break
+                await self._page.wait_for_timeout(150)
+            if not hit:
+                raise RuntimeError(
+                    f"No encontré {emoji} en el selector de reacciones — probá con una palabra "
+                    f"para buscarlo (ej. 'fuego') — no se reaccionó")
+        chosen = hit.get("emoji") or emoji
+        if shown_before and _strip_vs(chosen) in _strip_vs(shown_before):
+            return None
+        # scrollIntoView just moved the grid: let it settle, read the point
+        # again, hover, then click (a click right after the scroll was lost
+        # live 2026-11-25 — 🎉 never got applied).
+        await self._page.wait_for_timeout(400)
+        again = await self._page.evaluate(_PICKER_FIND_JS, [chosen, False])
+        if again and "x" in again:
+            hit = again
+        await self._page.mouse.move(hit["x"], hit["y"])
+        await self._page.wait_for_timeout(300)
+        await self._page.mouse.click(hit["x"], hit["y"])
+        return chosen
 
     async def read_draft(self) -> str:
         """Text sitting in the open chat's compose box ('' when empty)."""
