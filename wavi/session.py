@@ -648,8 +648,10 @@ def _locate_message(
 
 
 def _strip_vs(s: str) -> str:
-    """Drop emoji variation selectors: WA labels ❤️ while a user may type ❤."""
-    return (s or "").replace("\ufe0f", "").strip()
+    """Drop emoji variation selectors and skin tones: WA labels ❤️ while a
+    user may type ❤, and the quick bar holds the account's own tone — 👍🏻,
+    not 👍 (DataLake 2026-11-25: 👍 'not found', wavi went for the '+')."""
+    return re.sub("[\ufe0f\U0001F3FB-\U0001F3FF]", "", s or "").strip()
 
 
 def _same_emoji(a: str, b: str) -> bool:
@@ -777,7 +779,16 @@ _REACTION_BAR_JS = """() => {
     const quick = [...document.querySelectorAll('[role=menu] button img[alt], [role=dialog] button img[alt]')]
         .filter(vis).map(i => ({emoji: i.alt, pressed: i.closest('button').getAttribute('aria-pressed') === 'true',
                                 ...pt(i.closest('button'))}));
-    const more = [...document.querySelectorAll('button[aria-label="Reaccionar al mensaje"], button[aria-label="React to message"]')].find(vis);
+    let more = [...document.querySelectorAll('button[aria-label="Reaccionar al mensaje"], button[aria-label="React to message"]')].find(vis);
+    if (!more && quick.length) {
+        // The "+" is not always labelled that way (live 2026-11-25, a group
+        // message I had already reacted to): it is the bar's one button
+        // without an emoji in it.
+        let bar = document.elementFromPoint(quick[0].x, quick[0].y);
+        bar = bar && bar.closest('button');
+        while (bar && bar.querySelectorAll('button img[alt]').length < quick.length) bar = bar.parentElement;
+        more = bar && [...bar.querySelectorAll('button')].find(b => vis(b) && !b.querySelector('img[alt]'));
+    }
     if (!quick.length && !more) return null;
     return {quick, more: more ? pt(more) : null};
 }"""
@@ -797,6 +808,18 @@ _MSG_REACTIONS_JS = """(id) => {
     return b ? (b.getAttribute('aria-label') || b.innerText || '') : null;
 }"""
 
+# Where to right-click message ID now: on its text (or its bubble), since
+# adding a reaction grows the bubble and scrolls the chat (live
+# 2026-11-25: the verify click at the old spot opened nothing).
+_MSG_TEXT_POINT_JS = """(id) => {
+    const row = document.querySelector('#main [data-id="' + id + '"]');
+    if (!row) return null;
+    const el = row.querySelector('.selectable-text') || row.querySelector('[data-testid="msg-container"]') || row;
+    const r = el.getBoundingClientRect();
+    if (!r.width) return null;
+    return {x: Math.round(r.x + Math.min(30, r.width / 2)), y: Math.round(r.y + Math.min(10, r.height / 2))};
+}"""
+
 _PICKER_SEARCH_JS = """() => {
     const i = document.querySelector('input[aria-label="Busca una reacción"], input[aria-label="Search reaction"]');
     if (!i) return null;
@@ -807,7 +830,7 @@ _PICKER_SEARCH_JS = """() => {
 # Find EMOJI (or, with FIRST, the first result) in the open picker grid; if
 # it isn't rendered, scroll the grid one step: {x, y} | {scrolled, end}.
 _PICKER_FIND_JS = """([emoji, first]) => {
-    const norm = s => (s || '').replace(/\\uFE0F/g, '');
+    const norm = s => (s || '').replace(/\\uFE0F|\\uD83C[\\uDFFB-\\uDFFF]/g, '');
     const cells = [...document.querySelectorAll('span[data-emoji]')].filter(e => {
         const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
     const hit = first ? cells[0] : cells.find(e => norm(e.getAttribute('data-emoji')) === norm(emoji));
@@ -2562,24 +2585,31 @@ class WASession:
         await self._page.wait_for_timeout(1_500)
 
         # Verify: reopen the same message's menu and read what's pressed,
-        # plus the message's own reaction label.
-        shown = await self._page.evaluate(_MSG_REACTIONS_JS, row["id"])
-        try:
-            check = await self._open_reaction_bar(x, y)
-        except RuntimeError:
-            # The click already happened: report it unconfirmed, never as
-            # "no se reaccionó" (live 2026-11-25: 🔥 was on, wavi said no).
-            result = self._reaction_result(target, row, chosen, action, shown)
-            result["verified"] = False
-            return result
-        now = next((q["emoji"] for q in check["quick"] if q["pressed"]), None)
-        await self._close_menu()
-        if action == "removed":
-            verified = now is None
-        elif any(_same_emoji(q["emoji"], chosen) for q in check["quick"]):
-            verified = now is not None and _same_emoji(now, chosen)
-        else:
-            verified = now is None and _strip_vs(chosen) in _strip_vs(shown or "")
+        # plus the message's own reaction label. WA can take a moment to
+        # reflect the change (live 2026-11-25: 👍 applied, first look missed
+        # it), so look twice before calling it unconfirmed.
+        verified, shown = False, None
+        for attempt in range(2):
+            if attempt:
+                await self._page.wait_for_timeout(1_500)
+            shown = await self._page.evaluate(_MSG_REACTIONS_JS, row["id"])
+            here = await self._page.evaluate(_MSG_TEXT_POINT_JS, row["id"]) or {"x": x, "y": y}
+            try:
+                check = await self._open_reaction_bar(here["x"], here["y"])
+            except RuntimeError:
+                # The click already happened: never report "no se reaccionó"
+                # (live 2026-11-25: 🔥 was on, wavi said it wasn't).
+                continue
+            now = next((q["emoji"] for q in check["quick"] if q["pressed"]), None)
+            await self._close_menu()
+            if action == "removed":
+                verified = now is None
+            elif any(_same_emoji(q["emoji"], chosen) for q in check["quick"]):
+                verified = now is not None and _same_emoji(now, chosen)
+            else:
+                verified = now is None and _strip_vs(chosen) in _strip_vs(shown or "")
+            if verified:
+                break
         result = self._reaction_result(target, row, chosen, action, shown)
         result["verified"] = verified
         return result

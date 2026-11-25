@@ -2064,3 +2064,10 @@ class TestReact:
         with pytest.raises(RuntimeError, match="solo sabe quitar"):
             await session.react_message("", remove=True)
         session._page.mouse.click.assert_not_called()
+
+
+def test_same_emoji_ignores_skin_tone():
+    """The quick bar shows the account's tone (👍🏻); asking for 👍 is the same."""
+    from wavi.session import _same_emoji, _strip_vs
+    assert _same_emoji("👍🏻", "👍")
+    assert _strip_vs("👍🏽") in _strip_vs("Reacción 👍🏻. Ver reacciones")
