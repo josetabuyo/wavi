@@ -563,15 +563,18 @@ _CHAT_MESSAGES_JS = """
     return rows.map(r => {
             const pre = r.querySelector('[data-pre-plain-text]');
             const quote = r.querySelector('[data-testid="quoted-message"]');
-            const bodies = [...r.querySelectorAll('[data-testid="selectable-text"]')]
+            // A multi-line message is split into one selectable-text per
+            // paragraph (DataLake 2026-11-27: only the last one was read, so
+            // edit's verification saw "Sueldo.net" instead of the whole text).
+            const all = [...r.querySelectorAll('[data-testid="selectable-text"]')]
                 .filter(e => !(quote && quote.contains(e)));
-            const body = bodies[bodies.length - 1];
+            const bodies = all.filter(e => !all.some(o => o !== e && o.contains(e)));
             return {
                 id: r.getAttribute('data-id'),
                 own: [...r.querySelectorAll('[aria-label]')].some(e =>
                     OWN.test((e.getAttribute('aria-label') || '').trim())),
                 pre: pre ? pre.getAttribute('data-pre-plain-text') : null,
-                text: body ? textOf(body) : '',
+                text: bodies.map(textOf).join('\\n'),
                 quoted: quote ? (quote.innerText || '') : null,
             };
         }).filter(m => m.pre || m.text);
